@@ -1,10 +1,10 @@
 import json
-from .database import get_product_cost_with_sku
+from .database import get_product_cost_with_sku, get_all_product_costs
 from .auth import spapi_request
 import os
+import time
+import math
 
-
-DUMMY_PRODUCT_MANUF_PRICE = 10
 GOVT_VAT_RATE = float(os.getenv("GOVT_VAT_RATE"))
 
 
@@ -13,6 +13,9 @@ def retrieve_shipment_list(method, path, params):
    all_data = []
 
    json_response = spapi_request(method=method, path=path, params=params)
+
+   if "errors" in json_response: 
+       return all_data
 
    payload = json_response.get("payload")
 
@@ -34,6 +37,9 @@ def retrieve_shipment_list(method, path, params):
        # Only provide NextToken instead of PostedAfter
        json_response = spapi_request(method=method, path=path, params={"NextToken": next_token})
 
+       if "errors" in json_response: 
+           break
+
        payload = json_response.get("payload")
        if not payload:
            break
@@ -46,23 +52,21 @@ def retrieve_shipment_list(method, path, params):
 
 
 def get_transactions(params, db_cursor):
-
-
+   
    method="GET"
    path="/finances/v0/financialEvents"
 
-
    shipmentEventList = retrieve_shipment_list(method, path, params)
 
+   all_skus = [item["SellerSKU"] for order in shipmentEventList for item in (order.get("ShipmentItemList") or [])]
+
+   cost_cache, stripped_map = get_all_product_costs(db_cursor, all_skus)
 
    transactions = []
 
-
    for order in shipmentEventList:
-      
        for item in order["ShipmentItemList"]:
            transaction = {}
-
 
            # Basic fields
            transaction["AmazonOrderId"] = order["AmazonOrderId"]
@@ -84,8 +88,8 @@ def get_transactions(params, db_cursor):
            fba_fees = 0
            other_fees = 0
 
-
-           for fee in item["ItemFeeList"]:
+           fees = item.get("ItemFeeList") or []
+           for fee in fees:
                fee_type = fee["FeeType"]
                amount = fee["FeeAmount"]["CurrencyAmount"]
 
@@ -109,15 +113,20 @@ def get_transactions(params, db_cursor):
            transaction["GovernmentVAT"] = vat_amount
            transaction["TotalAmazonFees"] = referral_fee + fba_fees + other_fees
 
-
-
+           sku = transaction["SKU"]
+           cost_str = cost_cache.get(sku) or cost_cache.get(stripped_map.get(sku, sku))
+            
+           # Parse cost
+           cost = None
+           if cost_str:
+               try:
+                   cost = float(cost_str.replace("$", "").replace(",", "").strip())
+               except ValueError:
+                   pass
 
            # Product cost
-           cost_with_sku = get_product_cost_with_sku(db_cursor, transaction["SKU"])
-           transaction["ProductBuyingPrice"] = cost_with_sku[0]
-           transaction["SSKU Used"] = cost_with_sku[1]
-           # transaction["ProductBuyingPrice"] = DUMMY_PRODUCT_MANUF_PRICE
-
+           transaction["ProductBuyingPrice"] = cost
+           transaction["SSKU Used"] = stripped_map.get(sku, sku)
 
            # Profit formula
            # since fees are in negative already
@@ -126,18 +135,13 @@ def get_transactions(params, db_cursor):
                + (referral_fee + fba_fees + vat_amount)
            )
 
-
            if(transaction["ProductBuyingPrice"] == None):
                transaction["ProductBuyingPrice"] = "Not Available"
                transaction["Net Profit"] = "Not Available"
            else:
                # Make fee negative to show that it is money out
                transaction["ProductBuyingPrice"] *= -1
-               transaction["Net Profit"] += transaction["ProductBuyingPrice"]
+               transaction["Net Profit"] = round(transaction["Net Profit"] + transaction["ProductBuyingPrice"], 2)
           
-
-
            transactions.append(transaction)
-
-
    return transactions
