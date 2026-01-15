@@ -1,0 +1,106 @@
+{
+    "payload": {
+      "FeesEstimateResult": {
+        "Status": "Success",
+        "FeesEstimateIdentifier": {
+          "MarketplaceId": "A2VIGQ35RCS4UG",
+          "SellerId": "A1SELLER123",
+          "IdType": "ASIN",
+          "IdValue": "B0EXAMPLE123",
+          "IsAmazonFulfilled": true,
+          "PriceToEstimateFees": {
+            "ListingPrice": {
+              "CurrencyCode": "AED",
+              "Amount": 249.00
+            },
+            "Shipping": {
+              "CurrencyCode": "AED",
+              "Amount": 0.00
+            },
+            "Points": {
+              "PointsNumber": 0,
+              "PointsMonetaryValue": {
+                "CurrencyCode": "AED",
+                "Amount": 0.00
+              }
+            }
+          },
+          "SellerInputIdentifier": "estimate-001",
+          "OptionalFulfillmentProgram": "FBA_CORE"
+        },
+        "FeesEstimate": {
+          "TimeOfFeesEstimation": "2026-01-11T21:49:18.027Z",
+          "TotalFeesEstimate": {
+            "CurrencyCode": "AED",
+            "Amount": 36.25
+          },
+          "FeeDetailList": [
+            {
+              "FeeType": "ReferralFee",
+              "FeeAmount": {
+                "CurrencyCode": "AED",
+                "Amount": 29.88
+              },
+              "TaxAmount": {
+                "CurrencyCode": "AED",
+                "Amount": 1.49
+              },
+              "FinalFee": {
+                "CurrencyCode": "AED",
+                "Amount": 31.37
+              },
+              "IncludedFeeDetailList": []
+            },
+            {
+              "FeeType": "FBAPickAndPackFee",
+              "FeeAmount": {
+                "CurrencyCode": "AED",
+                "Amount": 4.50
+              },
+              "TaxAmount": {
+                "CurrencyCode": "AED",
+                "Amount": 0.38
+              },
+              "FinalFee": {
+                "CurrencyCode": "AED",
+                "Amount": 4.88
+              },
+              "IncludedFeeDetailList": [
+                {
+                  "FeeType": "FBAPerUnitFulfillmentFee",
+                  "FeeAmount": {
+                    "CurrencyCode": "AED",
+                    "Amount": 3.20
+                  },
+                  "TaxAmount": {
+                    "CurrencyCode": "AED",
+                    "Amount": 0.27
+                  },
+                  "FinalFee": {
+                    "CurrencyCode": "AED",
+                    "Amount": 3.47
+                  }
+                },
+                {
+                  "FeeType": "FBAWeightHandlingFee",
+                  "FeeAmount": {
+                    "CurrencyCode": "AED",
+                    "Amount": 1.30
+                  },
+                  "TaxAmount": {
+                    "CurrencyCode": "AED",
+                    "Amount": 0.11
+                  },
+                  "FinalFee": {
+                    "CurrencyCode": "AED",
+                    "Amount": 1.41
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  }
+  
