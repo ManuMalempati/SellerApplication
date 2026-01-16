@@ -64,10 +64,8 @@ def get_all_product_costs(cursor, asin_list):
 
     return asin_to_cost, asin_to_ssku
 
-
-def get_asins_from_db_or_api(cursor, seller_sku_list):
-    """Get ASINs - check database first, call API only if needed"""
-    from .auth import spapi_request  # Import here to avoid circular import
+def get_asins_from_db(cursor, seller_sku_list):
+    """Get ASINs - check database"""
     
     sku_to_asin = {}
     
@@ -77,7 +75,7 @@ def get_asins_from_db_or_api(cursor, seller_sku_list):
     unique_skus = list(set(seller_sku_list))
     placeholders = ','.join('?' * len(unique_skus))
     
-    # Check database first
+    # Check database
     query = f"""
         SELECT sku, asin
         FROM ProductMapping

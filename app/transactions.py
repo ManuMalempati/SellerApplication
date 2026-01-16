@@ -1,32 +1,9 @@
 import json
-from .database import get_all_product_costs, get_asins_from_db_or_api
+from .database import get_all_product_costs, get_asins_from_db
 from .auth import spapi_request
 import os
-import time
-import math
 
 GOVT_VAT_RATE = float(os.getenv("GOVT_VAT_RATE"))
-
-def get_asins_batch(seller_sku_list):
-    """Get ASINs for multiple SKUs"""
-    sku_to_asin = {}
-    
-    for sku in seller_sku_list:
-        path = "/catalog/2022-04-01/items"
-        params = {
-            "identifiers": sku,
-            "identifiersType": "SKU",
-            "includedData": "identifiers"
-        }
-        
-        response = spapi_request(method="GET", path=path, params=params)
-        
-        if response.get("items") and len(response["items"]) > 0:
-            print(response["items"][0].get("asin"))
-            sku_to_asin[sku] = response["items"][0].get("asin")
-    
-    return sku_to_asin
-
 
 # Get all the shipment events through pagination
 def retrieve_shipment_list(method, path, params):
@@ -70,7 +47,6 @@ def retrieve_shipment_list(method, path, params):
   
    return all_data
 
-
 def get_transactions(params, db_cursor):
    
    method="GET"
@@ -82,7 +58,7 @@ def get_transactions(params, db_cursor):
    all_seller_skus = list(set([item["SellerSKU"] for order in shipmentEventList for item in (order.get("ShipmentItemList") or [])]))
    
    # get all ASINS
-   sku_to_asin = get_asins_from_db_or_api(db_cursor, all_seller_skus)
+   sku_to_asin = get_asins_from_db(db_cursor, all_seller_skus)
    all_asins = list(sku_to_asin.values())
 
    asin_to_cost, asin_to_ssku = get_all_product_costs(db_cursor, all_asins)
@@ -104,12 +80,13 @@ def get_transactions(params, db_cursor):
                if charge["ChargeType"] == "Principal":
                    item_price += charge["ChargeAmount"]["CurrencyAmount"]
 
-           transaction["ItemListingPrice"] = item_price
+           transaction["SOLD"] = item_price
 
 
            # Separate fees
            referral_fee = 0
            fba_fees = 0
+           shipping_fees = 0
            other_fees = 0
 
            fees = item.get("ItemFeeList") or []
@@ -124,18 +101,23 @@ def get_transactions(params, db_cursor):
                # Again, FBA fee names vary so we do this
                elif fee_type.startswith("FBA"):
                    fba_fees += amount
+               elif fee_type.startswith("ShippingChargeback"):
+                   shipping_fees += amount
                else:
                    other_fees += amount
           
            # Government VAT (fixed 5%)
            vat_amount = item_price * GOVT_VAT_RATE * -1
 
-
            # Store fees, remember all fees here are in negative values
-           transaction["ReferralFee"] = referral_fee
+           transaction["Fee"] = referral_fee
            transaction["FBAFees"] = fba_fees
-           transaction["GovernmentVAT"] = vat_amount
-           transaction["TotalAmazonFees"] = referral_fee + fba_fees + other_fees
+           transaction["ShippingChargeback"] = shipping_fees
+           transaction["VAT"] = vat_amount
+
+           # There are other types of fees, client has instructed to ignore for now
+           # transaction["TotalAmazonFees"] = referral_fee + fba_fees + shipping_fees + other_fees
+           transaction["TotalAmazonFees"] = referral_fee + fba_fees + shipping_fees
 
            # remember we got this from SKU using API call
            asin = transaction["ASIN"]
@@ -149,24 +131,24 @@ def get_transactions(params, db_cursor):
                except ValueError:
                    pass
 
-           # Product cost
-           transaction["ProductBuyingPrice"] = cost
+           # Cost of goods
+           transaction["COG"] = cost
            transaction["SSKU"] = asin_to_ssku.get(asin, "Not Available")
 
            # Profit formula
            # since fees are in negative already
            transaction["Net Profit"] = (
                item_price
-               + (referral_fee + fba_fees + vat_amount)
+               + (transaction["TotalAmazonFees"] + vat_amount)
            )
 
-           if(transaction["ProductBuyingPrice"] == None):
-               transaction["ProductBuyingPrice"] = "Not Available"
+           if(cost == None):
+               transaction["COG"] = "Not Available"
                transaction["Net Profit"] = "Not Available"
            else:
                # Make fee negative to show that it is money out
-               transaction["ProductBuyingPrice"] *= -1
-               transaction["Net Profit"] = round(transaction["Net Profit"] + transaction["ProductBuyingPrice"], 2)
+               transaction["COG"] *= -1
+               transaction["Net Profit"] = round(transaction["Net Profit"] + transaction["COG"], 2)
           
            transactions.append(transaction)
    return transactions
