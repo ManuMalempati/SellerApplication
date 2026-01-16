@@ -1,9 +1,14 @@
-from .main import connection
-from .database import get_product_cost
+from .database import connect_database
+import pandas as pd
 
-
+# Connect to SQL Server
+connection = connect_database()
 cursor = connection.cursor()
 
-SKU = 'BL.9BWWA.587'
 
-print( SKU + " cost: " + str(get_product_cost(cursor=cursor, seller_sku=SKU)))
+# 6. Commit and close
+connection.commit()
+cursor.close()
+connection.close()
+
+print("Import complete!")

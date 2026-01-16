@@ -11,7 +11,7 @@ connection = connect_database()
 
 @app.get("/financial-events")
 async def financial_events():
-    posted_after = (datetime.utcnow() - timedelta(days=1)).isoformat() + "Z"
+    posted_after = (datetime.utcnow() - timedelta(hours=5)).isoformat() + "Z"
 
     params={
         "PostedAfter": posted_after,

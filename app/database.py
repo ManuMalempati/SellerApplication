@@ -32,69 +32,60 @@ def strip_suffix(sku):
     
     return sku
 
-def get_product_cost_with_sku(cursor, seller_sku):
-    def parse_cost(cost_str):
-        try:
-            return float(cost_str.replace("$", "").replace(",", "").strip())
-        except:
-            return None
-
-    # 1. Try exact match
-    query = """
-        SELECT Cost
-        FROM InventoryReport
-        WHERE PartNumber = ?
-    """
-    cursor.execute(query, (seller_sku,))
-    row = cursor.fetchone()
-
-    if row:
-        return [parse_cost(row[0]), seller_sku]
-
-    # 2. Try stripped SKU
-    stripped = strip_suffix(seller_sku)
-    cursor.execute(query, (stripped,))
-    row = cursor.fetchone()
-
-    if row:
-        return [parse_cost(row[0]), stripped]
-
-    # 3. Nothing found
-    return [None, stripped]
-
-def get_all_product_costs(cursor, sku_list):
+def get_all_product_costs(cursor, asin_list):
     """Fetch all costs in one query"""
-    if not sku_list:
-        return {}, {}
+
+    asin_to_cost = {}
+    asin_to_ssku = {}
+
+    if not asin_list:
+        return asin_to_cost, asin_to_ssku
     
-    unique_skus = list(set(sku_list))
+    unique_asins = list(set(asin_list))
+    placeholders = ','.join('?' * len(unique_asins))
+    
+    # here we are retrieving the cost for every ASIN -> SSKU -> PartNumber that is needed
+    query = f"""
+        SELECT pm.asin, pm.ssku, ir.Cost
+        FROM ProductMapping pm
+        LEFT JOIN InventoryReport ir ON pm.ssku = ir.PartNumber
+        WHERE pm.asin IN ({placeholders})
+    """
+
+    cursor.execute(query, unique_asins)
+
+    for row in cursor.fetchall():
+        asin = row[0]
+        ssku = row[1]
+        cost = row[2]
+
+        asin_to_ssku[asin] = ssku
+        asin_to_cost[asin] = cost
+
+    return asin_to_cost, asin_to_ssku
+
+
+def get_asins_from_db_or_api(cursor, seller_sku_list):
+    """Get ASINs - check database first, call API only if needed"""
+    from .auth import spapi_request  # Import here to avoid circular import
+    
+    sku_to_asin = {}
+    
+    if not seller_sku_list:
+        return sku_to_asin
+    
+    unique_skus = list(set(seller_sku_list))
     placeholders = ','.join('?' * len(unique_skus))
     
+    # Check database first
     query = f"""
-        SELECT PartNumber, Cost
-        FROM InventoryReport
-        WHERE PartNumber IN ({placeholders})
+        SELECT sku, asin
+        FROM ProductMapping
+        WHERE sku IN ({placeholders})
     """
-    
     cursor.execute(query, unique_skus)
-    results = {}
+    
     for row in cursor.fetchall():
-        results[row[0]] = row[1]
+        sku_to_asin[row[0]] = row[1]
     
-    # Try stripped versions for missing SKUs
-    missing = [sku for sku in unique_skus if sku not in results]
-    stripped_map = {sku: strip_suffix(sku) for sku in missing}
-    stripped_unique = list(set(stripped_map.values()))
-    
-    if stripped_unique:
-        placeholders = ','.join('?' * len(stripped_unique))
-        query = f"""
-            SELECT PartNumber, Cost
-            FROM InventoryReport
-            WHERE PartNumber IN ({placeholders})
-        """
-        cursor.execute(query, stripped_unique)
-        for row in cursor.fetchall():
-            results[row[0]] = row[1]
-    
-    return results, stripped_map
+    return sku_to_asin
