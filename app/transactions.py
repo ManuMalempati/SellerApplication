@@ -7,7 +7,7 @@ from .database import (
 from .auth import spapi_request
 import os
 
-GOVT_VAT_RATE = float(os.getenv("GOVT_VAT_RATE"))
+GOVT_VAT_RATE = 1/float(os.getenv("GOVT_VAT_RATE_DIVISOR"))
 
 def retrieve_shipment_list(method, path, params):
     """
@@ -82,7 +82,7 @@ def calculate_fees(item):
     
     for fee in fees:
         fee_type = fee["FeeType"]
-        amount = fee["FeeAmount"]["CurrencyAmount"]
+        amount = abs(fee["FeeAmount"]["CurrencyAmount"])
         
         # In UAE Marketplace, it is named as Commission
         if fee_type in ("ReferralFee", "Commission"):
@@ -118,7 +118,7 @@ def calculate_customer_charges(item):
             item_price: Item listing price (Principal),
             shipping_charge: Shipping charge,
             total_charges: Sum of all ItemChargeList,
-            total_promotions: Sum of all PromotionList (negative),
+            total_promotions: Sum of all PromotionList,
             sales_proceed: Total charges - promotions
         }
     """
@@ -143,12 +143,11 @@ def calculate_customer_charges(item):
     # Calculate total promotions from PromotionList
     total_promotions = 0
     for promotion in item.get("PromotionList", []):
-        promotion_amount = promotion["PromotionAmount"]["CurrencyAmount"]
-        total_promotions += promotion_amount  # Already negative
+        promotion_amount = abs(promotion["PromotionAmount"]["CurrencyAmount"])
+        total_promotions += promotion_amount
     
-    # Sales Proceed = Total Charges + Promotions
-    # (Promotions are already negative, so we add them)
-    sales_proceed = total_charges + total_promotions
+    # Sales Proceed = Total Charges - Promotions
+    sales_proceed = total_charges - total_promotions
     
     return {
         "item_price": item_price,
@@ -158,18 +157,17 @@ def calculate_customer_charges(item):
         "sales_proceed": sales_proceed
     }
 
-def calculate_profit(currency_code, sales_proceed, fees_total, vat_amount, referral_vat, fba_vat, cost):
+def calculate_profit(currency_code, sales_proceed, fees_total, vat_amount, fees_vat, cost):
     """
     Calculate net profit
     
     Args:
         currency_code: AED or any other type of currency
         sales_proceed: Sales proceed after promotions
-        fees_total: Total fees (negative value)
-        vat_amount: VAT amount on item price (negative value)
-        referral_vat: VAT on referral fee (negative value)
-        fba_vat: VAT on FBA fees (negative value)
-        cost: Cost of goods (will be made negative)
+        fees_total: Total fees
+        vat_amount: VAT amount on item price
+        fees_vat: VAT on fees (can be claimed back)
+        cost: Cost of goods
     
     Returns:
         float or str: Net profit or "Not Available"
@@ -177,8 +175,8 @@ def calculate_profit(currency_code, sales_proceed, fees_total, vat_amount, refer
     if currency_code != "AED" or cost is None:
         return "Not Available"
     
-    # Fees, VATs are already negative, cost needs to be negative
-    net_profit = sales_proceed + fees_total + vat_amount + referral_vat + fba_vat + (-1 * cost)
+    # Net Profit = Sales Proceed - Total Fees - Item VAT + Fees VAT - COG
+    net_profit = sales_proceed - fees_total - vat_amount + fees_vat - cost
     return net_profit
 
 def get_transactions(params, db_cursor):
@@ -252,43 +250,45 @@ def get_transactions(params, db_cursor):
             
             # Item listing price and shipping
             # Item Price was asked to be named as SOLD
-            transaction["SOLD"] = round(charges["item_price"], 2)
-            transaction["ShippingCharge"] = round(charges["shipping_charge"], 2)
+            transaction["SOLD"] = charges["item_price"]
+            transaction["ShippingCharge"] = charges["shipping_charge"]
             
             # Promotions (negative value - shows discount given)
-            transaction["TotalPromotions"] = round(charges["total_promotions"], 2)
+            transaction["TotalPromotions"] = -charges["total_promotions"]
             
             # Sales Proceed (what customer actually paid after promotions)
-            transaction["SalesProceed"] = round(charges["sales_proceed"], 2)
+            transaction["SalesProceed"] = charges["sales_proceed"]
             
             # Calculate all fees
             fees = calculate_fees(item)
 
             # Referral Fee was asked to be named as Fee
-            transaction["Fee"] = round(fees["referral_fee"], 2)
-            transaction["FBAFees"] = round(fees["fba_fees"], 2)
-            transaction["ShippingChargeback"] = round(fees["shipping_charge_back_fees"], 2)
-            transaction["TotalAmazonFees"] = round(fees["total"], 2)
+            transaction["Fee"] = -fees["referral_fee"]
+            transaction["FBAFees"] = -fees["fba_fees"]
+            transaction["ShippingChargeback"] = -fees["shipping_charge_back_fees"]
+            transaction["TotalAmazonFees"] = -fees["total"]
             
             # Calculate government VAT (% of item price, negative)
-            vat_amount = charges["item_price"] * GOVT_VAT_RATE * -1
-            transaction["VAT"] = round(vat_amount, 2)
+            vat_amount = charges["item_price"] * GOVT_VAT_RATE
+            transaction["VAT"] = -vat_amount
             
-            # Calculate VAT on fees (fees are already negative, so multiply by positive VAT rate)
+            # Calculate VAT on fees (fees already include VAT, we extract the VAT component)
+            # VAT on fees (simple: fee / 21)
             referral_vat = fees["referral_fee"] * GOVT_VAT_RATE
             fba_vat = fees["fba_fees"] * GOVT_VAT_RATE
-            
-            transaction["R.VAT"] = round(referral_vat, 2)
-            transaction["FBAFeesVAT"] = round(fba_vat, 2)
+            fees_vat = referral_vat + fba_vat
 
-            # Referral Fee % Charged by Amazon (without VAT component)
-            # Fee% = (Referral Fee / Item Price) * 100
+            # Store VAT on referral fee separately if you want
+            transaction["R.VAT"] = referral_vat
+
+            # Referral Fee % without VAT
             if charges["item_price"] != 0:
-                transaction["Fee%"] = round((abs(fees["referral_fee"] - referral_vat) / charges["item_price"]) * 100, 2)
+                net_referral_fee = fees["referral_fee"] - referral_vat
+                transaction["Fee%"] = (net_referral_fee / charges["item_price"]) * 100
             else:
                 transaction["Fee%"] = 0
-            
-            # Get and parse cost
+
+                        # Get and parse cost
             cost = parse_cost(details.get("cost"))
             
             # Store cost of goods (make negative to show money out)
@@ -296,21 +296,20 @@ def get_transactions(params, db_cursor):
             if cost is None:
                 transaction["COG"] = "Not Available"
             else:
-                transaction["COG"] = round(-1 * cost, 2)
+                transaction["COG"] = -cost
             
             # Calculate net profit
-            # Net Profit = Sales Proceed + Amazon Fees + Item VAT + Referral VAT + FBA VAT - COG
+            # Net Profit = Sales Proceed - Amazon Fees - Item VAT + R.VAT - COG
             net_profit = calculate_profit(
                 currency_code = transaction["Currency"],
                 sales_proceed=charges["sales_proceed"],
                 fees_total=fees["total"],
                 vat_amount=vat_amount,
-                referral_vat=referral_vat,
-                fba_vat=fba_vat,
+                fees_vat=fees_vat,
                 cost=cost
             )
             
-            transaction["Net Profit"] = round(net_profit, 2) if net_profit != "Not Available" else "Not Available"
+            transaction["Net Profit"] = net_profit
             
             transactions.append(transaction)
     

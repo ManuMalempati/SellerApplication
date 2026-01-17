@@ -4,10 +4,13 @@ from .auth import spapi_request
 from .transactions import get_transactions
 from .database import connect_database
 from datetime import datetime, timedelta
+import os
 
 app = FastAPI()
 
 connection = connect_database()
+
+MARKETPLACE_ID = os.getenv("MARKETPLACE_ID")
 
 @app.get("/financial-events")
 async def financial_events(days: int = 2, hours: int = 0, minutes: int = 0):
@@ -18,7 +21,8 @@ async def financial_events(days: int = 2, hours: int = 0, minutes: int = 0):
 
     params={
         "PostedAfter": posted_after,
-        "MaxResultsPerPage": 100
+        "MaxResultsPerPage": 100,
+        "MarketplaceIds": MARKETPLACE_ID
     }
     
     cursor = connection.cursor()
@@ -34,6 +38,7 @@ async def financial_events(days: int = 2, hours: int = 0, minutes: int = 0):
 
     return filtered_data
 
+# @app.get("")
 
 @app.get("/raw-financial-events")
 async def raw_financial_events(days: int = 3, hours: int = 0, minutes: int = 0):
