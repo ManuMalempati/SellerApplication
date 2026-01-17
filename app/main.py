@@ -10,8 +10,11 @@ app = FastAPI()
 connection = connect_database()
 
 @app.get("/financial-events")
-async def financial_events():
-    posted_after = (datetime.utcnow() - timedelta(hours=5)).isoformat() + "Z"
+async def financial_events(days: int = 2, hours: int = 0, minutes: int = 0):
+
+    delta = timedelta(days=days, hours=hours, minutes=minutes)
+
+    posted_after = (datetime.utcnow() - delta).isoformat() + "Z"
 
     params={
         "PostedAfter": posted_after,
@@ -24,22 +27,70 @@ async def financial_events():
 
     cursor.close()
 
+    # result = {"Net Profit": 0}
+
+    # for transaction in filtered_data:
+    #     result["Net Profit"] += transaction["Net Profit"]
+
     return filtered_data
 
 
 @app.get("/raw-financial-events")
-async def raw_financial_events():
-    posted_after = (datetime.utcnow() - timedelta(hours=2)).isoformat() + "Z"
+async def raw_financial_events(days: int = 3, hours: int = 0, minutes: int = 0):
+    """
+    Get all raw financial events from Amazon API with pagination
+    
+    Args:
+        days: Number of days to look back (default: 3)
+        hours: Additional hours to look back (default: 0)
+        minutes: Additional minutes to look back (default: 0)
+    
+    Returns:
+        All raw API responses combined
+    """
+    delta = timedelta(days=days, hours=hours, minutes=minutes)
+    posted_after = (datetime.utcnow() - delta).isoformat() + "Z"
 
-    all_data = spapi_request(
+    all_data = []
+    
+    # Initial request
+    response = spapi_request(
         method="GET",
         path="/finances/v0/financialEvents",
         params={
             "PostedAfter": posted_after,
             "MaxResultsPerPage": 100
         })
-
-    return all_data
+    
+    # Check for errors
+    if "errors" in response:
+        return response
+    
+    all_data.append(response)
+    
+    # Paginate through remaining results
+    payload = response.get("payload")
+    next_token = payload.get("NextToken") if payload else None
+    
+    while next_token:
+        response = spapi_request(
+            method="GET",
+            path="/finances/v0/financialEvents",
+            params={"NextToken": next_token}
+        )
+        
+        if "errors" in response:
+            break
+        
+        all_data.append(response)
+        
+        payload = response.get("payload")
+        if not payload:
+            break
+            
+        next_token = payload.get("NextToken")
+    
+    return {"pages": all_data, "total_pages": len(all_data)}
 
 if __name__ == "__main__":
     import uvicorn

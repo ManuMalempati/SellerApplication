@@ -1,1 +1,2 @@
-SELECT * FROM ProductMapping
+SELECT * FROM InventoryReport
+WHERE PartNumber = 'SDSQXCD-512G-GN6MA'
