@@ -1,28 +1,162 @@
-The static sandbox lets us verify that our application can successfully 
-call the Selling Partner API using the full authentication flow. 
-This includes:
+This project is a backend system designed to calculate accurate, real‑time profit metrics 
+for Amazon sellers by integrating data from the Amazon Selling Partner API (SP‑API) with 
+internal inventory and cost data stored in BigRock’s MSSQL database. The system retrieves 
+financial events, fee estimates, and product information from Amazon, maps them to 
+supplier SKUs (SSKUs), applies VAT logic, and merges everything with local COG values to 
+produce reliable profit calculations. It also includes optimisations for token caching, 
+database batching, and fallback logic to handle unstable Tally sync cycles.
 
-- LWA tokens, which identify our application in Developer Central 
-  and authorize access on behalf of the seller
+Technology Stack:
+- Python FastAPI (backend)
+- React (frontend)
+- MSSQL Server DB (client provided BigRock/Plesk hosting)
 
-- SigV4 signing, which is required for every SP‑API request to ensure 
-  the request is secure and hasn’t been tampered with
+SP API Overview:
+This project relies heavily on the Amazon Selling Partner API (SP‑API), which is Amazon’s
+ official interface for retrieving seller data such as:
+- Financial events
+- Order information
+- Fee estimates
+- Inventory and catalog data
 
-- AWS credentials, which SigV4 uses to cryptographically sign each request 
-  through Amazon’s API Gateway. The AWS account is linked to the SP-API 
-  developer profile, so only the person with that IAM role and those AWS 
-  credentials will be able to call the endpoints. For static sandbox, this 
-  linking isn't available so any aws account will work by providing 
-  credentials.
+SP‑API is used here because it provides the only reliable, programmatic way to access the 
+seller’s real transaction history, Amazon fees, promotions, refunds, and settlement data. 
+These data points are essential for calculating accurate profit, especially when combined
+ with internal COG values stored in the client’s MSSQL database.
 
-- Per request signing, meaning every API call must be individually signed 
-  using SigV4 and our AWS keys
+Before accessing real seller data, Amazon requires applications to pass through a 
+strict authentication flow. The static sandbox lets us verify that our application can 
+successfully call the Selling Partner API using the full authentication flow. This 
+includes:
 
+- LWA tokens, which identify our application in Developer Central and authorize 
+access on behalf of the seller.
 
-While the static sandbox is useful for confirming that authentication and 
-request signing are working correctly, it contains very limited and 
-unrealistic financial data. Because of this, it isn’t suitable for building 
-or testing real application logic. To continue development, we generated 
-mock financial event data that accurately reflects real SP‑API responses, 
-allowing us to simulate real‑world behavior and build the profit‑calculation
- features of the application.
+- SigV4 signing, which is required for every SP‑API request to ensure the request is secure
+and hasn’t been tampered with.
+
+- AWS credentials, which SigV4 uses to cryptographically sign each request through 
+Amazon’s API Gateway. The AWS account is linked to the SP‑API developer profile, so only 
+the person with that IAM role and those AWS credentials will be able to call the endpoints. For static sandbox, this linking isn't available so any AWS account will work by providing credentials.
+
+- Per‑request signing, meaning every API call must be individually signed using SigV4 and 
+our AWS keys.
+
+While the static sandbox is useful for confirming that authentication and request 
+signing are working correctly, it contains very limited and unrealistic financial data. 
+Because of this, it isn’t suitable for building or testing real application logic. 
+To continue development, we generated mock financial event data that accurately reflects 
+real SP‑API responses, allowing us to simulate real‑world behavior and build the 
+profit calculation features of the application.
+
+Amazon has released an update that no longer requires SigV4 signing of the request using 
+AWS credentials. So once the production app client has been approved by Amazon with the 
+necessary SP‑API permissions, we have utilised just LWA tokens for authorising the request,
+which then calls the appropriate endpoint in the marketplace specified in the .env. All 
+the data being retrieved from the SP‑API is not guaranteed to be in the seller's base 
+currency code (AED), so we have ensured that each response from the internal backend 
+API endpoints includes the currency code. It is important to keep in mind that the 
+COG (Cost of Goods) values which are retrieved from the gcinventory database in 
+BigRock are always specified in AED. Therefore, the client must check for the 
+"Currency Code Different" value for the Net Profit key in such cases.
+
+An issue was encountered where the InventoryReport table on the MSSQL server database 
+had each product identified by PartNumber (SSKU), which was different to the SKU listed 
+in each transaction from SP‑API. It was explained that there are multiple SKUs for the 
+same SSKU (the same product having different SKUs) since Amazon doesn't allow duplicate 
+SKUs, and if a seller sends inventory with a different label or prep instruction, Amazon 
+may create multiple SKUs for the same underlying product. To overcome this, the client 
+provided an Excel sheet with ASIN → SKU → SSKU mapping, which was stored in a new table 
+named ProductMapping in the same gcinventory database using the Python pandas library to
+extract Excel data, and SQL INSERT commands were used to populate the new data.
+
+Another challenge was that the program had become extremely slow halfway through the
+project when the program started dealing with database reads and calling APIs 
+frequently. Two actions were taken to address this. Firstly, we realised that a new 
+access token was being generated for every API call. This was optimised by caching
+the access token and utilising the same token until it expired (every 3600 seconds) 
+to make API calls. Secondly, SELECT statements were run on every API call to retrieve 
+the cost and other mappings from the MSSQL database, causing a lot of delay. 
+This issue was solved by collecting all the SKUs that were needed for the request, 
+running one SELECT statement to capture all of the data associated with the SKUs 
+from the database, and storing it in a dictionary, utilising the RAM of the program. 
+These optimisations resulted in much faster loading times, however, they do come with 
+trade‑offs as RAM is being utilised to reduce latency, which will become more evident 
+when hosting the application.
+
+Government VAT Rate Logic
+
+The UAE government VAT rate is 5% (1/21 more accurately). However, SP‑API returns 
+VAT‑exclusive fees for some endpoints (such as getMyFeesEstimateForASIN) and returns 
+inclusive fees for others (listFinancialEvents). To calculate the VAT‑inclusive fee 
+(the real fee the seller pays), we used the following VAT divisor formula:
+
+VAT Multiplier = VAT Divisor / (VAT Divisor − 1)
+
+Where: VAT divisor = 21 (UAE)
+
+This logic was applied to convert VAT‑exclusive fees into VAT‑inclusive fees when 
+retrieving fees estimates from the getMyFeesEstimateForASIN endpoint. This ensures 
+that the profit calculation reflects the actual amount Amazon deducts from the seller.
+
+The VAT divisor is stored in .env as:
+GOVT_VAT_RATE_DIVISOR=21
+And the multiplier is computed dynamically so the system can support future 
+VAT changes without code modifications.
+The R.VAT in the transactions endpoint response consists of the VAT applied in ReferralFee
+and FBAFees which can be claimed from the government, so R.VAT has been marked positive
+in the response.
+
+Example response:
+{
+    "AmazonOrderId": "405-6183102-4013148",
+    "SKU": "SDSQUNR-128G-GN6MN-1",
+    "ASIN": "B07HHD7C7T",
+    "SSKU": "SDSQUNR-128G-GN6MN", # mapped SKU
+    "Brand": SanDisk,
+    "Category": SSD,
+    "Currency": "AED",
+    "SOLD": 48,
+    "ShippingCharge": 8,
+    "TotalPromotions": 0, # sometimes amazon removes shipping charge (prime free delivery, etc)
+    "SalesProceed": 56, # What the customer pays, SOLD + ShippingCharge + other
+    "Fee": -3.02, # VAT inclusive ReferralFee
+    "FBAFees": -9.45, # VAT inclusive
+    "ShippingChargeback": -8, # Seller is not paid the shipping since amazon does the shipping (fulfilled by amazon)
+    "TotalAmazonFees": -20.47, # Fee + FBAFees + ShippingChargeBack (there are other fees but client has instructed to remove them)
+    "VAT": -2.28571428571429, # Government VAT on SOLD price. 48/21
+    "R.VAT": 0.5938095238, # (3.02/21) + (9.45/21) Return VAT = refrral_vat + fba_vat
+    "Fee%": 5.99206349206349, # ((3.02 - (3.02/21))/48) * 100, (ReferralFee_no_VAT/SOLD * 100)
+    "COG": -25, # cost of goods
+    "Net Profit": 8.244285714
+  }
+
+Tally Sync & ProductMapping
+
+During development, we discovered that the Tally sync process on the BigRock MSSQL 
+server drops and recreates the InventoryReport table every time it runs. This destructive 
+refresh caused frequent issues such as missing rows, empty tables, locked tables, and 
+inconsistent COG values. Because the table is unstable during these refresh cycles, 
+profit calculations would occasionally fail or return incomplete data.
+
+To stabilise the system, we now use the ProductMapping table as the fallback identity 
+source. Since ProductMapping contains the ASIN → SKU → SSKU mapping and is not affected
+by Tally’s destructive updates, it provides a reliable way to resolve product identity 
+even when InventoryReport is temporarily unavailable.
+
+A 30‑minute refresh cycle was introduced to keep ProductMapping up to date. Every 30 
+minutes, the backend checks whether InventoryReport is in a valid state. If it is, any 
+new or updated SKU/ASIN/SSKU relationships are synced into ProductMapping. If the table 
+is mid‑refresh or empty, the system simply continues using ProductMapping without 
+interruption.
+
+Profit calculations now follow a stable lookup order:
+
+- ProductMapping → always used for SKU → SSKU resolution
+
+- InventoryReport → used for COG, Price, Cost, Brand Category only when stable
+
+- If unstable → All those fields are marked Not Available or Null
+
+This approach ensures the system remains reliable regardless of Tally’s refresh timing.
+

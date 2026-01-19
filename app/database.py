@@ -4,8 +4,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-REGION_CODES = os.getenv("REGION_CODES", "").split(",")
-
 def connect_database():
     """Establish connection to the SQL Server database"""
     try:

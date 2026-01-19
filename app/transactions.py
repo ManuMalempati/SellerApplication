@@ -7,6 +7,7 @@ from .database import (
 from .auth import spapi_request
 import os
 
+BASE_CURRENCY_CODE = os.getenv("BASE_CURRENCY_CODE")
 GOVT_VAT_RATE = 1/float(os.getenv("GOVT_VAT_RATE_DIVISOR"))
 
 def retrieve_shipment_list(method, path, params):
@@ -172,8 +173,11 @@ def calculate_profit(currency_code, sales_proceed, fees_total, vat_amount, fees_
     Returns:
         float or str: Net profit or "Not Available"
     """
-    if currency_code != "AED" or cost is None:
+    if cost is None:
         return "Not Available"
+    # No access to currency exchange API
+    elif currency_code != BASE_CURRENCY_CODE:
+        return "Currency Code Different"
     
     # Net Profit = Sales Proceed - Total Fees - Item VAT + Fees VAT - COG
     net_profit = sales_proceed - fees_total - vat_amount + fees_vat - cost
@@ -278,8 +282,8 @@ def get_transactions(params, db_cursor):
             fba_vat = fees["fba_fees"] * GOVT_VAT_RATE
             fees_vat = referral_vat + fba_vat
 
-            # Store VAT on referral fee separately if you want
-            transaction["R.VAT"] = referral_vat
+            # R.VAT = referra_vat + fba_vat
+            transaction["R.VAT"] = fees_vat
 
             # Referral Fee % without VAT
             if charges["item_price"] != 0:
