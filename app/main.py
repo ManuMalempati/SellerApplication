@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from .auth import spapi_request
 from .transactions import get_transactions
 from .database import connect_database
+from .estimates import get_fees_estimate
 from datetime import datetime, timedelta
 import os
 
@@ -11,6 +12,7 @@ app = FastAPI()
 connection = connect_database()
 
 MARKETPLACE_ID = os.getenv("MARKETPLACE_ID")
+BASE_CURRENCY_CODE = os.getenv("BASE_CURRENCY_CODE")
 
 @app.get("/financial-events")
 async def financial_events(days: int = 2, hours: int = 0, minutes: int = 0):
@@ -19,10 +21,10 @@ async def financial_events(days: int = 2, hours: int = 0, minutes: int = 0):
 
     posted_after = (datetime.utcnow() - delta).isoformat() + "Z"
 
+    # Add Query params
     params={
         "PostedAfter": posted_after,
         "MaxResultsPerPage": 100,
-        "MarketplaceIds": MARKETPLACE_ID
     }
     
     cursor = connection.cursor()
@@ -31,14 +33,16 @@ async def financial_events(days: int = 2, hours: int = 0, minutes: int = 0):
 
     cursor.close()
 
-    # result = {"Net Profit": 0}
-
-    # for transaction in filtered_data:
-    #     result["Net Profit"] += transaction["Net Profit"]
-
     return filtered_data
 
-# @app.get("")
+@app.get("/estimate-fees")
+async def estimated_fees():
+
+    asin = "B07P4HBRMV"
+
+    response = get_fees_estimate(asin=asin, price=138)
+
+    return response
 
 @app.get("/raw-financial-events")
 async def raw_financial_events(days: int = 3, hours: int = 0, minutes: int = 0):

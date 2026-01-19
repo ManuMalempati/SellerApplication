@@ -15,6 +15,7 @@ CLIENT_SECRET = os.getenv("LWA_CLIENT_SECRET")
 REFRESH_TOKEN = os.getenv("LWA_REFRESH_TOKEN")
 # This should come from .env
 SPAPI_ENDPOINT = os.getenv("SPAPI_ENDPOINT")
+MARKETPLACE_ID = os.getenv("MARKETPLACE_ID")
 
 
 # Implemented caching here, to make sure lwa access 
@@ -57,8 +58,7 @@ def get_lwa_access_token():
 
 
 
-
-def spapi_request(method, path, params=None):
+def spapi_request(method, path, params=None, body=None):
    """
    Makes a direct SP-API call using only the LWA access token.
    No AWS signing required.
@@ -73,9 +73,13 @@ def spapi_request(method, path, params=None):
        "Content-Type": "application/json",
    }
 
+   if(params == None):
+       params = {}
 
-   response = requests.request(method, url, headers=headers, params=params)
+   if(method.upper() == "GET"):
+       params.setdefault("MarketplaceIds", MARKETPLACE_ID)
 
+   response = requests.request(method, url, headers=headers, params=params, json=body)
 
    try:
        return response.json()
