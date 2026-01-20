@@ -1,1 +1,2 @@
 SELECT * FROM InventoryReport
+WHERE PartNumber = 'SDSQUNR-128G-GN6MN'

@@ -3,55 +3,111 @@ import os
 
 MARKETPLACE_ID = os.getenv("MARKETPLACE_ID")
 BASE_CURRENCY_CODE = os.getenv("BASE_CURRENCY_CODE")
-FEES_VAT_MULTIPLIER = float(os.getenv("GOVT_VAT_RATE_DIVISOR"))/(float(os.getenv("GOVT_VAT_RATE_DIVISOR")) -1 )
+FEES_VAT_MULTIPLIER = float(os.getenv("FEES_ESTIMATE_VAT_MULTIPLIER"))
 
-def get_fees_estimate(asin, price):
 
-    # Build the body of the request based on given ASIN and ListingPrice
-    body = {
-        "FeesEstimateRequest":{
+def _extract_fees(response):
+    """
+    Internal helper to extract fees from a valid SP-API response.
+    """
+    result_root = response.get("payload", {}).get("FeesEstimateResult", {})
+    if result_root.get("Status") != "Success":
+        return None
+
+    FeesEstimate = result_root["FeesEstimate"]
+
+    total = FeesEstimate["TotalFeesEstimate"]["Amount"]
+    currency = FeesEstimate["TotalFeesEstimate"]["CurrencyCode"]
+
+    referral = 0
+    fba = 0
+
+    for fee in FeesEstimate["FeeDetailList"]:
+        fee_type = fee["FeeType"]
+        amount = fee["FinalFee"]["Amount"]
+
+        if fee_type == "ReferralFee":
+            referral = amount
+        elif fee_type.startswith("FBA"):
+            fba += amount
+
+    # Apply VAT
+    total *= FEES_VAT_MULTIPLIER
+    referral *= FEES_VAT_MULTIPLIER
+    fba *= FEES_VAT_MULTIPLIER
+
+    return {
+        "CurrencyCode": currency,
+        "TotalAmazonFees": total,
+        "ReferralFees": referral,
+        "FBAFees": fba
+    }
+
+
+def get_fees_estimate(sku, asin, price):
+    """
+    Combined estimator:
+    1. Try SKU-based fee estimation (most accurate)
+    2. If SKU fails, fallback to ASIN-based estimation
+    """
+
+    # --- Attempt SKU-based estimation ---
+    sku_body = {
+        "FeesEstimateRequest": {
             "MarketplaceId": MARKETPLACE_ID,
-            "IdType": "ASIN", 
+            "IdType": "SKU",
+            "IdValue": sku,
+            "IsAmazonFulfilled": True,
+            "PriceToEstimateFees": {
+                "ListingPrice": {
+                    "CurrencyCode": BASE_CURRENCY_CODE,
+                    "Amount": price
+                }
+            },
+            "Identifier": f"{sku}-estimate"
+        }
+    }
+
+    sku_response = spapi_request(
+        method="POST",
+        path=f"/products/fees/v0/listings/{sku}/feesEstimate",
+        body=sku_body
+    )
+
+    sku_fees = _extract_fees(sku_response)
+
+    if sku_fees:
+        sku_fees["Source"] = "SKU"
+        return sku_fees
+
+    # --- Fallback to ASIN-based estimation ---
+    asin_body = {
+        "FeesEstimateRequest": {
+            "MarketplaceId": MARKETPLACE_ID,
+            "IdType": "ASIN",
             "IdValue": asin,
             "IsAmazonFulfilled": True,
-            "PriceToEstimateFees":{
+            "PriceToEstimateFees": {
                 "ListingPrice": {
-                "CurrencyCode": BASE_CURRENCY_CODE,
-                "Amount": price
+                    "CurrencyCode": BASE_CURRENCY_CODE,
+                    "Amount": price
                 }
             },
             "Identifier": f"{asin}-estimate"
         }
     }
 
-    # ASIN goes in as path parameter
-    response = spapi_request(method="POST", path=f"/products/fees/v0/items/{asin}/feesEstimate", body=body)
+    asin_response = spapi_request(
+        method="POST",
+        path=f"/products/fees/v0/items/{asin}/feesEstimate",
+        body=asin_body
+    )
 
-    result_root = response.get("payload", {}).get("FeesEstimateResult", {}) 
-    if result_root.get("Status") != "Success": 
-        return None
+    asin_fees = _extract_fees(asin_response)
 
-    ReferralFees = 0
-    FBAFees = 0
-    TotalAmazonFees = 0
+    if asin_fees:
+        asin_fees["Source"] = "ASIN"
+        return asin_fees
 
-    FeesEstimate = result_root["FeesEstimate"]
-    TotalAmazonFees = FeesEstimate["TotalFeesEstimate"]["Amount"]
-    CurrencyCode = FeesEstimate["TotalFeesEstimate"]["CurrencyCode"]
-    for fee in FeesEstimate["FeeDetailList"]:
-        fee_type = fee["FeeType"]
-        amount = fee["FinalFee"]["Amount"]
-        if(fee_type == "ReferralFee"):
-            ReferralFees = amount
-        elif (fee_type.startswith("FBA")):
-            FBAFees += amount
-        
-    # Add Tax since SP API result does not incl tax
-    TotalAmazonFees *= FEES_VAT_MULTIPLIER
-    ReferralFees *= FEES_VAT_MULTIPLIER
-    FBAFees *= FEES_VAT_MULTIPLIER
-
-    # This is a function for internal use, so no need to add negatives, return raw result
-    result = {"CurrencyCode": CurrencyCode, "TotalAmazonFees": TotalAmazonFees, "ReferralFees": ReferralFees, "FBAFees": FBAFees}
-
-    return result
+    # If both fail
+    return None

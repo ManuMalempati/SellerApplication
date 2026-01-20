@@ -15,7 +15,7 @@ MARKETPLACE_ID = os.getenv("MARKETPLACE_ID")
 BASE_CURRENCY_CODE = os.getenv("BASE_CURRENCY_CODE")
 
 @app.get("/financial-events")
-async def financial_events(days: int = 2, hours: int = 0, minutes: int = 0):
+async def financial_events(days: int = 0, hours: int = 3, minutes: int = 0):
 
     delta = timedelta(days=days, hours=hours, minutes=minutes)
 
@@ -38,14 +38,15 @@ async def financial_events(days: int = 2, hours: int = 0, minutes: int = 0):
 @app.get("/estimate-fees")
 async def estimated_fees():
 
-    asin = "B07P4HBRMV"
+    sku = "SDSQUNR-128G-GN6MN-1"
+    asin = "B07HHD7C7T"
 
-    response = get_fees_estimate(asin=asin, price=138)
+    response = get_fees_estimate(sku=sku, asin=asin, price=48)
 
     return response
 
 @app.get("/raw-financial-events")
-async def raw_financial_events(days: int = 3, hours: int = 0, minutes: int = 0):
+async def raw_financial_events(days: int = 0, hours: int = 10, minutes: int = 0):
     """
     Get all raw financial events from Amazon API with pagination
     
@@ -101,6 +102,28 @@ async def raw_financial_events(days: int = 3, hours: int = 0, minutes: int = 0):
     
     return {"pages": all_data, "total_pages": len(all_data)}
 
+@app.get("/orders")
+async def orders(days: int = 0, hours: int = 1, minutes: int = 0):
+    delta = timedelta(days=days, hours=hours, minutes=minutes)
+    last_updated_after = (datetime.utcnow() - delta).isoformat() + "Z"
+
+    params = {
+        "LastUpdatedAfter": last_updated_after,
+        "MaxResultsPerPage": 100
+    }
+
+    cursor = connection.cursor()
+
+    # Call async version directly (FastAPI handles it)
+    from .orders import get_orders
+    response = await get_orders(params=params, db_cursor=cursor)
+
+    cursor.close()
+
+    return response
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8000)
+
+from . import test

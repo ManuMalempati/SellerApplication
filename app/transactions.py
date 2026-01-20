@@ -276,23 +276,25 @@ def get_transactions(params, db_cursor):
             vat_amount = charges["item_price"] * GOVT_VAT_RATE
             transaction["VAT"] = -vat_amount
             
-            # Calculate VAT on fees (fees already include VAT, we extract the VAT component)
-            # VAT on fees (simple: fee / 21)
-            referral_vat = fees["referral_fee"] * GOVT_VAT_RATE
-            fba_vat = fees["fba_fees"] * GOVT_VAT_RATE
-            fees_vat = referral_vat + fba_vat
+            # Calculate VAT on fees - ONLY for Fee and FBAFees (NOT ShippingChargeback)
+            # R.VAT = (Fee + FBAFees) / 21
+            fees_with_vat = fees["referral_fee"] + fees["fba_fees"]
+            fees_vat = fees_with_vat / (1 / GOVT_VAT_RATE)
 
-            # R.VAT = referra_vat + fba_vat
+            # R.VAT (can be claimed back from government)
             transaction["R.VAT"] = fees_vat
 
             # Referral Fee % without VAT
+            # Extract VAT from referral fee only
+            referral_vat = fees["referral_fee"] / (1 / GOVT_VAT_RATE)
+            
             if charges["item_price"] != 0:
                 net_referral_fee = fees["referral_fee"] - referral_vat
                 transaction["Fee%"] = (net_referral_fee / charges["item_price"]) * 100
             else:
                 transaction["Fee%"] = 0
 
-                        # Get and parse cost
+            # Get and parse cost
             cost = parse_cost(details.get("cost"))
             
             # Store cost of goods (make negative to show money out)
