@@ -1,7 +1,9 @@
 # database.py
 import pyodbc
+from datetime import datetime, timedelta
 import os
 from dotenv import load_dotenv
+import json
 
 load_dotenv()
 
@@ -123,3 +125,46 @@ def parse_cost(cost_value):
         return float(cost_str)
     except (ValueError, AttributeError):
         return None
+
+
+def get_fee_estimate_from_cache(cursor, sku):
+    query = """
+        SELECT asin, last_price, fees_json, updated_at
+        FROM FeeEstimateCache
+        WHERE sku = ?
+    """
+    cursor.execute(query, (sku,))
+    row = cursor.fetchone()
+    if not row:
+        return None
+
+    asin, last_price, fees_json, updated_at = row
+    return {
+        "asin": asin,
+        "last_price": float(last_price),
+        "fees": json.loads(fees_json),
+        "updated_at": updated_at
+    }
+
+def upsert_fee_estimate_cache(cursor, sku, asin, price, fees_dict):
+    query = """
+        MERGE FeeEstimateCache AS target
+        USING (SELECT ? AS sku) AS source
+        ON (target.sku = source.sku)
+        WHEN MATCHED THEN
+            UPDATE SET asin = ?, last_price = ?, fees_json = ?, updated_at = ?
+        WHEN NOT MATCHED THEN
+            INSERT (sku, asin, last_price, fees_json, updated_at)
+            VALUES (?, ?, ?, ?, ?);
+    """
+    now = datetime.utcnow()
+    fees_json = json.dumps(fees_dict)
+
+    cursor.execute(
+        query,
+        (
+            sku,              # source.sku
+            asin, price, fees_json, now,   # UPDATE
+            sku, asin, price, fees_json, now  # INSERT
+        )
+    )
