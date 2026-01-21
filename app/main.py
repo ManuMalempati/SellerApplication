@@ -14,17 +14,45 @@ connection = connect_database()
 MARKETPLACE_ID = os.getenv("MARKETPLACE_ID")
 BASE_CURRENCY_CODE = os.getenv("BASE_CURRENCY_CODE")
 
-@app.get("/financial-events")
-async def financial_events(days: int = 0, hours: int = 3, minutes: int = 0):
+@app.get("/raw-transactions")
+def raw_transactions(
+    days: int = 0,
+    hours: int = 5,
+    minutes: int = 0
+):
+    """
+    Returns RAW Finances v2024-06-19 listTransactions response.
+    No processing, no parsing, no transformations.
+    """
+
+    from datetime import datetime, timedelta
+
+    delta = timedelta(days=days, hours=hours, minutes=minutes)
+    posted_after = (datetime.utcnow() - delta).isoformat() + "Z"
+
+    params = {
+        "postedAfter": posted_after,
+        "pageSize": 100
+    }
+
+    response = spapi_request(
+        method="GET",
+        path="/finances/2024-06-19/transactions",
+        params=params
+    )
+
+    return response
+
+@app.get("/transactions")
+async def transactions(days: int = 0, hours: int = 5, minutes: int = 0):
 
     delta = timedelta(days=days, hours=hours, minutes=minutes)
 
     posted_after = (datetime.utcnow() - delta).isoformat() + "Z"
 
-    # Add Query params
-    params={
-        "PostedAfter": posted_after,
-        "MaxResultsPerPage": 100,
+    # Finances v2024-06-19
+    params = {
+        "postedAfter": posted_after,
     }
     
     cursor = connection.cursor()
@@ -45,65 +73,8 @@ async def estimated_fees():
 
     return response
 
-@app.get("/raw-financial-events")
-async def raw_financial_events(days: int = 0, hours: int = 10, minutes: int = 0):
-    """
-    Get all raw financial events from Amazon API with pagination
-    
-    Args:
-        days: Number of days to look back (default: 3)
-        hours: Additional hours to look back (default: 0)
-        minutes: Additional minutes to look back (default: 0)
-    
-    Returns:
-        All raw API responses combined
-    """
-    delta = timedelta(days=days, hours=hours, minutes=minutes)
-    posted_after = (datetime.utcnow() - delta).isoformat() + "Z"
-
-    all_data = []
-    
-    # Initial request
-    response = spapi_request(
-        method="GET",
-        path="/finances/v0/financialEvents",
-        params={
-            "PostedAfter": posted_after,
-            "MaxResultsPerPage": 100
-        })
-    
-    # Check for errors
-    if "errors" in response:
-        return response
-    
-    all_data.append(response)
-    
-    # Paginate through remaining results
-    payload = response.get("payload")
-    next_token = payload.get("NextToken") if payload else None
-    
-    while next_token:
-        response = spapi_request(
-            method="GET",
-            path="/finances/v0/financialEvents",
-            params={"NextToken": next_token}
-        )
-        
-        if "errors" in response:
-            break
-        
-        all_data.append(response)
-        
-        payload = response.get("payload")
-        if not payload:
-            break
-            
-        next_token = payload.get("NextToken")
-    
-    return {"pages": all_data, "total_pages": len(all_data)}
-
 @app.get("/orders")
-async def orders(days: int = 0, hours: int = 1, minutes: int = 0):
+async def orders(days: int = 10, hours: int = 0, minutes: int = 0):
     delta = timedelta(days=days, hours=hours, minutes=minutes)
     last_updated_after = (datetime.utcnow() - delta).isoformat() + "Z"
 
@@ -121,6 +92,8 @@ async def orders(days: int = 0, hours: int = 1, minutes: int = 0):
     cursor.close()
 
     return response
+
+
 
 if __name__ == "__main__":
     import uvicorn

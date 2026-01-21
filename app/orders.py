@@ -1,3 +1,4 @@
+# orders.py
 import os
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -112,6 +113,34 @@ def get_single_order_items(order_id):
     return items
 
 
+def get_single_order_financial_events(order_id):
+    """
+    Get financial events for a single order to check for refunds
+    
+    Args:
+        order_id: Amazon Order ID
+    
+    Returns:
+        bool: True if order has refunds, False otherwise
+    """
+    financial_path = f"/finances/v0/orders/{order_id}/financialEvents"
+    financial_response = spapi_request(method="GET", path=financial_path, params={})
+    
+    if "errors" in financial_response:
+        return False
+    
+    payload = financial_response.get("payload")
+    if not payload:
+        return False
+    
+    financial_events = payload.get("FinancialEvents", {})
+    
+    # Check if RefundEventList exists and is not empty
+    refund_events = financial_events.get("RefundEventList", [])
+    
+    return len(refund_events) > 0
+
+
 async def get_order_items_batch_async(order_ids):
     """
     Get order items for multiple orders in parallel
@@ -142,6 +171,38 @@ async def get_order_items_batch_async(order_ids):
     }
     
     return order_items_map
+
+
+async def get_order_refund_status_batch_async(order_ids):
+    """
+    Get refund status for multiple orders in parallel
+    
+    Args:
+        order_ids: List of Amazon Order IDs
+    
+    Returns:
+        dict: Mapping of order_id -> bool (True if refunded, False otherwise)
+    """
+    loop = asyncio.get_event_loop()
+    
+    # Use ThreadPoolExecutor to run blocking I/O in parallel
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        # Create tasks for all orders
+        tasks = [
+            loop.run_in_executor(executor, get_single_order_financial_events, order_id)
+            for order_id in order_ids
+        ]
+        
+        # Wait for all tasks to complete
+        results = await asyncio.gather(*tasks)
+    
+    # Map results back to order_ids
+    refund_status_map = {
+        order_id: is_refunded 
+        for order_id, is_refunded in zip(order_ids, results)
+    }
+    
+    return refund_status_map
 
 
 def estimate_fees_for_item(sku, asin, price, cache):
@@ -220,9 +281,14 @@ async def get_orders_async(params, db_cursor):
     if not orders:
         return []
     
-    # Step 2: Get all order items in parallel
+    # Step 2: Get all order items and refund status in parallel
     order_ids = [order["AmazonOrderId"] for order in orders]
-    order_items_map = await get_order_items_batch_async(order_ids)
+    
+    # Run both tasks concurrently
+    order_items_map, refund_status_map = await asyncio.gather(
+        get_order_items_batch_async(order_ids),
+        get_order_refund_status_batch_async(order_ids)
+    )
     
     # Step 3: Extract all unique seller SKUs from all order items
     all_seller_skus = list(set([
@@ -255,6 +321,7 @@ async def get_orders_async(params, db_cursor):
     for order in orders:
         order_id = order["AmazonOrderId"]
         items = order_items_map.get(order_id, [])
+        is_refunded = refund_status_map.get(order_id, False)
         
         for item in items:
             # Skip items without SellerSKU
@@ -290,7 +357,8 @@ async def get_orders_async(params, db_cursor):
                     "item_price": item_price,
                     "sku": sku,
                     "asin": asin,
-                    "mapping": mapping
+                    "mapping": mapping,
+                    "is_refunded": is_refunded
                 })
     
     # Step 8: Estimate fees for all items in parallel
@@ -308,6 +376,7 @@ async def get_orders_async(params, db_cursor):
         sku = metadata["sku"]
         asin = metadata["asin"]
         mapping = metadata["mapping"]
+        is_refunded = metadata["is_refunded"]
         
         # Process each unit separately
         for i in range(quantity_ordered):
@@ -315,6 +384,7 @@ async def get_orders_async(params, db_cursor):
             
             # Basic identifiers
             transaction["AmazonOrderId"] = order_id
+            transaction["Refunded"] = "Yes" if is_refunded else "No"
             transaction["SKU"] = sku
             transaction["ASIN"] = asin
             transaction["SSKU"] = mapping.get("ssku", "Not Available")
@@ -393,7 +463,6 @@ async def get_orders_async(params, db_cursor):
             transactions.append(transaction)
     
     return transactions
-
 
 async def get_orders(params, db_cursor):
     return await get_orders_async(params, db_cursor)
