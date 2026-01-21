@@ -16,7 +16,7 @@ BASE_CURRENCY_CODE = os.getenv("BASE_CURRENCY_CODE")
 
 
 @app.get("/transactions")
-async def transactions(days: int = 0, hours: int = 5, minutes: int = 0):
+async def transactions(days: int = 1, hours: int = 0, minutes: int = 0):
 
     delta = timedelta(days=days, hours=hours, minutes=minutes)
 
@@ -35,18 +35,8 @@ async def transactions(days: int = 0, hours: int = 5, minutes: int = 0):
 
     return filtered_data
 
-@app.get("/estimate-fees")
-async def estimated_fees():
-
-    sku = "SDSQUNR-128G-GN6MN-1"
-    asin = "B07HHD7C7T"
-
-    response = get_fees_estimate(sku=sku, asin=asin, price=48)
-
-    return response
-
 @app.get("/orders")
-async def orders(days: int = 10, hours: int = 0, minutes: int = 0):
+async def orders(days: int = 1, hours: int = 0, minutes: int = 0):
     delta = timedelta(days=days, hours=hours, minutes=minutes)
     last_updated_after = (datetime.utcnow() - delta).isoformat() + "Z"
 
@@ -62,21 +52,6 @@ async def orders(days: int = 10, hours: int = 0, minutes: int = 0):
     response = await get_orders(params=params, db_cursor=cursor)
 
     cursor.close()
-
-    return response
-
-@app.get("/raw-order")
-async def raw_order(order_id: str = "407-4652432-8029148"):
-    """
-    Returns RAW Amazon Orders API response for a specific order.
-    No processing, no parsing, no transformations.
-    """
-
-    response = spapi_request(
-        method="GET",
-        path=f"/orders/v0/orders/{order_id}",
-        params={}
-    )
 
     return response
 
