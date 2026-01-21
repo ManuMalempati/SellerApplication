@@ -14,34 +14,6 @@ connection = connect_database()
 MARKETPLACE_ID = os.getenv("MARKETPLACE_ID")
 BASE_CURRENCY_CODE = os.getenv("BASE_CURRENCY_CODE")
 
-@app.get("/raw-transactions")
-def raw_transactions(
-    days: int = 0,
-    hours: int = 5,
-    minutes: int = 0
-):
-    """
-    Returns RAW Finances v2024-06-19 listTransactions response.
-    No processing, no parsing, no transformations.
-    """
-
-    from datetime import datetime, timedelta
-
-    delta = timedelta(days=days, hours=hours, minutes=minutes)
-    posted_after = (datetime.utcnow() - delta).isoformat() + "Z"
-
-    params = {
-        "postedAfter": posted_after,
-        "pageSize": 100
-    }
-
-    response = spapi_request(
-        method="GET",
-        path="/finances/2024-06-19/transactions",
-        params=params
-    )
-
-    return response
 
 @app.get("/transactions")
 async def transactions(days: int = 0, hours: int = 5, minutes: int = 0):
@@ -93,7 +65,20 @@ async def orders(days: int = 10, hours: int = 0, minutes: int = 0):
 
     return response
 
+@app.get("/raw-order")
+async def raw_order(order_id: str = "407-4652432-8029148"):
+    """
+    Returns RAW Amazon Orders API response for a specific order.
+    No processing, no parsing, no transformations.
+    """
 
+    response = spapi_request(
+        method="GET",
+        path=f"/orders/v0/orders/{order_id}",
+        params={}
+    )
+
+    return response
 
 if __name__ == "__main__":
     import uvicorn

@@ -112,6 +112,25 @@ def get_single_order_items(order_id):
     
     return items
 
+def has_refund(financial_events):
+    if not financial_events:
+        return False
+
+    # 1. RefundEventList
+    if financial_events.get("RefundEventList"):
+        return True
+
+    # 2. AdjustmentEventList with refund adjustments
+    for adj in financial_events.get("AdjustmentEventList", []):
+        if adj.get("AdjustmentType", "").lower() == "refund":
+            return True
+
+    # 3. ServiceFeeEventList with refund-related fees
+    for fee in financial_events.get("ServiceFeeEventList", []):
+        if "refund" in fee.get("FeeType", "").lower():
+            return True
+
+    return False
 
 def get_single_order_financial_events(order_id):
     """
@@ -135,10 +154,7 @@ def get_single_order_financial_events(order_id):
     
     financial_events = payload.get("FinancialEvents", {})
     
-    # Check if RefundEventList exists and is not empty
-    refund_events = financial_events.get("RefundEventList", [])
-    
-    return len(refund_events) > 0
+    return has_refund(financial_events=financial_events)
 
 
 async def get_order_items_batch_async(order_ids):
@@ -277,6 +293,7 @@ async def get_orders_async(params, db_cursor):
     
     # Step 1: Retrieve all orders from API
     orders = retrieve_orders_list(method, path, params)
+    # print(orders)
     
     if not orders:
         return []
@@ -463,6 +480,7 @@ async def get_orders_async(params, db_cursor):
             transactions.append(transaction)
     
     return transactions
+
 
 async def get_orders(params, db_cursor):
     return await get_orders_async(params, db_cursor)
