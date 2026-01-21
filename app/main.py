@@ -38,7 +38,7 @@ async def transactions(days: int = 1, hours: int = 0, minutes: int = 0):
     return filtered_data
 
 @app.get("/orders")
-async def orders(days: int = 10, hours: int = 0, minutes: int = 0):
+async def orders(days: int = 3, hours: int = 0, minutes: int = 0):
     delta = timedelta(days=days, hours=hours, minutes=minutes)
     last_updated_after = (datetime.utcnow() - delta).isoformat() + "Z"
 
