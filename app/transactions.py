@@ -6,6 +6,7 @@ from .database import (
 )
 from .auth import spapi_request
 import os
+import time
 
 BASE_CURRENCY_CODE = os.getenv("BASE_CURRENCY_CODE")
 GOVT_VAT_RATE = 1/float(os.getenv("GOVT_VAT_RATE_DIVISOR"))
@@ -214,6 +215,9 @@ def get_transactions(params, db_cursor):
     Returns:
         list: List of transaction dictionaries
     """
+
+    start = time.perf_counter()
+
     method = "GET"
     path = "/finances/2024-06-19/transactions"
     
@@ -359,5 +363,9 @@ def get_transactions(params, db_cursor):
             transaction["Net Profit"] = net_profit
             
             transactions.append(transaction)
+
+    end = time.perf_counter()
+    
+    print(f"Processing time: {end - start:.4f} seconds")
     
     return transactions

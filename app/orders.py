@@ -3,6 +3,7 @@ import os
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from .auth import spapi_request
+import time
 from .database import (
     get_product_mapping,
     get_product_details_by_asin,
@@ -483,4 +484,11 @@ async def get_orders_async(params, db_cursor):
 
 
 async def get_orders(params, db_cursor):
-    return await get_orders_async(params, db_cursor)
+    start = time.perf_counter()
+    
+    result = await get_orders_async(params, db_cursor)
+
+    end = time.perf_counter()
+    
+    print(f"Processing time: {end - start:.4f} seconds")
+    return result

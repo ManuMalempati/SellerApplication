@@ -5,6 +5,8 @@ from .transactions import get_transactions
 from .database import connect_database
 from .estimates import get_fees_estimate
 from datetime import datetime, timedelta
+from .orders import get_orders
+import time
 import os
 
 app = FastAPI()
@@ -47,8 +49,6 @@ async def orders(days: int = 1, hours: int = 0, minutes: int = 0):
 
     cursor = connection.cursor()
 
-    # Call async version directly (FastAPI handles it)
-    from .orders import get_orders
     response = await get_orders(params=params, db_cursor=cursor)
 
     cursor.close()
