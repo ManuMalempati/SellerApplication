@@ -92,8 +92,29 @@ def get_single_order_items(order_id):
 
 def get_order_data_combined(order_id):
     items = get_single_order_items(order_id)
-    is_refunded = False  # refunds disabled for performance
-    return items, is_refunded
+    
+    # Check for refunds using Finances API (order-specific endpoint)
+    refund_amount = 0
+    refund_path = f"/finances/v0/orders/{order_id}/financialEvents"
+    refund_response = spapi_request("GET", refund_path, params={})
+
+    if "payload" in refund_response:
+        financial_events = refund_response["payload"].get("FinancialEvents", {})
+        refund_events = financial_events.get("RefundEventList", [])
+        
+        for event in refund_events:
+            # ShipmentItemAdjustmentList contains refunds for specific items
+            for item_adj in event.get("ShipmentItemAdjustmentList", []):
+                # ItemChargeAdjustmentList contains the actual refund amounts
+                for charge in item_adj.get("ItemChargeAdjustmentList", []):
+                    # Principal is the main item price refund
+                    if charge.get("ChargeType") == "Principal":
+                        amount = charge.get("ChargeAmount", {}).get("CurrencyAmount", 0)
+                        # Amount is negative for refunds, we want the absolute value
+                        refund_amount += abs(amount) if amount else 0
+
+    is_refunded = refund_amount != 0
+    return items, is_refunded, refund_amount
 
 
 async def get_order_data_batch_async(order_ids):
@@ -108,12 +129,14 @@ async def get_order_data_batch_async(order_ids):
 
     order_items_map = {}
     refund_status_map = {}
+    refund_amount_map = {}
 
-    for order_id, (items, refunded) in zip(order_ids, results):
+    for order_id, (items, refunded, refund_amount) in zip(order_ids, results):
         order_items_map[order_id] = items
         refund_status_map[order_id] = refunded
+        refund_amount_map[order_id] = refund_amount
 
-    return order_items_map, refund_status_map
+    return order_items_map, refund_status_map, refund_amount_map
 
 
 # ---------------------------------------------------------
@@ -216,7 +239,7 @@ async def get_orders_async(params, db_cursor):
     t0 = time.perf_counter()
     print("Step 2: Fetching items + refund status...")
     order_ids = [o["AmazonOrderId"] for o in orders]
-    order_items_map, refund_status_map = await get_order_data_batch_async(order_ids)
+    order_items_map, refund_status_map, refund_amount_map = await get_order_data_batch_async(order_ids)
     step_times["Step 2"] = time.perf_counter() - t0
 
     # Step 3: Extract SKUs
@@ -266,6 +289,7 @@ async def get_orders_async(params, db_cursor):
         order_id = order["AmazonOrderId"]
         items = order_items_map.get(order_id, [])
         refunded = refund_status_map.get(order_id, False)
+        refund_amount = refund_amount_map.get(order_id, 0)
 
         for item in items:
             if "SellerSKU" not in item:
@@ -292,6 +316,7 @@ async def get_orders_async(params, db_cursor):
                     "asin": asin,
                     "mapping": mapping,
                     "refunded": refunded,
+                    "refund_amount": refund_amount,
                 })
 
     step_times["Step 7"] = time.perf_counter() - t0
@@ -331,6 +356,7 @@ async def get_orders_async(params, db_cursor):
         asin = meta["asin"]
         mapping = meta["mapping"]
         refunded = meta["refunded"]
+        refund_amount = meta["refund_amount"]
 
         fees = fees_by_key.get((sku, asin, price))
 
@@ -338,6 +364,7 @@ async def get_orders_async(params, db_cursor):
             t = {
                 "AmazonOrderId": order_id,
                 "Refunded": "Yes" if refunded else "No",
+                "RefundedAmount": refund_amount,
                 "SKU": sku,
                 "ASIN": asin,
                 "SSKU": mapping.get("ssku", "Not Available"),
@@ -385,6 +412,7 @@ async def get_orders_async(params, db_cursor):
                         - government_vat_amount
                         + amazon_vat_amount
                         - cost
+                        + refund_amount # Refund is usually negative
                     )
                     t["Est Net Profit"] = net_profit
                 else:
