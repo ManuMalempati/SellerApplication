@@ -38,7 +38,7 @@ async def transactions(days: int = 1, hours: int = 0, minutes: int = 0):
     return filtered_data
 
 @app.get("/orders")
-async def orders(days: int = 3, hours: int = 0, minutes: int = 0):
+async def orders(days: int = 0, hours: int = 10, minutes: int = 0):
     delta = timedelta(days=days, hours=hours, minutes=minutes)
     last_updated_after = (datetime.utcnow() - delta).isoformat() + "Z"
 
@@ -54,20 +54,6 @@ async def orders(days: int = 3, hours: int = 0, minutes: int = 0):
     cursor.close()
 
     return response
-
-
-
-@app.get("/financial-events/{order_id}")
-async def get_financial_events(order_id: str = "407-4652432-8029148"):
-    """
-    Retrieves raw financial events for a given Amazon Order ID.
-    Uses: GET /finances/v0/orders/{orderId}/financialEvents
-    """
-    path = f"/finances/v0/orders/{order_id}/financialEvents"
-    
-    financial_events = spapi_request("GET", path)
-    
-    return financial_events
 
 if __name__ == "__main__":
     import uvicorn

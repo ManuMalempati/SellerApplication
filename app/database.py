@@ -11,7 +11,6 @@ def connect_database():
     """Establish connection to the SQL Server database"""
     try:
         connection = pyodbc.connect(os.getenv("SQLSERVER_CONNECTION_STRING"))
-        print("Database Connection successful")
         return connection
     except pyodbc.Error as e:
         sqlstate = e.args[0]
