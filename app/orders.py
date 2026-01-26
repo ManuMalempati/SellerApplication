@@ -2,7 +2,7 @@ import os
 import time
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Any
 import threading
 import pyodbc
@@ -174,10 +174,17 @@ def estimate_fees_for_item(sku, asin, price, cache, counters):
     try:
         db_entry = get_fee_estimate_from_product_mapping(cursor, sku)
         if db_entry and db_entry.get("last_price") == price and db_entry.get("updated_at"):
-            if datetime.utcnow() - db_entry["updated_at"] <= timedelta(days=FEE_CACHE_TTL_DAYS):
+            updated_at = db_entry["updated_at"]
+
+            # Convert SQL naive datetime → UTC-aware
+            if updated_at.tzinfo is None:
+                updated_at = updated_at.replace(tzinfo=timezone.utc)
+
+            if datetime.now(timezone.utc) - updated_at <= timedelta(days=FEE_CACHE_TTL_DAYS):
                 counters["db_hits"] += 1
                 cache[cache_key] = db_entry.get("fees")
                 return db_entry.get("fees")
+
 
         def _fetch():
             fees_rate_limiter.acquire()

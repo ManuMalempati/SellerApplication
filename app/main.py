@@ -3,7 +3,7 @@ from .auth import spapi_request
 from .transactions import get_transactions
 from .database import connect_database
 from .estimates import get_fees_estimate
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from .orders import get_orders
 from .test import router as test_router
 import os
@@ -11,10 +11,18 @@ import os
 app = FastAPI()
 app.include_router(test_router)
 
+def format_dt_z(d: datetime) -> str:
+    """Return canonical UTC Z timestamp like 2026-01-26T05:48:16Z."""
+    if d is None:
+        return None
+    if d.tzinfo is None:
+        return d.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return d.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
 @app.get("/transactions")
 async def transactions(days: int = 1, hours: int = 0, minutes: int = 0):
     delta = timedelta(days=days, hours=hours, minutes=minutes)
-    posted_after = (datetime.utcnow() - delta).isoformat() + "Z"
+    posted_after = format_dt_z(datetime.now(timezone.utc) - delta)
     params = {"postedAfter": posted_after}
     
     conn = connect_database()
@@ -27,9 +35,9 @@ async def transactions(days: int = 1, hours: int = 0, minutes: int = 0):
     return filtered_data
 
 @app.get("/orders")
-async def orders(days: int = 0, hours: int = 5, minutes: int = 0):
+async def orders(days: int = 0, hours: int = 2, minutes: int = 0):
     delta = timedelta(days=days, hours=hours, minutes=minutes)
-    last_updated_after = (datetime.utcnow() - delta).isoformat() + "Z"
+    last_updated_after = format_dt_z(datetime.now(timezone.utc) - delta)
     params = {"LastUpdatedAfter": last_updated_after, "MaxResultsPerPage": 100}
 
     conn = connect_database()

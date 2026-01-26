@@ -1,6 +1,6 @@
 # database.py
 import pyodbc
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import os
 from dotenv import load_dotenv
 import json
@@ -188,7 +188,7 @@ def upsert_fee_estimate_to_product_mapping(cursor, sku: str, asin: str, price: f
     - We update ONLY last_price, fees_json, fee_updated_at.
     - We DO NOT overwrite asin/ssku mappings (your mapping is production-critical).
     """
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     fees_json = json.dumps(fees_dict)
 
     query = """

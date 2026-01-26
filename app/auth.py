@@ -3,7 +3,7 @@ import requests
 import os
 from urllib.parse import quote
 from dotenv import load_dotenv
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 load_dotenv()
 
@@ -19,7 +19,7 @@ _cached_token_expiry = None
 
 def get_lwa_access_token():
    global _cached_token, _cached_token_expiry
-   if(_cached_token and (datetime.utcnow() < _cached_token_expiry)):
+   if(_cached_token and (datetime.now(timezone.utc) < _cached_token_expiry)):
        return _cached_token
 
    response = requests.post(
@@ -36,7 +36,7 @@ def get_lwa_access_token():
        raise Exception(f"LWA token error: {data}")
    
    _cached_token = data["access_token"]
-   _cached_token_expiry = datetime.utcnow() + timedelta(seconds=data.get("expires_in", 3600) - 60)
+   _cached_token_expiry = datetime.now(timezone.utc) + timedelta(seconds=data.get("expires_in", 3600) - 60)
    return _cached_token
 
 def spapi_request(method, path, params=None, body=None):

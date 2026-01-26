@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from .auth import spapi_request
 import os
 import time
@@ -9,10 +9,18 @@ import requests
 
 router = APIRouter()
 
+def format_dt_z(d: datetime) -> str:
+    """Return canonical UTC Z timestamp like 2026-01-26T05:48:16Z."""
+    if d is None:
+        return None
+    if d.tzinfo is None:
+        return d.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return d.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
 @router.get("/raw-orders")
 async def orders(days: int = 0, hours: int = 10, minutes: int = 0):
     delta = timedelta(days=days, hours=hours, minutes=minutes)
-    last_updated_after = (datetime.utcnow() - delta).isoformat() + "Z"
+    last_updated_after = format_dt_z(datetime.now(timezone.utc) - delta)
 
     params = {
         "LastUpdatedAfter": last_updated_after,
@@ -24,7 +32,7 @@ async def orders(days: int = 0, hours: int = 10, minutes: int = 0):
 @router.get("/order")
 async def get_order():
     orderId = "403-1446819-7082744"
-    return spapi_request("GET", f"/orders/v0/orders/{orderId}/orderItems")
+    return spapi_request("GET", f"/orders/v0/orders/{orderId}")
 
 @router.get("/test-pricing")
 async def test_get_pricing(item_type: str = "Asin"):
@@ -95,13 +103,6 @@ def test_orders_report_3days_preview(max_rows: int = 20, poll_seconds: int = 5, 
       3) getReportDocument
       4) download + decompress (if gzip)
       5) return header + first N rows preview
-
-    Fix included:
-      Your spapi_request() wrapper sometimes returns createReport response as:
-        {"reportId": "..."}
-      instead of:
-        {"payload": {"reportId": "..."}}
-      So this endpoint now supports BOTH shapes.
     """
     marketplace_id = os.getenv("MARKETPLACE_ID")
     if not marketplace_id:
@@ -109,14 +110,14 @@ def test_orders_report_3days_preview(max_rows: int = 20, poll_seconds: int = 5, 
 
     report_type = "GET_FLAT_FILE_ALL_ORDERS_DATA_BY_LAST_UPDATE_GENERAL"
 
-    end_time = datetime.utcnow().replace(microsecond=0)
+    end_time = datetime.now(timezone.utc).replace(microsecond=0)
     start_time = (end_time - timedelta(days=3)).replace(microsecond=0)
 
     # 1) Create report
     create_body = {
         "reportType": report_type,
-        "dataStartTime": start_time.isoformat() + "Z",
-        "dataEndTime": end_time.isoformat() + "Z",
+        "dataStartTime": format_dt_z(start_time),
+        "dataEndTime": format_dt_z(end_time),
         "marketplaceIds": [marketplace_id],
     }
     create_resp = spapi_request("POST", "/reports/2021-06-30/reports", body=create_body)
@@ -125,8 +126,6 @@ def test_orders_report_3days_preview(max_rows: int = 20, poll_seconds: int = 5, 
         return {"stage": "createReport", "errors": create_resp.get("errors"), "body": create_body, "raw": create_resp}
 
     # Support BOTH response shapes:
-    # - {"payload": {"reportId": "..."}}
-    # - {"reportId": "..."}
     report_id = (create_resp.get("payload") or {}).get("reportId") or create_resp.get("reportId")
     if not report_id:
         return {"stage": "createReport", "error": "No reportId returned", "raw": create_resp}
@@ -141,9 +140,9 @@ def test_orders_report_3days_preview(max_rows: int = 20, poll_seconds: int = 5, 
         if "errors" in get_resp:
             return {"stage": "getReport", "reportId": report_id, "errors": get_resp.get("errors"), "raw": get_resp}
 
-        payload = get_resp.get("payload") or get_resp  # tolerate weird wrapper shapes
+        payload = get_resp.get("payload") or get_resp
         status = payload.get("processingStatus")
-        poll_history.append({"processingStatus": status, "time": datetime.utcnow().isoformat() + "Z"})
+        poll_history.append({"processingStatus": status, "time": format_dt_z(datetime.now(timezone.utc)) + "Z"})
 
         if status == "DONE":
             report_doc_id = payload.get("reportDocumentId")
@@ -173,7 +172,7 @@ def test_orders_report_3days_preview(max_rows: int = 20, poll_seconds: int = 5, 
             "raw": doc_resp,
         }
 
-    doc_payload = doc_resp.get("payload") or doc_resp  # tolerate weird wrapper shapes
+    doc_payload = doc_resp.get("payload") or doc_resp
     url = doc_payload.get("url")
     compression = (doc_payload.get("compressionAlgorithm") or "").upper() or None
 
@@ -210,7 +209,6 @@ def test_orders_report_3days_preview(max_rows: int = 20, poll_seconds: int = 5, 
             "note": "Report downloaded but contains no lines.",
         }
 
-    # Amazon flat-file order reports are typically TAB-delimited
     delimiter = "\t"
     reader = csv.reader(lines, delimiter=delimiter)
     header = next(reader, [])
