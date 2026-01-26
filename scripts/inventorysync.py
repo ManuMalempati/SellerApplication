@@ -1,18 +1,5 @@
 #!/usr/bin/env python3
-"""
-inventorysync.py
-
-Non-invasive inventory sync (safe for production InventoryReport).
-
-- Uses two separate DB connections:
-    * read_conn (dedicated) to SELECT from InventoryReport and stream rows
-    * write_conn (dedicated) to CREATE/TRUNCATE staging, INSERT batches and MERGE -> CurrentInventory
-- Intended to run every 25 minutes by scheduler.
-- Respects a backfill lock: if a backfill job is running, this script will wait a short period
-  and then skip the run to avoid interfering with long-running backfills.
-- Uses a lockfile to avoid overlapping runs.
-- Rotating logs.
-"""
+# (this is the file you provided as pasted15.txt, adjusted to include ItemName in staging/merge)
 from __future__ import annotations
 import re
 import time
@@ -79,6 +66,7 @@ except Exception:
         raise RuntimeError("Could not import connect_database from app.database or database.py. Run this script from repo root or adjust imports.")
 
 # SQL snippets
+# Note: staging now includes ItemName so we can MERGE Title/Name into CurrentInventory
 CREATE_STAGING_SQL = f"""
 IF OBJECT_ID(N'{STAGING_TABLE}', 'U') IS NULL
 BEGIN
@@ -87,6 +75,7 @@ BEGIN
         Cost           DECIMAL(18,4) NULL,
         Brand          NVARCHAR(120) NULL,
         Category       NVARCHAR(120) NULL,
+        ItemName       NVARCHAR(400) NULL,
         Quantity       INT NULL,
         IsFulfillable  BIT NULL,
         Source         NVARCHAR(64) NULL,
@@ -106,23 +95,26 @@ WHEN MATCHED THEN
         Cost = src.Cost,
         Brand = src.Brand,
         Category = src.Category,
+        ItemName = COALESCE(src.ItemName, target.ItemName),
         Quantity = src.Quantity,
         IsFulfillable = src.IsFulfillable,
         Source = src.Source,
         LastSeenAt = src.SnapshotAt
 WHEN NOT MATCHED BY TARGET THEN
-    INSERT (PartNumber, Cost, Brand, Category, Quantity, IsFulfillable, Source, LastSeenAt)
-    VALUES (src.PartNumber, src.Cost, src.Brand, src.Category, src.Quantity, src.IsFulfillable, src.Source, src.SnapshotAt)
+    INSERT (PartNumber, Cost, Brand, Category, ItemName, Quantity, IsFulfillable, Source, LastSeenAt)
+    VALUES (src.PartNumber, src.Cost, src.Brand, src.Category, src.ItemName, src.Quantity, src.IsFulfillable, src.Source, src.SnapshotAt)
 ;
 """
 
+# Select includes ItemName if present in source table (works if InventoryReport has that column)
 SELECT_SQL = f"""
 SELECT
     LTRIM(RTRIM(PartNumber)) AS PartNumber,
     Cost AS Cost,
     Brand AS Brand,
     Category AS Category,
-    TotalStock AS Quantity
+    TotalStock AS Quantity,
+    ItemName AS ItemName
 FROM {SRC_SCHEMA_TABLE}
 """
 
@@ -191,6 +183,7 @@ def build_insert_tuples(rows: Iterable[Tuple]) -> List[Tuple]:
     now = datetime.now(timezone.utc).replace(microsecond=0).replace(tzinfo=None)
     out = []
     for r in rows:
+        # SELECT_SQL returns: PartNumber, Cost, Brand, Category, Quantity, ItemName
         partnum = normalize_partnumber(r[0])
         if partnum is None:
             continue
@@ -198,16 +191,20 @@ def build_insert_tuples(rows: Iterable[Tuple]) -> List[Tuple]:
         brand = normalize_text(r[2])
         category = normalize_text(r[3])
         qty = normalize_quantity(r[4])
+        # ItemName is optional in source; index 5 per SELECT_SQL
+        item_name = normalize_text(r[5]) if len(r) > 5 else None
         is_ful = None
         source = "InventoryReport"
         snapshot_at = now
-        out.append((partnum, cost, brand, category, qty, is_ful, source, snapshot_at))
+        # Match CREATE_STAGING_SQL column order:
+        # PartNumber, Cost, Brand, Category, ItemName, Quantity, IsFulfillable, Source, SnapshotAt
+        out.append((partnum, cost, brand, category, item_name, qty, is_ful, source, snapshot_at))
     return out
 
 def insert_into_staging(write_cursor, tuples: List[Tuple]):
     insert_sql = f"""
-    INSERT INTO {STAGING_TABLE} (PartNumber, Cost, Brand, Category, Quantity, IsFulfillable, Source, SnapshotAt)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO {STAGING_TABLE} (PartNumber, Cost, Brand, Category, ItemName, Quantity, IsFulfillable, Source, SnapshotAt)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
     try:
         write_cursor.fast_executemany = True

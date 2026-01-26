@@ -1,4 +1,4 @@
-# database.py
+#!/usr/bin/env python3
 import pyodbc
 from datetime import datetime, timedelta, timezone
 import os
@@ -80,7 +80,14 @@ def get_product_mapping(cursor, seller_sku_list):
 
 def get_product_details_by_asin(cursor, asin_list):
     """
-    Get product details (cost, brand, category) for given ASINs
+    Get product details (cost, brand, category, item_name) for given ASINs.
+
+    Returns a dict mapping asin -> {
+        "cost": <raw cost from InventoryReport or None>,
+        "brand": <brand or None>,
+        "category": <category or None>,
+        "item_name": <ItemName from InventoryReport or None>
+    }
     """
     product_details = {}
 
@@ -95,7 +102,8 @@ def get_product_details_by_asin(cursor, asin_list):
             pm.asin,
             ir.Cost,
             ir.Brand,
-            ir.Category
+            ir.Category,
+            ir.ItemName
         FROM ProductMapping pm
         LEFT JOIN InventoryReport ir ON pm.ssku = ir.PartNumber
         WHERE pm.asin IN ({placeholders})
@@ -108,11 +116,13 @@ def get_product_details_by_asin(cursor, asin_list):
         cost = row[1]
         brand = row[2]
         category = row[3]
+        item_name = row[4]
 
         product_details[asin] = {
             "cost": cost,
             "brand": brand,
-            "category": category
+            "category": category,
+            "item_name": item_name,
         }
 
     return product_details

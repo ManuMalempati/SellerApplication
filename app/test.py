@@ -53,7 +53,7 @@ async def test_get_pricing(item_type: str = "Asin"):
 
 @router.get("/test-fees")
 async def test_get_fees():
-    asin = "B017RD0WHS"
+    asin = "B0CMCFGWK6"
     marketplace_id = os.getenv("MARKETPLACE_ID")
     currency_code = os.getenv("BASE_CURRENCY_CODE", "AED")
 

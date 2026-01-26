@@ -1,9 +1,11 @@
+#!/usr/bin/env python3
+# (updated orders.py with robust VAT / RVAT handling)
 import os
 import time
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 import threading
 import pyodbc
 
@@ -18,8 +20,15 @@ from .database import (
 )
 from .estimates import get_fees_estimate
 
-# ENV
-GOVT_VAT_RATE = 1 / float(os.getenv("GOVT_VAT_RATE_DIVISOR", "1")) if os.getenv("GOVT_VAT_RATE_DIVISOR") else 0.0
+# ENV and VAT config
+# Keep GOVT_VAT_RATE derived as 1 / GOVT_VAT_RATE_DIVISOR per your requirement (default 21)
+try:
+    GOVT_VAT_RATE_DIVISOR = float(os.getenv("GOVT_VAT_RATE_DIVISOR", "21"))
+    GOVT_VAT_RATE = 1.0 / GOVT_VAT_RATE_DIVISOR
+except Exception:
+    GOVT_VAT_RATE_DIVISOR = 21.0
+    GOVT_VAT_RATE = 1.0 / GOVT_VAT_RATE_DIVISOR
+
 BASE_CURRENCY_CODE = os.getenv("BASE_CURRENCY_CODE", "USD")
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", "10"))
 FEE_CACHE_TTL_DAYS = int(os.getenv("FEE_CACHE_TTL_DAYS", "7"))
@@ -28,6 +37,36 @@ MARKETPLACE_ID = os.getenv("MARKETPLACE_ID")
 
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 INITIAL_RETRY_DELAY = float(os.getenv("INITIAL_RETRY_DELAY", "5.0"))
+
+
+# small helpers for VAT/fee parsing
+def _safe_float(x: Any) -> Optional[float]:
+    try:
+        if x is None:
+            return None
+        return float(x)
+    except Exception:
+        return None
+
+
+def _vat_from_net(net_amount: Optional[float]) -> Optional[float]:
+    if net_amount is None:
+        return None
+    return net_amount * GOVT_VAT_RATE
+
+
+def _vat_from_gross(gross_amount: Optional[float]) -> Optional[float]:
+    if gross_amount is None:
+        return None
+    v = GOVT_VAT_RATE
+    return gross_amount * (v / (1.0 + v))
+
+
+def _pick_first_nonnull(*vals):
+    for v in vals:
+        if v is not None:
+            return v
+    return None
 
 
 class TokenBucketRateLimiter:
@@ -282,8 +321,44 @@ async def get_orders_async(params, db_cursor=None):
             except Exception:
                 qty = 1
 
-            p_raw = item.get("ItemPrice", {}).get("Amount") or item.get("ListPrice", {}).get("Amount")
-            unit_price = float(p_raw) if p_raw else fallback_prices.get(sku, 0.0)
+            # Determine unit price:
+            # Primary: if a SubTotal exists in the item payload treat that as the subtotal for the line
+            # and compute unit_price = subtotal / qty. Otherwise fall back to ItemPrice/ListPrice or fallback_prices.
+            subtotal_value = None
+
+            # common keys we might encounter
+            if isinstance(item.get("SubTotal"), dict):
+                subtotal_value = item.get("SubTotal", {}).get("Amount")
+            elif item.get("SubTotal") is not None:
+                # sometimes SubTotal is a raw numeric/string
+                subtotal_value = item.get("SubTotal")
+
+            # some variations: ItemPrice could be subtotal in your test data -> use it only when SubTotal not provided
+            if subtotal_value is None and isinstance(item.get("ItemPrice"), dict):
+                # If ItemPrice.Amount is present but qty>1 and business says it's subtotal, use it divided by qty.
+                subtotal_value = item.get("ItemPrice", {}).get("Amount")
+
+            unit_price = 0.0
+            subtotal = None
+            if subtotal_value is not None:
+                try:
+                    subtotal = float(subtotal_value)
+                    unit_price = subtotal / (qty if qty else 1)
+                except Exception:
+                    unit_price = fallback_prices.get(sku, 0.0)
+            else:
+                # fallback: try ListPrice or ItemPrice (per-unit)
+                per_unit = None
+                if isinstance(item.get("ListPrice"), dict):
+                    per_unit = item.get("ListPrice", {}).get("Amount")
+                elif isinstance(item.get("ItemPrice"), dict):
+                    per_unit = item.get("ItemPrice", {}).get("Amount")
+                try:
+                    unit_price = float(per_unit) if per_unit is not None else fallback_prices.get(sku, 0.0)
+                    subtotal = unit_price * qty if unit_price else None
+                except Exception:
+                    unit_price = fallback_prices.get(sku, 0.0)
+                    subtotal = unit_price * qty if unit_price else None
 
             if unit_price > 0:
                 items_to_est.append((sku, m["asin"], unit_price))
@@ -301,6 +376,7 @@ async def get_orders_async(params, db_cursor=None):
                     "asin": m["asin"],
                     "m": m,
                     "unit_price": unit_price,
+                    "subtotal": subtotal,
                 }
             )
 
@@ -317,8 +393,9 @@ async def get_orders_async(params, db_cursor=None):
         f = fees_by_key.get((meta["sku"], meta["asin"], meta["unit_price"]))
         d = details.get(meta["asin"], {})
 
-        # NOTE: keep SOLD as unit price (matches your current semantics).
-        # If you want SOLD_TOTAL, compute unit_price * quantity in dashboard/DB.
+        # Title should come from product/details (CurrentInventory), not from API
+        title = d.get("item_name") or d.get("title") or d.get("name") or (meta["m"].get("title") if meta.get("m") else None) or "Not Available"
+
         t = {
             "AmazonOrderId": meta["oid"],
             "OrderItemId": meta["order_item_id"],
@@ -330,38 +407,99 @@ async def get_orders_async(params, db_cursor=None):
             "ASIN": meta["asin"],
             "SSKU": meta["m"].get("ssku", "Not Available"),
             "Currency": meta["item"].get("ItemPrice", {}).get("CurrencyCode", BASE_CURRENCY_CODE),
+            # SOLD is per-unit price
             "SOLD": meta["unit_price"],
             "Brand": d.get("brand", "Not Available"),
             "Category": d.get("category", "Not Available"),
+            "Title": title,
         }
 
+        # Compute fees/VAT/RVAT robustly
         if f and isinstance(f, dict) and meta["unit_price"] > 0:
-            ref_w = f.get("ReferralFees", 0) * AMAZON_VAT_MULTIPLIER
-            fba_w = f.get("FBAFees", 0) * AMAZON_VAT_MULTIPLIER
+            # extract possible keys (try several common variants)
+            ref_ex = _safe_float(_pick_first_nonnull(f.get("ReferralFees"), f.get("ReferralFee"), f.get("ReferralFee.Amount"), f.get("ReferralFeesAmount")))
+            ref_inc = _safe_float(_pick_first_nonnull(f.get("ReferralFeesIncl"), f.get("ReferralFeesWithTax"), f.get("ReferralFeeInclusive"), f.get("ReferralFeesGross")))
+
+            fba_ex = _safe_float(_pick_first_nonnull(f.get("FBAFees"), f.get("FBAFee"), f.get("FBAFeesAmount")))
+            fba_inc = _safe_float(_pick_first_nonnull(f.get("FBAFeesIncl"), f.get("FBAFeesWithTax"), f.get("FBAFeeInclusive"), f.get("FBAFeesGross")))
+
+            # displayed (signed) amounts: prefer inclusive (gross) if available, else exclusive (net)
+            ref_display = None
+            if ref_inc is not None:
+                ref_display = -ref_inc * AMAZON_VAT_MULTIPLIER
+            elif ref_ex is not None:
+                ref_display = -ref_ex * AMAZON_VAT_MULTIPLIER
+
+            fba_display = None
+            if fba_inc is not None:
+                fba_display = -fba_inc * AMAZON_VAT_MULTIPLIER
+            elif fba_ex is not None:
+                fba_display = -fba_ex * AMAZON_VAT_MULTIPLIER
+
+            total_fee_display = None
+            if ref_display is not None or fba_display is not None:
+                total_fee_display = (ref_display or 0.0) + (fba_display or 0.0)
+
+            # fee percent - prefer referral exclusive amount for percentage calculation
+            fee_pct = None
+            ref_base_for_pct = _pick_first_nonnull(ref_ex, (abs(ref_display) if ref_display is not None else None))
+            if meta["unit_price"] and ref_base_for_pct:
+                try:
+                    fee_pct = float(ref_base_for_pct) / float(meta["unit_price"]) * 100.0
+                except Exception:
+                    fee_pct = None
+
+            # RVAT: compute VAT portion attributable to referral+FBA fees
+            parts = []
+            if ref_inc is not None and ref_ex is not None:
+                parts.append(ref_inc - ref_ex)
+            elif ref_inc is not None:
+                parts.append(_vat_from_gross(ref_inc))
+            elif ref_ex is not None:
+                parts.append(_vat_from_net(ref_ex))
+
+            if fba_inc is not None and fba_ex is not None:
+                parts.append(fba_inc - fba_ex)
+            elif fba_inc is not None:
+                parts.append(_vat_from_gross(fba_inc))
+            elif fba_ex is not None:
+                parts.append(_vat_from_net(fba_ex))
+
+            if parts:
+                rvat_value = sum([p for p in parts if p is not None])
+                rvat = -rvat_value
+            else:
+                rvat = None
+
+            # per-unit VAT on item price (always compute if unit_price present)
+            vat = None
+            if meta["unit_price"]:
+                vat = -_vat_from_net(meta["unit_price"])
+            else:
+                vat = None
 
             t.update(
                 {
-                    "Est Fee": -ref_w,
-                    "Est FBAFees": -fba_w,
-                    "Est TotalAmazonFees": -(ref_w + fba_w),
-                    "Est R. VAT": (ref_w + fba_w) - (f.get("ReferralFees", 0) + f.get("FBAFees", 0)),
-                    "Est Fee%": (f.get("ReferralFees", 0) / meta["unit_price"]) * 100,
+                    "Est Fee": ref_display if ref_display is not None else "Not Available",
+                    "Est FBAFees": fba_display if fba_display is not None else "Not Available",
+                    "Est TotalAmazonFees": total_fee_display if total_fee_display is not None else "Not Available",
+                    "Est R. VAT": rvat if rvat is not None else "Not Available",
+                    "Est Fee%": fee_pct if fee_pct is not None else "Not Available",
+                    "VAT": vat if vat is not None else "Not Available",
                 }
             )
-
-            # VAT is on item price (per unit) based on your GOVT_VAT_RATE
-            v = meta["unit_price"] * GOVT_VAT_RATE
-            t["VAT"] = -v
 
             c = parse_cost(d.get("cost"))
             t["COG"] = -c if c is not None else "Not Available"
 
             t["Est Net Profit"] = (
-                meta["unit_price"] - (ref_w + fba_w) - v + t["Est R. VAT"] - c
+                meta["unit_price"] - (abs(ref_display or 0) + abs(fba_display or 0)) - (-(vat or 0)) + (rvat if rvat is not None else 0) - c
                 if c is not None
                 else "Not Available"
             )
         else:
+            # No fees available — still compute VAT per unit if possible
+            vat = -_vat_from_net(meta["unit_price"]) if meta["unit_price"] else None
             t.update(
                 {
                     "Est Fee": "Not Available",
@@ -369,7 +507,7 @@ async def get_orders_async(params, db_cursor=None):
                     "Est TotalAmazonFees": "Not Available",
                     "Est R. VAT": "Not Available",
                     "Est Fee%": "Not Available",
-                    "VAT": -(meta["unit_price"] * GOVT_VAT_RATE),
+                    "VAT": vat if vat is not None else "Not Available",
                     "COG": -parse_cost(d.get("cost")) if d.get("cost") else "Not Available",
                     "Est Net Profit": "Not Available",
                 }
