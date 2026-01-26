@@ -7,128 +7,78 @@ Non-invasive inventory sync (safe for production InventoryReport).
 - Uses two separate DB connections:
     * read_conn (dedicated) to SELECT from InventoryReport and stream rows
     * write_conn (dedicated) to CREATE/TRUNCATE staging, INSERT batches and MERGE -> CurrentInventory
-- Assumes InventoryReport has: PartNumber, Cost, Brand, Category, TotalStock
-- Intended to live in gcinventory/scripts and be run by a scheduler.
-- Adds a lockfile and rotating logs so you can run it directly (no wrapper needed).
+- Intended to run every 25 minutes by scheduler.
+- Respects a backfill lock: if a backfill job is running, this script will wait a short period
+  and then skip the run to avoid interfering with long-running backfills.
+- Uses a lockfile to avoid overlapping runs.
+- Rotating logs.
 """
-
+from __future__ import annotations
 import re
 import time
 import sys
 import os
 from datetime import datetime, timezone
 from typing import Any, Iterable, List, Tuple
+from dotenv import load_dotenv
 
-# ensure project root is importable (gcinventory/)
+# derive repo root and ensure importability
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
-
-from dotenv import load_dotenv
 
 ENV_PATH = os.path.join(REPO_ROOT, ".env")
 if os.path.exists(ENV_PATH):
     load_dotenv(ENV_PATH)
 
-# import connect_database from your project
+# fail-fast required envs
+REQUIRED_ENVS = ["SQLSERVER_CONNECTION_STRING"]
+missing_envs = [k for k in REQUIRED_ENVS if not os.getenv(k)]
+if missing_envs:
+    raise RuntimeError("Missing required env vars: " + ", ".join(missing_envs))
+
+# Config (can be overridden via env)
+SRC_SCHEMA_TABLE = os.getenv("INVENTORY_REPORT_TABLE", "dbo.InventoryReport")  # e.g. dbo.InventoryReport
+STAGING_TABLE = os.getenv("INVENTORY_STAGING_TABLE", "spapi_app_user.InventoryStaging")
+TARGET_TABLE = os.getenv("INVENTORY_TARGET_TABLE", "spapi_app_user.CurrentInventory")
+BATCH_SIZE = int(os.getenv("INVENTORY_SYNC_BATCH_SIZE", "1000"))
+
+LOG_DIR = os.path.join(REPO_ROOT, "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+LOG_PATH = os.path.join(LOG_DIR, "inventorysync.log")
+
+LOCKFILE = os.path.join(REPO_ROOT, "inventorysync.lock")
+BACKFILL_LOCKFILE = os.path.join(REPO_ROOT, "backfill.lock")
+LOCK_TIMEOUT_SECONDS = int(os.getenv("INVENTORY_SYNC_LOCK_TIMEOUT_SECONDS", str(6 * 3600)))  # default 6 hours
+# How long inventory sync waits for a backfill to finish before skipping run
+WAIT_FOR_BACKFILL_SECONDS = int(os.getenv("INVENTORY_WAIT_FOR_BACKFILL_SECONDS", "120"))  # default 2 minutes
+
+_cost_re = re.compile(r"[^\d\.\-]")  # strip everything except digits, dot, minus
+
+# logging setup
+import logging
+from logging.handlers import RotatingFileHandler
+
+logger = logging.getLogger("inventorysync")
+logger.setLevel(logging.INFO)
+file_handler = RotatingFileHandler(LOG_PATH, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8")
+file_formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+file_handler.setFormatter(file_formatter)
+logger.addHandler(file_handler)
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(file_formatter)
+logger.addHandler(console_handler)
+
+# import DB connector from the project
 try:
     from app.database import connect_database  # type: ignore
 except Exception:
     try:
         from database import connect_database  # type: ignore
     except Exception:
-        raise RuntimeError("Could not import connect_database from app.database or database.py. Run this script from gcinventory/scripts or adjust imports.")
+        raise RuntimeError("Could not import connect_database from app.database or database.py. Run this script from repo root or adjust imports.")
 
-# Config
-SRC_SCHEMA_TABLE = os.getenv("INVENTORY_REPORT_TABLE", "dbo.InventoryReport")  # e.g. dbo.InventoryReport
-STAGING_TABLE = os.getenv("INVENTORY_STAGING_TABLE", "spapi_app_user.InventoryStaging")
-TARGET_TABLE = os.getenv("INVENTORY_TARGET_TABLE", "spapi_app_user.CurrentInventory")
-BATCH_SIZE = int(os.getenv("INVENTORY_SYNC_BATCH_SIZE", "1000"))
-
-# Lock + logging configuration
-LOG_DIR = os.path.join(REPO_ROOT, "logs")
-os.makedirs(LOG_DIR, exist_ok=True)
-LOG_PATH = os.path.join(LOG_DIR, "inventorysync.log")
-LOCKFILE = os.path.join(REPO_ROOT, "inventorysync.lock")
-LOCK_TIMEOUT_SECONDS = int(os.getenv("INVENTORY_SYNC_LOCK_TIMEOUT_SECONDS", str(6 * 3600)))  # default 6 hours
-
-_cost_re = re.compile(r"[^\d\.\-]")  # strip everything except digits, dot, minus
-
-# -------------------------
-# Logging setup (rotating)
-# -------------------------
-import logging
-from logging.handlers import RotatingFileHandler
-
-logger = logging.getLogger("inventorysync")
-logger.setLevel(logging.INFO)
-
-file_handler = RotatingFileHandler(LOG_PATH, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8")
-file_formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
-file_handler.setFormatter(file_formatter)
-logger.addHandler(file_handler)
-
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(file_formatter)
-logger.addHandler(console_handler)
-
-
-# -------------------------
-# Normalizers / helpers
-# -------------------------
-def normalize_partnumber(val: Any) -> str:
-    if val is None:
-        return None
-    s = str(val).strip()
-    return s if s != "" else None
-
-
-def normalize_cost(val: Any):
-    if val is None:
-        return None
-    if isinstance(val, (int, float)):
-        return float(val)
-    s = str(val).strip()
-    if not s or s.lower() in ("not available", "na", "n/a"):
-        return None
-    cleaned = _cost_re.sub("", s)
-    if cleaned == "" or cleaned == ".":
-        return None
-    try:
-        return float(cleaned)
-    except Exception:
-        return None
-
-
-def normalize_text(val: Any) -> Any:
-    if val is None:
-        return None
-    s = str(val).strip()
-    if s == "":
-        return None
-    if s.lower() in ("not available", "na", "n/a"):
-        return None
-    return s
-
-
-def normalize_quantity(val: Any):
-    if val is None:
-        return None
-    try:
-        return int(val)
-    except Exception:
-        s = str(val).strip()
-        if s == "":
-            return None
-        try:
-            return int(float(s))
-        except Exception:
-            return None
-
-
-# -------------------------
 # SQL snippets
-# -------------------------
 CREATE_STAGING_SQL = f"""
 IF OBJECT_ID(N'{STAGING_TABLE}', 'U') IS NULL
 BEGIN
@@ -176,15 +126,55 @@ SELECT
 FROM {SRC_SCHEMA_TABLE}
 """
 
+# helpers
+def normalize_partnumber(val: Any) -> str:
+    if val is None:
+        return None
+    s = str(val).strip()
+    return s if s != "" else None
 
-# -------------------------
+def normalize_cost(val: Any):
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return float(val)
+    s = str(val).strip()
+    if not s or s.lower() in ("not available", "na", "n/a"):
+        return None
+    cleaned = _cost_re.sub("", s)
+    if cleaned == "" or cleaned == ".":
+        return None
+    try:
+        return float(cleaned)
+    except Exception:
+        return None
+
+def normalize_text(val: Any) -> Any:
+    if val is None:
+        return None
+    s = str(val).strip()
+    if s == "":
+        return None
+    if s.lower() in ("not available", "na", "n/a"):
+        return None
+    return s
+
+def normalize_quantity(val: Any):
+    if val is None:
+        return None
+    try:
+        return int(val)
+    except Exception:
+        s = str(val).strip()
+        if s == "":
+            return None
+        try:
+            return int(float(s))
+        except Exception:
+            return None
+
 # DB streaming / insertion
-# -------------------------
 def stream_inventory_rows(read_cursor, select_sql: str, batch_size: int = 1000) -> Iterable[Tuple]:
-    """
-    Execute the SELECT against the source (read-only) and yield rows in batches.
-    Uses a dedicated read_cursor so it doesn't interfere with write operations.
-    """
     try:
         read_cursor.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED")
     except Exception:
@@ -197,9 +187,7 @@ def stream_inventory_rows(read_cursor, select_sql: str, batch_size: int = 1000) 
         for r in rows:
             yield r
 
-
 def build_insert_tuples(rows: Iterable[Tuple]) -> List[Tuple]:
-    # use naive UTC for DB (SQL drivers typically expect naive datetimes)
     now = datetime.now(timezone.utc).replace(microsecond=0).replace(tzinfo=None)
     out = []
     for r in rows:
@@ -216,7 +204,6 @@ def build_insert_tuples(rows: Iterable[Tuple]) -> List[Tuple]:
         out.append((partnum, cost, brand, category, qty, is_ful, source, snapshot_at))
     return out
 
-
 def insert_into_staging(write_cursor, tuples: List[Tuple]):
     insert_sql = f"""
     INSERT INTO {STAGING_TABLE} (PartNumber, Cost, Brand, Category, Quantity, IsFulfillable, Source, SnapshotAt)
@@ -228,38 +215,41 @@ def insert_into_staging(write_cursor, tuples: List[Tuple]):
         pass
     write_cursor.executemany(insert_sql, tuples)
 
-
-# -------------------------
 # Lockfile helpers
-# -------------------------
-def acquire_lock() -> bool:
-    """Create lockfile atomically. If present and not stale, return False."""
+def _acquire_lockfile(path: str, timeout_seconds: int = None) -> bool:
+    """
+    Create a lockfile atomically. Return True if acquired, False if exists.
+    If timeout_seconds is provided and lock exists but is older than timeout, remove it and retry.
+    """
     try:
         flags = os.O_CREAT | os.O_EXCL | os.O_RDWR
-        fd = os.open(LOCKFILE, flags)
+        fd = os.open(path, flags)
         with os.fdopen(fd, "w") as fh:
             fh.write(f"{os.getpid()}\n{time.time()}\n")
-        logger.info("Acquired lock: %s", LOCKFILE)
+        logger.info("Acquired lockfile: %s", path)
         return True
     except FileExistsError:
-        try:
-            st = os.stat(LOCKFILE)
-            age = time.time() - st.st_mtime
-            if age > LOCK_TIMEOUT_SECONDS:
-                logger.warning("Lockfile is stale (age %.0f s). Removing and acquiring.", age)
-                try:
-                    os.remove(LOCKFILE)
-                except Exception:
-                    logger.exception("Failed to remove stale lockfile")
-                    return False
-                return acquire_lock()
-            else:
-                logger.info("Lockfile exists and is recent (age %.0f s). Exiting to avoid overlap.", age)
-                return False
-        except Exception:
-            logger.exception("Error inspecting lockfile; refusing to run")
-            return False
+        if timeout_seconds:
+            try:
+                st = os.stat(path)
+                age = time.time() - st.st_mtime
+                if age > timeout_seconds:
+                    logger.warning("Lockfile %s stale (age %.0f s). Removing.", path, age)
+                    try:
+                        os.remove(path)
+                    except Exception:
+                        logger.exception("Failed to remove stale lockfile %s", path)
+                        return False
+                    return _acquire_lockfile(path, timeout_seconds)
+            except Exception:
+                logger.exception("Error inspecting lockfile %s", path)
+        return False
+    except Exception:
+        logger.exception("Error creating lockfile %s", path)
+        return False
 
+def acquire_lock() -> bool:
+    return _acquire_lockfile(LOCKFILE, LOCK_TIMEOUT_SECONDS)
 
 def release_lock():
     try:
@@ -269,24 +259,40 @@ def release_lock():
     except Exception:
         logger.exception("Failed to remove lockfile on exit")
 
+# Wait for backfill lock presence: inventory sync will wait a short time before giving up
+def wait_for_backfill_clear(max_wait: int) -> bool:
+    """
+    If backfill lock exists, wait until it's gone or until max_wait seconds elapse.
+    Returns True if clear (no backfill lock), False if still present after timeout.
+    """
+    if not os.path.exists(BACKFILL_LOCKFILE):
+        return True
+    logger.info("Backfill lock present (%s). Waiting up to %d seconds for it to clear...", BACKFILL_LOCKFILE, max_wait)
+    start = time.time()
+    while time.time() - start < max_wait:
+        if not os.path.exists(BACKFILL_LOCKFILE):
+            logger.info("Backfill lock cleared; proceeding.")
+            return True
+        time.sleep(5)
+    logger.warning("Backfill lock still present after %d seconds; skipping inventory run to avoid interference.", max_wait)
+    return False
 
-# -------------------------
 # Main sync flow
-# -------------------------
 def run_sync():
-    # open two separate connections so read resultset doesn't block writes
+    # If a backfill is running, wait briefly then skip if still running
+    if not wait_for_backfill_clear(WAIT_FOR_BACKFILL_SECONDS):
+        return 0
+
     read_conn = connect_database()
     write_conn = connect_database()
     if read_conn is None or write_conn is None:
         raise RuntimeError("Database connection(s) failed")
-    # control transactions separately on write_conn; read_conn left default
     write_conn.autocommit = False
 
     read_cursor = read_conn.cursor()
     write_cursor = write_conn.cursor()
 
     try:
-        # ensure staging exists (DDL only on staging/target; NO changes to source)
         logger.info("Ensuring staging table exists (if missing)...")
         write_cursor.execute(CREATE_STAGING_SQL)
         write_conn.commit()
@@ -322,7 +328,6 @@ def run_sync():
         write_conn.commit()
         logger.info("Inserted total %d rows into staging across %d batches.", inserted_rows, batch_inserts)
 
-        # MERGE into target using write_conn
         logger.info("Running MERGE into CurrentInventory...")
         start = time.time()
         write_cursor.execute(MERGE_SQL)
@@ -334,14 +339,13 @@ def run_sync():
         elapsed = time.time() - start
         logger.info("MERGE completed in %.2fs. @@ROWCOUNT (approx): %s", elapsed, affected)
 
-        # cleanup staging
         logger.info("Truncating staging table (cleanup)...")
         write_cursor.execute(TRUNCATE_STAGING_SQL)
         write_conn.commit()
 
         logger.info("Inventory sync finished successfully.")
+        return inserted_rows
     except Exception as e:
-        # rollback writes only
         try:
             write_conn.rollback()
         except Exception:
@@ -360,24 +364,23 @@ def run_sync():
         except Exception:
             pass
 
-
 def main():
     logger.info("Starting inventory sync: %s", datetime.now(timezone.utc).isoformat() + "Z")
     if not acquire_lock():
-        logger.info("Another instance is running or lock could not be acquired; exiting.")
+        logger.info("Another instance is running; exiting.")
         return 0
     try:
-        run_sync()
-        return 0
+        result = run_sync()
+        return result
     finally:
         release_lock()
         logger.info("Done: %s", datetime.now(timezone.utc).isoformat() + "Z")
 
-
 if __name__ == "__main__":
     try:
-        exit_code = main() or 0
-        sys.exit(exit_code)
+        main()
+        # explicit successful exit code for Task Scheduler
+        sys.exit(0)
     except Exception:
         logger.exception("Fatal error in inventorysync")
-        raise
+        sys.exit(1)

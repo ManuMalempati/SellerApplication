@@ -1,28 +1,13 @@
 #!/usr/bin/env python3
-r"""
+"""
 backfill_orders.py
 
-Backfill order items for a historical period using SP-API Reports (fast).
+One-off backfill for Orders over a historical period using SP-API Reports.
 
-- Creates time-windowed reports (by default 7-day chunks) for the Orders "by last update" flat-file
-  and downloads/parses each report rather than issuing N per-order API calls.
-- Performs enrichment locally:
-  * resolves SKU -> ASIN/SSKU mapping from ProductMapping
-  * looks up product details by ASIN (cost/brand/category)
-  * fetches fallback listing prices (batched) where needed
-  * estimates fees for unique (sku,asin,price) using existing fee-estimate & cache logic
-- Upserts results into spapi_app_user.OrderItems using a temp-table + MERGE (bulk), with fallback to per-row upsert.
-- Includes verbose debug/logging and an easy "small test" mode.
-
-Usage (examples)
- - Dry run / small test for 1 day:
-     python scripts/backfill_orders.py --start 2025-12-01 --end 2025-12-02 --chunk-days 1 --test-rows 200
- - Full 1-year backfill (default behavior will backfill 365 days ending today if no args passed):
-     python scripts/backfill_orders.py
-
-Notes
- - Requires the same environment (.env) and DB config as the rest of the app.
- - Tested to be non-destructive: upserts are idempotent.
+- Designed to be launched once from Task Scheduler and run until completion (can continue if you log off).
+- Acquires a global backfill lock so inventorysync knows to pause/skips runs while backfill is active.
+- If inventorysync is running when backfill starts, backfill will wait for it to finish (up to a timeout) to avoid table contention.
+- Respects SP-API report/document rate limits via retry/backoff wrappers.
 """
 from __future__ import annotations
 import argparse
@@ -32,24 +17,29 @@ import time
 import datetime as dt
 import csv
 import gzip
-import io
 import logging
 import requests
-from typing import List, Dict, Tuple, Any, Optional
+import re
+from typing import List, Dict, Tuple, Any, Optional, Callable
 from dotenv import load_dotenv
 
-# ensure repo root on sys.path (assumes this script lives in gcinventory/scripts)
+# repo root
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-# load environment
 ENV_PATH = os.path.join(REPO_ROOT, ".env")
 if os.path.exists(ENV_PATH):
     load_dotenv(ENV_PATH)
 
-# app imports (reuse logic where possible)
-from app.auth import spapi_request  # SP-API helper
+# Required envs
+REQUIRED_ENVS = ["LWA_TOKEN_URL", "LWA_CLIENT_ID", "LWA_CLIENT_SECRET", "LWA_REFRESH_TOKEN", "SPAPI_ENDPOINT", "MARKETPLACE_ID", "SQLSERVER_CONNECTION_STRING"]
+missing_envs = [k for k in REQUIRED_ENVS if not os.getenv(k)]
+if missing_envs:
+    raise RuntimeError("Missing required env vars: " + ", ".join(missing_envs))
+
+# imports from app
+from app.auth import spapi_request
 from app.database import (
     connect_database,
     get_product_mapping,
@@ -59,8 +49,9 @@ from app.database import (
     get_fee_estimate_from_product_mapping,
 )
 from app.estimates import get_fees_estimate
-from app.orders import get_listing_prices_batch  # reuse pricing batch function
+from app.orders import get_listing_prices_batch
 import json
+import pyodbc
 
 # Logging
 LOG_DIR = os.path.join(REPO_ROOT, "logs")
@@ -81,10 +72,26 @@ REPORT_API_PREFIX = "/reports/2021-06-30"
 DEFAULT_CHUNK_DAYS = int(os.getenv("BACKFILL_CHUNK_DAYS", "7"))
 FEE_CACHE_TTL_DAYS = int(os.getenv("FEE_CACHE_TTL_DAYS", "7"))
 MAX_REPORT_POLL_SECONDS = int(os.getenv("REPORT_POLL_MAX_SECONDS", "600"))
-REPORT_POLL_INTERVAL = float(os.getenv("REPORT_POLL_INTERVAL", "5"))  # seconds between polls
+REPORT_POLL_INTERVAL = float(os.getenv("REPORT_POLL_INTERVAL", "5"))
 BATCH_INSERT_SIZE = int(os.getenv("BACKFILL_BATCH_SIZE", "1000"))
 
-# Helpers for canonical UTC Z formatting
+MAX_RETRIES = int(os.getenv("BACKFILL_MAX_RETRIES", "5"))
+INITIAL_RETRY_DELAY = float(os.getenv("BACKFILL_INITIAL_RETRY_DELAY", "5.0"))
+
+# Lock coordination
+BACKFILL_LOCKFILE = os.path.join(REPO_ROOT, "backfill.lock")
+INVENTORY_LOCKFILE = os.path.join(REPO_ROOT, "inventorysync.lock")
+# When backfill starts and finds inventorysync.lock present, wait up to this many seconds for inventory to finish
+WAIT_FOR_INVENTORY_SECONDS = int(os.getenv("BACKFILL_WAIT_FOR_INVENTORY_SECONDS", str(10 * 60)))  # default 10 minutes
+LOCK_TIMEOUT_SECONDS = int(os.getenv("BACKFILL_LOCK_TIMEOUT_SECONDS", str(24 * 3600)))  # backfill lock stale threshold
+
+# Helpers
+_norm_re = re.compile(r"[^a-z0-9]")
+def normalize_col_name(s: str) -> str:
+    if s is None:
+        return ""
+    return _norm_re.sub("", s.strip().lower())
+
 def format_dt_z(d: dt.datetime) -> str:
     if d is None:
         return None
@@ -92,7 +99,51 @@ def format_dt_z(d: dt.datetime) -> str:
         return d.strftime("%Y-%m-%dT%H:%M:%SZ")
     return d.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-# --- SP-API Reports helpers ---
+# Retry wrappers
+def retry_spapi_call(fn: Callable[..., Dict[str, Any]], *args, max_retries: int = MAX_RETRIES, initial_delay: float = INITIAL_RETRY_DELAY, **kwargs) -> Dict[str, Any]:
+    delay = initial_delay
+    for attempt in range(1, max_retries + 1):
+        resp = fn(*args, **kwargs)
+        if not isinstance(resp, dict) or "errors" not in resp:
+            return resp
+        err_codes = [e.get("code") for e in resp.get("errors", []) if isinstance(e, dict)]
+        if "QuotaExceeded" in err_codes or "RequestThrottled" in err_codes or "TooManyRequests" in err_codes:
+            if attempt < max_retries:
+                logger.warning("SP-API rate limit '%s' hit (attempt %d/%d). Backing off %.1fs and retrying.", err_codes, attempt, max_retries, delay)
+                time.sleep(delay)
+                delay *= 2
+                continue
+            else:
+                logger.error("SP-API rate limit persisted after %d attempts: %s", max_retries, err_codes)
+                return resp
+        return resp
+    return fn(*args, **kwargs)
+
+def retry_requests_get(url: str, timeout: int = 60, max_retries: int = MAX_RETRIES, initial_delay: float = INITIAL_RETRY_DELAY, **kwargs) -> requests.Response:
+    delay = initial_delay
+    for attempt in range(1, max_retries + 1):
+        try:
+            r = requests.get(url, timeout=timeout, **kwargs)
+            if r.status_code in (429, 503, 500):
+                if attempt < max_retries:
+                    logger.warning("Download returned %d. Backoff %.1fs (attempt %d/%d) and retrying.", r.status_code, delay, attempt, max_retries)
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                else:
+                    r.raise_for_status()
+            r.raise_for_status()
+            return r
+        except requests.exceptions.RequestException as e:
+            if attempt < max_retries:
+                logger.warning("Download error '%s' (attempt %d/%d). Backoff %.1fs and retrying.", str(e), attempt, max_retries, delay)
+                time.sleep(delay)
+                delay *= 2
+                continue
+            logger.exception("Download failed after %d attempts: %s", max_retries, e)
+            raise
+
+# report helpers (using retry_spapi_call)
 def create_orders_report(start: dt.datetime, end: dt.datetime) -> Dict[str, Any]:
     body = {
         "reportType": REPORT_TYPE,
@@ -101,12 +152,12 @@ def create_orders_report(start: dt.datetime, end: dt.datetime) -> Dict[str, Any]
         "marketplaceIds": [MARKETPLACE_ID],
     }
     logger.debug("Creating report for %s -> %s", body["dataStartTime"], body["dataEndTime"])
-    return spapi_request("POST", f"{REPORT_API_PREFIX}/reports", body=body)
+    return retry_spapi_call(lambda: spapi_request("POST", f"{REPORT_API_PREFIX}/reports", body=body))
 
 def poll_report_until_done(report_id: str, timeout: int = MAX_REPORT_POLL_SECONDS) -> Dict[str, Any]:
     start = time.time()
     while True:
-        resp = spapi_request("GET", f"{REPORT_API_PREFIX}/reports/{report_id}", params={})
+        resp = retry_spapi_call(lambda: spapi_request("GET", f"{REPORT_API_PREFIX}/reports/{report_id}", params={}))
         if "errors" in resp:
             raise RuntimeError(f"Error polling report {report_id}: {resp.get('errors')}")
         payload = resp.get("payload") or resp
@@ -121,73 +172,56 @@ def poll_report_until_done(report_id: str, timeout: int = MAX_REPORT_POLL_SECOND
         time.sleep(REPORT_POLL_INTERVAL)
 
 def get_report_document(document_id: str) -> Dict[str, Any]:
-    resp = spapi_request("GET", f"{REPORT_API_PREFIX}/documents/{document_id}", params={})
-    if "errors" in resp:
-        raise RuntimeError(f"Error fetching report document {document_id}: {resp.get('errors')}")
-    return resp.get("payload") or resp
+    return retry_spapi_call(lambda: spapi_request("GET", f"{REPORT_API_PREFIX}/documents/{document_id}", params={}))
 
 def download_report(url: str, compression: Optional[str]) -> str:
     logger.debug("Downloading report from %s (compression=%s)", url, compression)
-    r = requests.get(url, timeout=60)
-    r.raise_for_status()
+    r = retry_requests_get(url, timeout=60)
     data = r.content
     if (compression or "").upper() == "GZIP":
         data = gzip.decompress(data)
-    # decode as UTF-8, tolerant
     text = data.decode("utf-8", errors="replace")
     return text
 
-# --- Parsing helper (flat file is typically TAB-delimited) ---
+# parsing
 def parse_flat_orders(text: str, max_rows: Optional[int] = None) -> Tuple[List[Dict[str, str]], List[str]]:
     lines = text.splitlines()
     if not lines:
         return [], []
     reader = csv.reader(lines, delimiter="\t")
-    header = [h.strip() for h in next(reader, [])]
+    raw_header = [h.strip() for h in next(reader, [])]
+    norm_header = [normalize_col_name(h) for h in raw_header]
+
     rows = []
-    for i, row in enumerate(reader):
+    for i, cols in enumerate(reader):
         if max_rows and i >= max_rows:
             break
-        if not row:
+        if not cols:
             continue
-        # map column name -> value
-        mapped = {header[j]: row[j] if j < len(row) else "" for j in range(len(header))}
+        mapped = {}
+        for j, nh in enumerate(norm_header):
+            mapped[nh] = cols[j] if j < len(cols) else ""
+        mapped["_raw_row"] = cols
         rows.append(mapped)
-    return rows, header
+    return rows, raw_header
 
-# --- Enrichment helpers (reuse DB cache and fee-estimate) ---
+# fee helpers (reuse existing)
 def accumulate_unique_fee_items(rows: List[Dict[str, Any]]) -> List[Tuple[str, str, float]]:
     uniq = set()
     out = []
     for r in rows:
-        sku = (r.get("SellerSKU") or r.get("sku") or r.get("SKU") or "").strip()
-        asin = (r.get("ASIN") or r.get("asin") or "").strip()
-        # try to get unit price from known columns
+        sku = (r.get("sku") or "").strip()
+        asin = (r.get("asin") or "").strip()
         price = None
-        for cand in ("ItemPrice", "ItemPriceAmount", "UnitPrice", "ItemPriceAmountCurrencyValue"):
-            # handle nested shapes or simple strings
+        for cand in ("itemprice", "itempriceamount", "unitprice", "price", "itempriceamountcurrencyvalue"):
             v = r.get(cand)
             if not v:
                 continue
             try:
-                price = float(v)
+                price = float(str(v).strip().replace("$", "").replace(",", ""))
                 break
             except Exception:
-                try:
-                    price = float(str(v).strip())
-                    break
-                except Exception:
-                    price = None
-        # fallback to 'Price' fields in flat report (various names)
-        if price is None:
-            # typical order flat-file columns include 'Item Price' or 'ItemPrice'
-            for key in r.keys():
-                if key.lower().replace(" ", "") in ("itemprice", "unitprice", "price"):
-                    try:
-                        price = float(r.get(key) or 0)
-                        break
-                    except Exception:
-                        price = None
+                price = None
         if price is None:
             price = 0.0
         key = (sku, asin, price)
@@ -196,12 +230,9 @@ def accumulate_unique_fee_items(rows: List[Dict[str, Any]]) -> List[Tuple[str, s
             out.append((sku, asin, price))
     return out
 
-# Fee estimation wrapper using same caching semantics as app.orders.estimate_fees_for_item
-def estimate_fees_for_unique_items(unique_items: List[Tuple[str,str,float]]) -> Dict[Tuple[str,str,float], Any]:
-    cache: Dict[Tuple[str,str,float], Any] = {}
-    results: Dict[Tuple[str,str,float], Any] = {}
+def estimate_fees_for_unique_items(unique_items: List[Tuple[str, str, float]]) -> Dict[Tuple[str, str, float], Any]:
+    results: Dict[Tuple[str, str, float], Any] = {}
     for sku, asin, price in unique_items:
-        # check DB cache first
         conn = connect_database()
         cur = conn.cursor()
         try:
@@ -213,14 +244,12 @@ def estimate_fees_for_unique_items(unique_items: List[Tuple[str,str,float]]) -> 
                 if isinstance(updated_at, dt.datetime) and (dt.datetime.now(dt.timezone.utc) - updated_at).days <= FEE_CACHE_TTL_DAYS:
                     results[(sku, asin, price)] = db_entry.get("fees")
                     continue
-            # call SP-API fees estimate
             try:
                 fees = get_fees_estimate(sku, asin, price)
             except Exception as e:
                 logger.exception("Fee estimate API error for %s/%s/%s: %s", sku, asin, price, e)
                 fees = None
             if fees and isinstance(fees, dict) and "errors" not in fees:
-                # persist into ProductMapping
                 try:
                     upsert_fee_estimate_to_product_mapping(cur, sku, asin, price, fees)
                     conn.commit()
@@ -235,11 +264,49 @@ def estimate_fees_for_unique_items(unique_items: List[Tuple[str,str,float]]) -> 
             conn.close()
     return results
 
-# --- Upsert helpers (bulk MERGE into OrderItems) ---
-import pyodbc
+# sanitizers & upsert helpers (same as earlier final version)
+def _sanitize_float(v):
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v).strip()
+    if s == "" or s.lower() in ("not available", "na", "n/a"):
+        return None
+    try:
+        return float(s.replace("$", "").replace(",", ""))
+    except Exception:
+        return None
+
+def _sanitize_int(v):
+    if v is None:
+        return None
+    if isinstance(v, int):
+        return v
+    s = str(v).strip()
+    if s == "" or s.lower() in ("not available", "na", "n/a"):
+        return None
+    try:
+        return int(float(s))
+    except Exception:
+        return None
+
+def _normalize_sql_datetime(val):
+    if val is None:
+        return None
+    if isinstance(val, dt.datetime):
+        return val.replace(tzinfo=None).isoformat(sep=" ")
+    s = str(val).strip()
+    if not s:
+        return None
+    if s.endswith("Z"):
+        s = s[:-1]
+    if re.search(r"[+\-]\d\d:\d\d$", s):
+        s = re.sub(r"[+\-]\d\d:\d\d$", "", s)
+    return s.replace("T", " ")
+
 def upsert_order_items_bulk(conn: pyodbc.Connection, rows: List[Dict[str, Any]]):
     cur = conn.cursor()
-    # create local temp table
     cur.execute("""
     CREATE TABLE #BackfillOrderItems (
         OrderItemKey NVARCHAR(300) NOT NULL,
@@ -279,39 +346,55 @@ def upsert_order_items_bulk(conn: pyodbc.Connection, rows: List[Dict[str, Any]])
     """
     params = []
     for r in rows:
+        qty = _sanitize_int(r.get("Qty") or r.get("Quantity") or r.get("QuantityOrdered"))
+        unit_price = _sanitize_float(r.get("UnitPrice") or r.get("SOLD") or r.get("item-price") or r.get("itemprice"))
+        subtotal = _sanitize_float(r.get("Subtotal"))
+        fee_incl = _sanitize_float(r.get("FeeIncl"))
+        fee_pct = _sanitize_float(r.get("FeePct"))
+        fba_fees_incl = _sanitize_float(r.get("FBAFeesIncl"))
+        total_fee = _sanitize_float(r.get("TotalFee"))
+        rvat = _sanitize_float(r.get("RVAT"))
+        vat = _sanitize_float(r.get("VAT"))
+        cog = _sanitize_float(r.get("COG"))
+        profit = _sanitize_float(r.get("Profit"))
+        order_date = _normalize_sql_datetime(r.get("OrderDate"))
+        last_update = _normalize_sql_datetime(r.get("LastUpdateDate") or r.get("LastUpdate"))
         params.append((
             r.get("OrderItemKey"),
             r.get("AmazonOrderId"),
             r.get("OrderItemId"),
-            r.get("OrderDate"),
+            order_date,
             r.get("SKU"),
             r.get("ASIN"),
             r.get("SSKU"),
             r.get("Brand"),
             r.get("Category"),
             r.get("Title"),
-            r.get("Qty"),
-            r.get("UnitPrice"),
-            r.get("Subtotal"),
+            qty,
+            unit_price,
+            subtotal,
             r.get("Currency"),
             r.get("OrderStatus"),
-            r.get("LastUpdateDate"),
-            r.get("FeeIncl"),
-            r.get("FeePct"),
-            r.get("FBAFeesIncl"),
-            r.get("TotalFee"),
-            r.get("RVAT"),
-            r.get("VAT"),
-            r.get("COG"),
-            r.get("Profit"),
+            last_update,
+            fee_incl,
+            fee_pct,
+            fba_fees_incl,
+            total_fee,
+            rvat,
+            vat,
+            cog,
+            profit,
         ))
     try:
-        cur.fast_executemany = True
+        try:
+            cur.fast_executemany = True
+        except Exception:
+            pass
+        cur.executemany(insert_sql, params)
     except Exception:
-        pass
-    cur.executemany(insert_sql, params)
-    # MERGE into target table
-    cur.execute("""
+        logger.exception("Bulk insert into temp table failed. Example param (first): %s", params[0] if params else "<none>")
+        raise
+    merge_sql = """
     MERGE INTO spapi_app_user.OrderItems AS target
     USING #BackfillOrderItems AS src
       ON target.OrderItemKey = src.OrderItemKey
@@ -358,65 +441,106 @@ def upsert_order_items_bulk(conn: pyodbc.Connection, rows: List[Dict[str, Any]])
         src.FeeIncl, src.FeePct, src.FBAFeesIncl, src.TotalFee, src.RVAT,
         src.VAT, src.COG, src.Profit, SYSUTCDATETIME(), SYSUTCDATETIME()
       );
-    """)
+    """
+    cur.execute(merge_sql)
     cur.execute("DROP TABLE #BackfillOrderItems")
 
-# --- Core backfill flow ---
-def build_order_item_from_flat_row(row: Dict[str,str]) -> Optional[Dict[str,Any]]:
-    """
-    Map typical flat-file columns to the internal order-item shape we upsert.
-    Be defensive about column names (different marketplaces/report variations).
-    """
-    # common column names (variants)
-    amazon_order_id = row.get("AmazonOrderId") or row.get("order-id") or row.get("Order ID") or row.get("OrderID")
-    if not amazon_order_id:
-        # if no order id, skip
-        return None
-
-    order_item_id = row.get("OrderItemCode") or row.get("order-item-id") or row.get("OrderItemId") or row.get("OrderItemID") or ""
-    sku = (row.get("SellerSKU") or row.get("seller-sku") or row.get("Seller-SKU") or row.get("SKU") or "").strip() or None
-    asin = (row.get("ASIN") or row.get("asin") or "").strip() or None
-
-    # parse qty and price defensively
-    qty = 1
-    for key in ("QuantityOrdered", "quantity", "quantityordered", "qty", "TotalQuantity"):
-        if key in row and row[key]:
+# Lock helpers for backfill
+def _acquire_lockfile(path: str, timeout_seconds: int = None) -> bool:
+    try:
+        flags = os.O_CREAT | os.O_EXCL | os.O_RDWR
+        fd = os.open(path, flags)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(f"{os.getpid()}\n{time.time()}\n")
+        logger.info("Acquired lockfile: %s", path)
+        return True
+    except FileExistsError:
+        if timeout_seconds:
             try:
-                qty = int(float(row[key]))
-                break
+                st = os.stat(path)
+                age = time.time() - st.st_mtime
+                if age > timeout_seconds:
+                    logger.warning("Lockfile %s stale (age %.0f s). Removing.", path, age)
+                    try:
+                        os.remove(path)
+                    except Exception:
+                        logger.exception("Failed to remove stale lockfile %s", path)
+                        return False
+                    return _acquire_lockfile(path, timeout_seconds)
             except Exception:
-                pass
+                logger.exception("Error inspecting lockfile %s", path)
+        return False
+    except Exception:
+        logger.exception("Error creating lockfile %s", path)
+        return False
 
-    # price - try several column names
-    unit_price = None
-    for key in ("ItemPrice", "ItemPriceAmount", "Item Price", "ItemPriceAmountCurrencyValue", "Price"):
-        v = row.get(key)
+def acquire_backfill_lock() -> bool:
+    return _acquire_lockfile(BACKFILL_LOCKFILE, LOCK_TIMEOUT_SECONDS)
+
+def release_backfill_lock():
+    try:
+        if os.path.exists(BACKFILL_LOCKFILE):
+            os.remove(BACKFILL_LOCKFILE)
+            logger.info("Released backfill lock: %s", BACKFILL_LOCKFILE)
+    except Exception:
+        logger.exception("Failed to remove backfill lock on exit")
+
+def wait_for_inventory_clear(max_wait: int) -> bool:
+    if not os.path.exists(INVENTORY_LOCKFILE):
+        return True
+    logger.info("Inventory sync lock present (%s). Waiting up to %d seconds for it to clear...", INVENTORY_LOCKFILE, max_wait)
+    start = time.time()
+    while time.time() - start < max_wait:
+        if not os.path.exists(INVENTORY_LOCKFILE):
+            logger.info("Inventory lock cleared; proceeding with backfill.")
+            return True
+        time.sleep(5)
+    logger.warning("Inventory sync lock still present after %d seconds; proceeding anyway (you may want to retry later).", max_wait)
+    # Proceeding anyway is acceptable (we sanitize and use temp tables) but we warned.
+    return True
+
+# mapping from normalized row to internal shape
+def build_order_item_from_flat_row(norm_row: Dict[str, str], raw_row: Optional[List[str]] = None) -> Optional[Dict[str,Any]]:
+    def g(*candidates):
+        for c in candidates:
+            val = norm_row.get(normalize_col_name(c))
+            if val not in (None, ""):
+                return val
+        return None
+    amazon_order_id = g("amazon-order-id", "order-id", "orderid", "amazonorderid")
+    if not amazon_order_id:
+        return None
+    order_item_id = g("order-item-id", "orderitemid", "orderitemcode")
+    sku = g("seller-sku", "sku", "sellersku")
+    asin = g("asin")
+    qty_val = g("quantity", "quantityordered", "qty", "item-quantity")
+    qty = 1
+    if qty_val:
+        try:
+            qty = int(float(qty_val))
+        except Exception:
+            qty = 1
+    price_val = None
+    for cand in ("item-price", "itemprice", "itempriceamount", "unitprice", "price"):
+        v = norm_row.get(normalize_col_name(cand))
         if v:
             try:
-                unit_price = float(v)
+                price_val = float(str(v).strip().replace("$", "").replace(",", ""))
                 break
             except Exception:
-                try:
-                    unit_price = float(v.replace("$","").replace(",",""))
-                    break
-                except Exception:
-                    unit_price = None
-
-    # currency
-    currency = row.get("Currency") or row.get("CurrencyCode") or row.get("Currency Code") or ""
-
-    purchase_date = row.get("PurchaseDate") or row.get("purchase-date") or row.get("Purchase Date") or ""
-    last_update_date = row.get("LastUpdateDate") or row.get("Last Updated") or purchase_date
-
-    title = row.get("Title") or row.get("product-name") or row.get("Product Name") or None
-
+                price_val = None
+    unit_price = price_val or 0.0
+    currency = g("currency", "currencycode")
+    purchase_date = g("purchase-date", "purchasedate")
+    last_update_date = g("last-updated-date", "lastupdateddate", "lastupdated")
+    title = g("product-name", "title", "productname")
     out = {
         "AmazonOrderId": amazon_order_id,
         "OrderItemId": order_item_id or None,
         "SKU": sku,
         "ASIN": asin,
         "Quantity": qty,
-        "SOLD": unit_price,
+        "SOLD": unit_price if unit_price > 0 else None,
         "Currency": currency,
         "PurchaseDate": purchase_date,
         "LastUpdateDate": last_update_date,
@@ -424,49 +548,50 @@ def build_order_item_from_flat_row(row: Dict[str,str]) -> Optional[Dict[str,Any]
     }
     return out
 
+# process chunk (same logic as earlier improved version)
 def process_chunk(start: dt.datetime, end: dt.datetime, max_rows: Optional[int], test_mode: bool=False) -> int:
-    """
-    Create report, download, parse, enrich and upsert one time chunk.
-    Returns number of rows upserted.
-    """
     logger.info("Processing chunk %s -> %s", start.isoformat(), end.isoformat())
     create_resp = create_orders_report(start, end)
-    # support both {"payload":{"reportId":...}} and {"reportId":...}
     report_id = (create_resp.get("payload") or {}).get("reportId") or create_resp.get("reportId")
     if not report_id:
         logger.error("No reportId returned: %s", create_resp)
         return 0
     logger.info("Created report %s", report_id)
-
     payload = poll_report_until_done(report_id)
     report_doc_id = payload.get("reportDocumentId")
     if not report_doc_id:
         logger.error("No reportDocumentId in payload: %s", payload)
         return 0
-
     doc_payload = get_report_document(report_doc_id)
     url = doc_payload.get("url")
     compression = doc_payload.get("compressionAlgorithm") or None
     if not url:
         logger.error("No download url for report document: %s", doc_payload)
         return 0
-
     text = download_report(url, compression)
-    flat_rows, header = parse_flat_orders(text, max_rows)
-    logger.info("Report %s downloaded: header cols=%d rows=%d (max_rows=%s)", report_id, len(header), len(flat_rows), str(max_rows))
-
-    # transform flat rows into our internal item form
+    norm_rows, raw_header = parse_flat_orders(text, max_rows)
+    logger.info("Report %s downloaded: raw header cols=%d rows=%d (max_rows=%s)", report_id, len(raw_header), len(norm_rows), str(max_rows))
+    # debug dump
+    debug_dump_path = os.path.join(LOG_DIR, f"backfill_report_{report_id}_debug.tsv")
+    try:
+        lines = text.splitlines()
+        with open(debug_dump_path, "w", encoding="utf-8") as fh:
+            if lines:
+                fh.write(lines[0] + "\n")
+                for ln in lines[1: min(1 + 50, len(lines))]:
+                    fh.write(ln + "\n")
+        logger.info("Wrote debug TSV to %s (raw header cols=%d, sample rows=%d)", debug_dump_path, len(raw_header), min(50, len(norm_rows)))
+    except Exception:
+        logger.exception("Failed to write debug TSV for report %s", report_id)
     parsed_items = []
-    for fr in flat_rows:
-        itm = build_order_item_from_flat_row(fr)
+    for norm_row in norm_rows:
+        itm = build_order_item_from_flat_row(norm_row, raw_row=norm_row.get("_raw_row"))
         if itm:
             parsed_items.append(itm)
     logger.info("Parsed %d candidate order-items from flat report", len(parsed_items))
-
     if not parsed_items:
         return 0
-
-    # Enrichment: mapping, details, fallback pricing, fees
+    # enrichment
     conn = connect_database()
     cur = conn.cursor()
     try:
@@ -477,17 +602,11 @@ def process_chunk(start: dt.datetime, end: dt.datetime, max_rows: Optional[int],
     finally:
         cur.close()
         conn.close()
-
-    # Determine missing prices to fetch in batches
     missing_price_skus = [i["SKU"] for i in parsed_items if (not i.get("SOLD") or i.get("SOLD") == 0) and i.get("SKU")]
     fallback_prices = get_listing_prices_batch(missing_price_skus) if missing_price_skus else {}
-
-    # Prepare for fee estimates
-    unique_items = accumulate_unique_fee_items(parsed_items)
+    unique_items = accumulate_unique_fee_items(norm_rows if norm_rows else [])
     logger.info("Unique items for fee estimation: %d", len(unique_items))
     fee_map = estimate_fees_for_unique_items(unique_items) if unique_items else {}
-
-    # Build upsert rows
     rows_to_upsert: List[Dict[str,Any]] = []
     for p in parsed_items:
         sku = p.get("SKU")
@@ -499,8 +618,6 @@ def process_chunk(start: dt.datetime, end: dt.datetime, max_rows: Optional[int],
         brand = d.get("brand") or "Not Available"
         category = d.get("category") or "Not Available"
         cog = parse_cost(d.get("cost")) if d.get("cost") else None
-
-        # fees lookup
         fees = fee_map.get((sku, asin, unit_price))
         if fees and isinstance(fees, dict):
             ref_w = fees.get("ReferralFees", 0)
@@ -509,14 +626,13 @@ def process_chunk(start: dt.datetime, end: dt.datetime, max_rows: Optional[int],
             fee_incl = -ref_w
             fba_fees_incl = -fba_w
             fee_pct = (ref_w / unit_price) * 100 if unit_price else None
-            rv = (ref_w + fba_w) - (fees.get("ReferralFees",0) + fees.get("FBAFees",0))  # estimator's R.VAT shape
+            rv = (ref_w + fba_w) - (fees.get("ReferralFees", 0) + fees.get("FBAFees", 0))
         else:
-            fee_incl = "Not Available"
-            fee_pct = "Not Available"
-            fba_fees_incl = "Not Available"
-            total_fee = "Not Available"
-            rv = "Not Available"
-
+            fee_incl = None
+            fee_pct = None
+            fba_fees_incl = None
+            total_fee = None
+            rv = None
         row = {
             "AmazonOrderId": p.get("AmazonOrderId"),
             "OrderItemId": p.get("OrderItemId"),
@@ -533,26 +649,23 @@ def process_chunk(start: dt.datetime, end: dt.datetime, max_rows: Optional[int],
             "Currency": p.get("Currency"),
             "OrderStatus": None,
             "LastUpdateDate": p.get("LastUpdateDate"),
-            "FeeIncl": fee_incl if fee_incl != None else None,
-            "FeePct": fee_pct if fee_pct != None else None,
-            "FBAFeesIncl": fba_fees_incl if fba_fees_incl != None else None,
-            "TotalFee": total_fee if total_fee != None else None,
-            "RVAT": rv if rv != None else None,
+            "FeeIncl": fee_incl,
+            "FeePct": fee_pct,
+            "FBAFeesIncl": fba_fees_incl,
+            "TotalFee": total_fee,
+            "RVAT": rv,
             "VAT": None,
             "COG": (-cog) if cog is not None else None,
             "Profit": None,
         }
-        # Compute OrderItemKey (same as other scripts)
         order_item_id = row["OrderItemId"] or ""
         order_item_key = f"{row['AmazonOrderId']}:{order_item_id}" if order_item_id and order_item_id != "0" else f"{row['AmazonOrderId']}:0:{row.get('SKU') or ''}:{row.get('ASIN') or ''}"
         row["OrderItemKey"] = order_item_key
         rows_to_upsert.append(row)
-
     logger.info("Prepared %d rows to upsert", len(rows_to_upsert))
     if not rows_to_upsert:
         return 0
-
-    # Bulk upsert in batches
+    # upsert in batches
     upsert_conn = pyodbc.connect(os.getenv("SQLSERVER_CONNECTION_STRING"))
     upsert_conn.autocommit = False
     inserted = 0
@@ -566,11 +679,10 @@ def process_chunk(start: dt.datetime, end: dt.datetime, max_rows: Optional[int],
                 inserted += len(batch)
             except Exception:
                 upsert_conn.rollback()
-                logger.exception("Bulk upsert failed for batch; falling back to per-row upsert")
+                logger.exception("Bulk upsert failed; falling back to per-row upsert")
                 cur = upsert_conn.cursor()
                 try:
                     for r in batch:
-                        # simple per-row upsert (same SQL as sync script)
                         sql_update = """
                         UPDATE spapi_app_user.OrderItems
                            SET AmazonOrderId = ?,
@@ -640,11 +752,10 @@ def process_chunk(start: dt.datetime, end: dt.datetime, max_rows: Optional[int],
                     cur.close()
     finally:
         upsert_conn.close()
-
     logger.info("Upserted total %d rows for chunk %s->%s", inserted, start, end)
     return inserted
 
-# --- CLI / orchestration ---
+# CLI
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--start", help="Start date (YYYY-MM-DD). Default: 365 days ago", default=None)
@@ -660,41 +771,46 @@ def main():
     if args.verbose:
         logger.setLevel(logging.DEBUG)
         logger.debug("Verbose logging enabled")
-
-    # compute date window
-    now = dt.datetime.now(dt.timezone.utc)
-    if args.end:
-        end = dt.datetime.fromisoformat(args.end)
-        if end.tzinfo is None:
-            end = end.replace(tzinfo=dt.timezone.utc)
-    else:
-        end = now
-    if args.start:
-        start = dt.datetime.fromisoformat(args.start)
-        if start.tzinfo is None:
-            start = start.replace(tzinfo=dt.timezone.utc)
-    else:
-        start = end - dt.timedelta(days=365)
-
-    chunk_days = args.chunk_days
-    cur_start = start
-    total_inserted = 0
-    chunks_processed = 0
-    logger.info("Backfill window %s -> %s (chunk_days=%d)", start.isoformat(), end.isoformat(), chunk_days)
-
-    while cur_start < end:
-        cur_end = min(cur_start + dt.timedelta(days=chunk_days), end)
-        inserted = process_chunk(cur_start, cur_end, max_rows=(args.test_rows or None), test_mode=(args.test_rows>0))
-        total_inserted += inserted
-        chunks_processed += 1
-        if args.test_chunks and chunks_processed >= args.test_chunks:
-            logger.info("Test chunk limit reached (%d). Stopping.", args.test_chunks)
-            break
-        cur_start = cur_end
-        # small pause to avoid bursting reports
-        time.sleep(1.0)
-
-    logger.info("Backfill complete. Chunks processed=%d total_rows_upserted=%d", chunks_processed, total_inserted)
+    # Acquire backfill lock (single-process backfill)
+    if not acquire_backfill_lock():
+        logger.error("Could not acquire backfill lock (%s). Another backfill may be running. Exiting.", BACKFILL_LOCKFILE)
+        return 1
+    try:
+        # Wait briefly if inventory syncing
+        wait_for_inventory_clear(WAIT_FOR_INVENTORY_SECONDS)
+        now = dt.datetime.now(dt.timezone.utc)
+        if args.end:
+            end = dt.datetime.fromisoformat(args.end)
+            if end.tzinfo is None:
+                end = end.replace(tzinfo=dt.timezone.utc)
+        else:
+            end = now
+        if args.start:
+            start = dt.datetime.fromisoformat(args.start)
+            if start.tzinfo is None:
+                start = start.replace(tzinfo=dt.timezone.utc)
+        else:
+            start = end - dt.timedelta(days=365)
+        chunk_days = args.chunk_days
+        cur_start = start
+        total_inserted = 0
+        chunks_processed = 0
+        logger.info("Backfill window %s -> %s (chunk_days=%d)", start.isoformat(), end.isoformat(), chunk_days)
+        while cur_start < end:
+            cur_end = min(cur_start + dt.timedelta(days=chunk_days), end)
+            inserted = process_chunk(cur_start, cur_end, max_rows=(args.test_rows or None), test_mode=(args.test_rows>0))
+            total_inserted += inserted
+            chunks_processed += 1
+            if args.test_chunks and chunks_processed >= args.test_chunks:
+                logger.info("Test chunk limit reached (%d). Stopping.", args.test_chunks)
+                break
+            cur_start = cur_end
+            # small pause to avoid bursting report creation
+            time.sleep(1.0)
+        logger.info("Backfill complete. Chunks processed=%d total_rows_upserted=%d", chunks_processed, total_inserted)
+        return 0
+    finally:
+        release_backfill_lock()
 
 if __name__ == "__main__":
     main()
