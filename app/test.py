@@ -29,14 +29,14 @@ async def orders(days: int = 0, hours: int = 10, minutes: int = 0):
 
     return spapi_request("GET", "/orders/v0/orders", params=params)
 
-@router.get("/order")
+@router.get("/order-items")
 async def get_order():
-    orderId = "403-1446819-7082744"
-    return spapi_request("GET", f"/orders/v0/orders/{orderId}")
+    orderId = "408-7212017-2853114"
+    return spapi_request("GET", f"/orders/v0/orders/{orderId}/orderItems")
 
 @router.get("/test-pricing")
 async def test_get_pricing(item_type: str = "Asin"):
-    test_asins = ["B0080W1VVC"]
+    test_asins = ["B07NNRTTCM"]
     test_skus = ["SDSSDE61-2T00-G25", "STKM2000400"]
 
     params = {
@@ -53,7 +53,7 @@ async def test_get_pricing(item_type: str = "Asin"):
 
 @router.get("/test-fees")
 async def test_get_fees():
-    asin = "B0CMCFGWK6"
+    asin = "B07HHD7C7T"
     marketplace_id = os.getenv("MARKETPLACE_ID")
     currency_code = os.getenv("BASE_CURRENCY_CODE", "AED")
 
@@ -64,7 +64,7 @@ async def test_get_fees():
             "PriceToEstimateFees": {
                 "ListingPrice": {
                     "CurrencyCode": currency_code,
-                    "Amount": 100.00
+                    "Amount": 58.68
                 }
             },
             "Identifier": f"{asin}-estimate",
@@ -84,153 +84,7 @@ def get_report():
     }
     return spapi_request("GET", "/reports/2021-06-30/reports", params=params)
 
-@router.get("/get-report-document")
-def get_report_document():
-    reportDocumentId = "amzn1.spdoc.1.4.eu.9a686765-5232-4bfd-9df3-036b1671eae9.TZD0NOIO5NKQS.2610"
-    return spapi_request("GET", f"/reports/2021-06-30/documents/{reportDocumentId}", params={})
-
 @router.get("/get-raw-financial")
 # "405-5308958-7314741" 171-6810812-4681165
 def get_raw_financial_events(order_id: str = "405-5308958-7314741"):
     return spapi_request("GET", f"/finances/v0/orders/{order_id}/financialEvents", params={})
-
-@router.get("/test-reports/orders-3days-preview")
-def test_orders_report_3days_preview(max_rows: int = 20, poll_seconds: int = 5, max_polls: int = 30):
-    """
-    One-shot test:
-      1) createReport for last 3 days (orders by last update)
-      2) poll getReport until DONE
-      3) getReportDocument
-      4) download + decompress (if gzip)
-      5) return header + first N rows preview
-    """
-    marketplace_id = os.getenv("MARKETPLACE_ID")
-    if not marketplace_id:
-        return {"error": "MARKETPLACE_ID env var not set"}
-
-    report_type = "GET_FLAT_FILE_ALL_ORDERS_DATA_BY_LAST_UPDATE_GENERAL"
-
-    end_time = datetime.now(timezone.utc).replace(microsecond=0)
-    start_time = (end_time - timedelta(days=3)).replace(microsecond=0)
-
-    # 1) Create report
-    create_body = {
-        "reportType": report_type,
-        "dataStartTime": format_dt_z(start_time),
-        "dataEndTime": format_dt_z(end_time),
-        "marketplaceIds": [marketplace_id],
-    }
-    create_resp = spapi_request("POST", "/reports/2021-06-30/reports", body=create_body)
-
-    if "errors" in create_resp:
-        return {"stage": "createReport", "errors": create_resp.get("errors"), "body": create_body, "raw": create_resp}
-
-    # Support BOTH response shapes:
-    report_id = (create_resp.get("payload") or {}).get("reportId") or create_resp.get("reportId")
-    if not report_id:
-        return {"stage": "createReport", "error": "No reportId returned", "raw": create_resp}
-
-    # 2) Poll report status
-    report_doc_id = None
-    status = None
-    poll_history = []
-
-    for _ in range(max_polls):
-        get_resp = spapi_request("GET", f"/reports/2021-06-30/reports/{report_id}", params={})
-        if "errors" in get_resp:
-            return {"stage": "getReport", "reportId": report_id, "errors": get_resp.get("errors"), "raw": get_resp}
-
-        payload = get_resp.get("payload") or get_resp
-        status = payload.get("processingStatus")
-        poll_history.append({"processingStatus": status, "time": format_dt_z(datetime.now(timezone.utc)) + "Z"})
-
-        if status == "DONE":
-            report_doc_id = payload.get("reportDocumentId")
-            break
-        if status in ("FATAL", "CANCELLED"):
-            return {"stage": "getReport", "reportId": report_id, "processingStatus": status, "raw": payload}
-
-        time.sleep(poll_seconds)
-
-    if not report_doc_id:
-        return {
-            "stage": "polling",
-            "reportId": report_id,
-            "processingStatus": status,
-            "polls": len(poll_history),
-            "poll_history": poll_history,
-            "error": "Report not DONE yet. Increase max_polls or poll_seconds and try again.",
-        }
-
-    # 3) Get report document (download URL)
-    doc_resp = spapi_request("GET", f"/reports/2021-06-30/documents/{report_doc_id}", params={})
-    if "errors" in doc_resp:
-        return {
-            "stage": "getReportDocument",
-            "reportDocumentId": report_doc_id,
-            "errors": doc_resp.get("errors"),
-            "raw": doc_resp,
-        }
-
-    doc_payload = doc_resp.get("payload") or doc_resp
-    url = doc_payload.get("url")
-    compression = (doc_payload.get("compressionAlgorithm") or "").upper() or None
-
-    if not url:
-        return {
-            "stage": "getReportDocument",
-            "reportDocumentId": report_doc_id,
-            "error": "No url returned",
-            "raw": doc_payload,
-        }
-
-    # 4) Download report file from presigned URL
-    r = requests.get(url, timeout=60)
-    r.raise_for_status()
-    data = r.content
-
-    # 5) Decompress if GZIP
-    if compression == "GZIP":
-        data = gzip.decompress(data)
-
-    text = data.decode("utf-8", errors="replace")
-    lines = text.splitlines()
-
-    if not lines:
-        return {
-            "reportType": report_type,
-            "dataStartTime": create_body["dataStartTime"],
-            "dataEndTime": create_body["dataEndTime"],
-            "marketplaceIds": create_body["marketplaceIds"],
-            "reportId": report_id,
-            "reportDocumentId": report_doc_id,
-            "processingStatus": "DONE",
-            "compressionAlgorithm": compression,
-            "note": "Report downloaded but contains no lines.",
-        }
-
-    delimiter = "\t"
-    reader = csv.reader(lines, delimiter=delimiter)
-    header = next(reader, [])
-    rows = []
-    for i, row in enumerate(reader):
-        if i >= max_rows:
-            break
-        rows.append(dict(zip(header, row)) if header and len(header) == len(row) else row)
-
-    return {
-        "reportType": report_type,
-        "dataStartTime": create_body["dataStartTime"],
-        "dataEndTime": create_body["dataEndTime"],
-        "marketplaceIds": create_body["marketplaceIds"],
-        "reportId": report_id,
-        "reportDocumentId": report_doc_id,
-        "processingStatus": "DONE",
-        "compressionAlgorithm": compression,
-        "delimiter": "TAB",
-        "header_columns_count": len(header),
-        "header_preview": header[:60],
-        "rows_returned": len(rows),
-        "rows_preview": rows,
-        "raw_text_preview_first_10_lines": lines[:10],
-    }
