@@ -1,15 +1,38 @@
 @echo off
-REM change to script folder to make relative paths safe
-cd /d "C:\Users\Manu\SellerAPIApplication\scripts"
+REM Run from repo/scripts folder
+pushd "%~dp0\.."
+set REPO=%CD%
 
-REM ensure logs folder exists (no-op if already present)
-if not exist "C:\Users\Manu\SellerAPIApplication\logs" mkdir "C:\Users\Manu\SellerAPIApplication\logs"
+REM determine python: prefer venv_win\Scripts\python.exe
+set VENV_PY=%REPO%\venv_win\Scripts\python.exe
+if exist "%VENV_PY%" (
+  set PY="%VENV_PY%"
+) else (
+  where python >nul 2>&1
+  if errorlevel 1 (
+    echo Python executable not found in venv or PATH. Exiting with code 9009.
+    popd
+    exit /b 9009
+  )
+  set PY=python
+)
 
-REM run python and append stdout+stderr to rotating log
-"C:\Users\Manu\SellerAPIApplication\venv_win\Scripts\python.exe" "C:\Users\Manu\SellerAPIApplication\scripts\backfill_orders.py" >> "C:\Users\Manu\SellerAPIApplication\logs\backfill_orders.log" 2>&1
+REM ensure logs dir exists
+if not exist "%REPO%\logs" mkdir "%REPO%\logs"
 
-REM capture the exit code Task Scheduler will see
-echo %ERRORLEVEL% > "C:\Users\Manu\SellerAPIApplication\logs\backfill_last_exit_code.txt"
+REM compute start/end (last 1 year) and run the backfill script
+for /f "usebackq tokens=1,2" %%A in (`powershell -NoProfile -Command "$s=(Get-Date).AddYears(-1).ToString('yyyy-MM-dd'); $e=(Get-Date).ToString('yyyy-MM-dd'); Write-Output \"$s $e\""` ) do (
+  set START=%%A
+  set END=%%B
+)
 
-REM write a timestamped marker for easier debugging
-echo %DATE% %TIME% ExitCode=%ERRORLEVEL% >> "C:\Users\Manu\SellerAPIApplication\logs\backfill_run_history.log"
+echo Starting backfill from %START% to %END% >> "%REPO%\logs\backfill_orders.log"
+
+REM call the python script (ensure script name matches: backfill_orders.py)
+"%PY%" "%REPO%\scripts\backfill_orders.py" --start %START% --end %END% --verbose >> "%REPO%\logs\backfill_orders.log" 2>&1
+
+echo %ERRORLEVEL% > "%REPO%\logs\backfill_last_exit_code.txt"
+echo %DATE% %TIME% ExitCode=%ERRORLEVEL% >> "%REPO%\logs\backfill_run_history.log"
+
+popd
+exit /b %ERRORLEVEL%
