@@ -1,19 +1,11 @@
 #!/usr/bin/env python3
-r"""
+"""
 sync_orders_live.py
 
-All-in-one live sync — fetches orders with full enrichment (Brand, Category, Fees).
-
-Place in gcinventory/scripts and run with:
-  python gcinventory/scripts/sync_orders_live.py
-
-This file:
- - loads .env from gcinventory/.env
- - formats LastUpdatedAfter using canonical UTC Z format (SP-API expected)
- - persists fetch_end (time when fetch/enrichment completed) into SyncState
- - uses a lockfile and rotating logs so the script can be scheduled directly
+Run a single live sync (fetch orders, enrich, upsert). Uses app.orders.get_orders.
+This variant improves logging (consistent logger usage), prints clearer progress,
+and handles quota errors with exponential backoff already implemented in app.orders.
 """
-
 import sys
 import os
 import asyncio
@@ -41,7 +33,6 @@ def format_dt_z(d: dt.datetime) -> str:
     if d is None:
         return None
     if d.tzinfo is None:
-        # assume naive datetimes are UTC
         return d.strftime("%Y-%m-%dT%H:%M:%SZ")
     return d.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -58,12 +49,14 @@ LOG_PATH = os.path.join(LOG_DIR, "sync_orders_live.log")
 LOCK_TIMEOUT_SECONDS = int(os.getenv("SYNC_LOCK_TIMEOUT_SECONDS", str(6 * 3600)))  # default 6 hours
 
 os.makedirs(LOG_DIR, exist_ok=True)
+
+# Configure logger early to ensure consistent formatting
 logger = logging.getLogger("sync_orders_live")
 logger.setLevel(logging.INFO)
-handler = RotatingFileHandler(LOG_PATH, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8")
+file_handler = RotatingFileHandler(LOG_PATH, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8")
 formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
-handler.setFormatter(formatter)
-logger.addHandler(handler)
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
 console = logging.StreamHandler()
 console.setFormatter(formatter)
 logger.addHandler(console)
@@ -313,6 +306,9 @@ def upsert_order_items_bulk(conn, rows: List[Dict[str, Any]]):
         cur.fast_executemany = True
     except Exception:
         pass
+
+    if params_list:
+        logger.debug("About to insert %d rows into staging. Example params[0]: %r", len(params_list), params_list[0])
     cur.executemany(insert_sql, params_list)
 
     merge_sql = """
@@ -383,7 +379,7 @@ async def fetch_and_upsert():
     last_updated_after = format_dt_z(effective_from)
     params = {"LastUpdatedAfter": last_updated_after, "MaxResultsPerPage": 100}
 
-    logger.info("Starting all-in-one sync (with fees). LastSuccessfulSyncUtc=%s OverlapHours=%s Effective LastUpdatedAfter=%s",
+    logger.info("Starting all-in-one sync (with fees). \nLastSuccessfulSyncUtc=%s \nOverlapHours=%s \nEffective LastUpdatedAfter=%s",
                 last_sync.isoformat(), OVERLAP_HOURS, last_updated_after)
 
     # 3) Fetch enriched orders
@@ -549,27 +545,22 @@ def release_lock():
 
 
 def main():
+    logger.info("Starting sync run")
     if not acquire_lock():
-        logger.info("Another instance is running; exiting.")
+        logger.info("Could not acquire lock; exiting")
         return 0
     try:
         result = asyncio.run(fetch_and_upsert())
         return result
-    except Exception:
-        logger.exception("Unhandled exception in sync run")
-        raise
     finally:
         release_lock()
+        logger.info("Sync run finished with code %s", result if 'result' in locals() else "n/a")
 
 
 if __name__ == "__main__":
-    logger.info("Starting sync run")
     try:
-        exit_code = main() or 0
-        logger.info("Sync run finished with code %s", exit_code)
-    except SystemExit as e:
-        logger.info("Exit: %s", e)
-        raise
+        rc = main()
+        sys.exit(int(rc or 0))
     except Exception:
-        logger.exception("Fatal error in sync runner")
-        raise
+        logger.exception("Fatal error in sync_orders_live")
+        sys.exit(1)

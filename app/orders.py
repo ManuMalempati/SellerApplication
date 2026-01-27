@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-# updated orders.py — live fee estimates (no persistent cache) and robust VAT/RVAT
+# updated orders.py — live fee estimates (no persistent cache), robust VAT/RVAT,
+# improved logging and time estimates for API phases (order-items / pricing / fees).
 import os
 import time
+import math
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Any, Optional
 import threading
 import pyodbc
+import logging
 
 from .auth import spapi_request
 from .database import (
@@ -17,6 +20,8 @@ from .database import (
     connect_database,
 )
 from .estimates import get_fees_estimate
+
+logger = logging.getLogger("orders")
 
 # ENV and VAT config
 # GOVT_VAT_RATE derived as 1 / GOVT_VAT_RATE_DIVISOR per your requirement (default 21)
@@ -32,7 +37,7 @@ MAX_WORKERS = int(os.getenv("MAX_WORKERS", "10"))
 FEE_CACHE_TTL_DAYS = int(os.getenv("FEE_CACHE_TTL_DAYS", "7"))
 # FEES_ESTIMATE_VAT_MULTIPLIER should be configured to e.g. 1.05 if the fee API result is gross (net + VAT).
 FEES_VAT_MULTIPLIER = float(os.getenv("FEES_ESTIMATE_VAT_MULTIPLIER", "1.0"))
-AMAZON_VAT_MULTIPLIER = FEES_VAT_MULTIPLIER  # kept alias for backward compatibility
+AMAZON_VAT_MULTIPLIER = FEES_VAT_MULTIPLIER  # alias kept for compatibility
 MARKETPLACE_ID = os.getenv("MARKETPLACE_ID")
 
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
@@ -58,7 +63,7 @@ def _vat_from_net(net_amount: Optional[float]) -> Optional[float]:
 def _vat_from_gross_via_multiplier(gross_amount: Optional[float], multiplier: float) -> Optional[float]:
     """
     Given a gross amount and the multiplier used to transform net->gross (multiplier >= 1),
-    return the VAT portion: VAT = gross - net = gross * (1 - 1/multiplier)
+    return the VAT portion: VAT = gross * (1 - 1/multiplier)
     """
     if gross_amount is None or multiplier is None or multiplier == 0:
         return None
@@ -99,7 +104,7 @@ class TokenBucketRateLimiter:
             time.sleep(wait_time)
 
 
-# Usage-plan-based limiters
+# Usage-plan-based limiters (keep in sync with your env/settings)
 orders_rate_limiter = TokenBucketRateLimiter(rate=0.0167, burst=20)
 order_items_rate_limiter = TokenBucketRateLimiter(rate=0.5, burst=30)
 pricing_rate_limiter = TokenBucketRateLimiter(rate=0.4, burst=1)
@@ -114,20 +119,21 @@ def verify_cursor(cursor):
         cursor.execute("SELECT 1")
         return cursor
     except (pyodbc.OperationalError, pyodbc.Error):
-        print("⚠️ Database connection lost during API wait. Reconnecting...")
+        logger.warning("Database connection lost during API wait. Reconnecting...")
         new_conn = connect_database()
         return new_conn.cursor()
 
 
 def retry_api_call(func, *args, max_retries=MAX_RETRIES, initial_delay=INITIAL_RETRY_DELAY, **kwargs):
+    """Generic retry wrapper that understands SP-API rate-limit error codes"""
     delay = initial_delay
     for attempt in range(max_retries):
         result = func(*args, **kwargs)
         if isinstance(result, dict) and "errors" in result:
             err_codes = [err.get("code") for err in result.get("errors", [])]
-            if "QuotaExceeded" in err_codes or "RequestThrottled" in err_codes:
+            if "QuotaExceeded" in err_codes or "RequestThrottled" in err_codes or "TooManyRequests" in err_codes:
                 if attempt < max_retries - 1:
-                    print(f"⏳ Rate limit hit - Retry {attempt + 1}/{max_retries} after {delay:.1f}s")
+                    logger.warning("⏳ Rate limit hit - Retry %d/%d after %.1fs (codes=%s)", attempt + 1, max_retries, delay, err_codes)
                     time.sleep(delay)
                     delay *= 2
                     continue
@@ -152,10 +158,10 @@ def get_listing_prices_batch(sku_list: List[str]) -> Dict[str, float]:
             }
             return spapi_request("GET", "/products/pricing/v0/price", params=params)
 
-        print(f"🔍 [pricing] Fetching fallback prices for batch of {len(chunk)} SKUs...")
+        logger.debug("🔍 [pricing] Fetching fallback prices for batch of %d SKUs...", len(chunk))
         resp = retry_api_call(_fetch)
 
-        if "payload" in resp:
+        if isinstance(resp, dict) and "payload" in resp:
             for item in resp["payload"]:
                 sku = item.get("SellerSKU")
                 offers = item.get("Product", {}).get("Offers", [])
@@ -163,9 +169,8 @@ def get_listing_prices_batch(sku_list: List[str]) -> Dict[str, float]:
                     p = offers[0].get("BuyingPrice", {}).get("ListingPrice", {}).get("Amount")
                     if p is not None:
                         fallback_map[sku] = float(p)
-        elif "errors" in resp:
-            print(f"⚠️ [pricing] Batch error: {resp.get('errors')}")
-
+        elif isinstance(resp, dict) and "errors" in resp:
+            logger.warning("⚠️ [pricing] Batch error: %s", resp.get("errors"))
     return fallback_map
 
 
@@ -173,7 +178,8 @@ def retrieve_orders_list(method, path, params):
     all_orders = []
     orders_rate_limiter.acquire()
     resp = spapi_request(method=method, path=path, params=params)
-    if "errors" in resp:
+    if isinstance(resp, dict) and "errors" in resp:
+        logger.warning("Error retrieving orders list: %s", resp.get("errors"))
         return all_orders
 
     payload = resp.get("payload") or {}
@@ -183,7 +189,8 @@ def retrieve_orders_list(method, path, params):
     while next_token:
         orders_rate_limiter.acquire()
         resp = spapi_request(method=method, path=path, params={"NextToken": next_token})
-        if "errors" in resp:
+        if isinstance(resp, dict) and "errors" in resp:
+            logger.warning("Error retrieving orders next page: %s", resp.get("errors"))
             break
         payload = resp.get("payload") or {}
         all_orders.extend(payload.get("Orders", []))
@@ -247,16 +254,15 @@ async def get_orders_async(params, db_cursor=None):
     Includes QuantityOrdered as a field.
     """
     start_time = time.time()
-
-    print("🔄 Fetching orders...")
+    logger.info("🔄 Fetching orders...")
     orders = retrieve_orders_list("GET", "/orders/v0/orders", params)
     if not orders:
-        print("=" * 60 + "\n📊 SUMMARY\nOrders: 0\n" + "=" * 60)
+        logger.info("%s\n📊 SUMMARY\nOrders: 0\n%s", "=" * 20, "=" * 20)
         return []
 
-    print(f"✅ Retrieved {len(orders)} orders")
-    print("🔄 Fetching order items...")
-    print(f"⏱️  This will take approximately {len(orders) / 0.5 / 60:.1f} minutes due to API rate limits")
+    num_orders = len(orders)
+    logger.info("✅ Retrieved %d orders", num_orders)
+    logger.info("🔄 Fetching order items...")
 
     order_ids = [o["AmazonOrderId"] for o in orders]
     order_items_map = await get_order_items_batch_async(order_ids)
@@ -264,6 +270,7 @@ async def get_orders_async(params, db_cursor=None):
     # RE-VERIFY CURSOR (In case the long wait killed the connection)
     db_cursor = verify_cursor(db_cursor)
 
+    # Build SKU list and mapping
     all_skus = list(
         {
             item["SellerSKU"]
@@ -279,16 +286,33 @@ async def get_orders_async(params, db_cursor=None):
         else {}
     )
 
-    # Fetch pricing only for SKUs where BOTH ItemPrice and ListPrice are missing
+    # Compute missing price SKUs for pricing batch estimate
     missing_price_skus = []
     for items in order_items_map.values():
         for item in items:
             if not item.get("ItemPrice") and not item.get("ListPrice") and item.get("SellerSKU"):
                 missing_price_skus.append(item["SellerSKU"])
 
-    fallback_prices = get_listing_prices_batch(missing_price_skus) if missing_price_skus else {}
+    # Initial conservative time estimate (before fee-unique-items computed)
+    try:
+        num_price_batches = math.ceil(len(set(missing_price_skus)) / 20) if missing_price_skus else 0
+        approx_unique_items = max(1, len(set(all_skus)))  # conservative estimate
+        # rates (requests/sec)
+        order_items_rate = 0.5
+        pricing_rate = 0.4
+        fees_rate = 1.0
+        t_order_items = num_orders / order_items_rate
+        t_pricing = num_price_batches / pricing_rate
+        t_fees_approx = approx_unique_items / fees_rate
+        est_seconds_approx = (t_order_items + t_pricing + t_fees_approx) * 1.30
+        logger.info(
+            "Estimated API time (approx): orders=%d (%.0fs), price_batches=%d (%.0fs), fee_calls~=%d (%.0fs) -> total ~ %.1f minutes (incl 30%% buffer)",
+            num_orders, t_order_items, num_price_batches, t_pricing, approx_unique_items, t_fees_approx, est_seconds_approx / 60.0,
+        )
+    except Exception:
+        logger.debug("Failed to compute initial time estimate", exc_info=True)
 
-    # Build metadata (1 row per order item)
+    # Build metadata and items_to_est
     items_to_est, metadata = [], []
     for order in orders:
         oid = order["AmazonOrderId"]
@@ -328,7 +352,7 @@ async def get_orders_async(params, db_cursor=None):
                     subtotal = float(subtotal_value)
                     unit_price = subtotal / (qty if qty else 1)
                 except Exception:
-                    unit_price = fallback_prices.get(sku, 0.0)
+                    unit_price = 0.0
             else:
                 per_unit = None
                 if isinstance(item.get("ListPrice"), dict):
@@ -336,11 +360,11 @@ async def get_orders_async(params, db_cursor=None):
                 elif isinstance(item.get("ItemPrice"), dict):
                     per_unit = item.get("ItemPrice", {}).get("Amount")
                 try:
-                    unit_price = float(per_unit) if per_unit is not None else fallback_prices.get(sku, 0.0)
+                    unit_price = float(per_unit) if per_unit is not None else 0.0
                     subtotal = unit_price * qty if unit_price else None
                 except Exception:
-                    unit_price = fallback_prices.get(sku, 0.0)
-                    subtotal = unit_price * qty if unit_price else None
+                    unit_price = 0.0
+                    subtotal = None
 
             if unit_price > 0:
                 items_to_est.append((sku, m["asin"], unit_price))
@@ -364,7 +388,20 @@ async def get_orders_async(params, db_cursor=None):
 
     # Fee estimates are per-unit price
     unique_items = list(set(items_to_est))
-    print(f"🔄 Estimating fees for {len(unique_items)} unique items...")
+    # refined estimate now that we know unique_items
+    try:
+        t_order_items = num_orders / 0.5
+        t_pricing = num_price_batches / 0.4
+        t_fees = len(unique_items) / 1.0
+        est_seconds = (t_order_items + t_pricing + t_fees) * 1.30
+        logger.info(
+            "Estimated API time (refined): orders=%d (%.0fs), price_batches=%d (%.0fs), fee_calls=%d (%.0fs) -> total ~ %.1f minutes (incl 30%% buffer)",
+            num_orders, t_order_items, num_price_batches, t_pricing, len(unique_items), t_fees, est_seconds / 60.0,
+        )
+    except Exception:
+        logger.debug("Failed to compute refined time estimate", exc_info=True)
+
+    logger.info("🔄 Estimating fees for %d unique items...", len(unique_items))
     cache = {}
     counters = {"mem_hits": 0, "mem_misses": 0, "db_hits": 0, "db_misses": 0, "sp_calls": 0}
     estimates = await estimate_fees_batch_async(unique_items, cache, counters)
@@ -396,28 +433,27 @@ async def get_orders_async(params, db_cursor=None):
             "Title": title,
         }
 
-        # Compute fees/VAT/RVAT robustly
-        # 1) Compute VAT on item (always, if unit_price present)
-        vat_value = None
+        # Compute VAT on item (always, if unit_price present)
+        vat = None
         if meta["unit_price"]:
-            vat_value = meta["unit_price"] * GOVT_VAT_RATE  # unit_price / DIVISOR
-            t["VAT"] = -vat_value
+            vat = meta["unit_price"] * GOVT_VAT_RATE
+            t["VAT"] = -vat
         else:
             t["VAT"] = None
 
+        # Compute fees/VAT/RVAT robustly
         if f and isinstance(f, dict) and meta["unit_price"] > 0:
-            # Extract referral/fba amounts returned by get_fees_estimate (best-effort)
+            # extract possible keys
             ref_amt = _safe_float(_pick_first_nonnull(f.get("ReferralFees"), f.get("ReferralFee"), f.get("ReferralFee.Amount"), f.get("ReferralFeesAmount")))
             fba_amt = _safe_float(_pick_first_nonnull(f.get("FBAFees"), f.get("FBAFee"), f.get("FBAFeesAmount")))
 
-            # Displayed (signed) amounts follow your negative convention
             ref_display = -ref_amt if ref_amt is not None else None
             fba_display = -fba_amt if fba_amt is not None else None
             total_fee_display = None
             if ref_display is not None or fba_display is not None:
                 total_fee_display = (ref_display or 0.0) + (fba_display or 0.0)
 
-            # Fee percent - prefer referral base relative to unit price.
+            # fee percent
             fee_pct = None
             if ref_amt is not None and meta["unit_price"]:
                 try:
@@ -425,9 +461,7 @@ async def get_orders_async(params, db_cursor=None):
                 except Exception:
                     fee_pct = None
 
-            # RVAT calculation:
-            # If FEES_VAT_MULTIPLIER > 1.0 we assume returned fee amounts are gross (net * multiplier).
-            # VAT on each fee = gross * (1 - 1/multiplier). Otherwise assume amounts are net and VAT = net * GOVT_VAT_RATE.
+            # RVAT
             ref_vat = None
             fba_vat = None
             if ref_amt is not None:
@@ -459,20 +493,18 @@ async def get_orders_async(params, db_cursor=None):
             c = parse_cost(d.get("cost"))
             t["COG"] = -c if c is not None else None
 
-            # Est Net Profit best-effort (leave None if insufficient data)
+            # Est Net Profit best-effort
             try:
                 net_profit = None
                 if c is not None and meta["unit_price"] is not None:
-                    # total fees and VAT are stored negative, convert to positive magnitudes where needed
                     fees_mag = abs(total_fee_display) if total_fee_display is not None else 0.0
-                    vat_mag = vat_value if vat_value is not None else 0.0
+                    vat_mag = vat if vat is not None else 0.0
                     rvat_mag = total_rvat if (ref_vat is not None or fba_vat is not None) else 0.0
                     net_profit = meta["unit_price"] - fees_mag - vat_mag + (rvat_mag) - c
                 t["Est Net Profit"] = net_profit
             except Exception:
                 t["Est Net Profit"] = None
         else:
-            # No fees available — keep fee fields None and still keep VAT computed earlier if possible
             t.update(
                 {
                     "Est Fee": None,
@@ -487,11 +519,7 @@ async def get_orders_async(params, db_cursor=None):
 
         order_items_out.append(t)
 
-    print(
-        "=" * 60
-        + f"\n📊 SUMMARY\nOrders: {len(orders)}\nOrderItems rows: {len(order_items_out)}\nTime: {(time.time() - start_time) / 60:.1f}m\n"
-        + "=" * 60
-    )
+    logger.info("%s\n📊 SUMMARY\nOrders: %d\nOrderItems rows: %d\nTime: %.1f minutes\n%s", "=" * 20, len(orders), len(order_items_out), (time.time() - start_time) / 60.0, "=" * 20)
     return order_items_out
 
 
