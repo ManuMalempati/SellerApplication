@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# (updated orders.py with robust VAT / RVAT handling)
+# updated orders.py — live fee estimates (no persistent cache) and robust VAT/RVAT
 import os
 import time
 import asyncio
@@ -14,14 +14,12 @@ from .database import (
     get_product_mapping,
     get_product_details_by_asin,
     parse_cost,
-    get_fee_estimate_from_product_mapping,
-    upsert_fee_estimate_to_product_mapping,
     connect_database,
 )
 from .estimates import get_fees_estimate
 
 # ENV and VAT config
-# Keep GOVT_VAT_RATE derived as 1 / GOVT_VAT_RATE_DIVISOR per your requirement (default 21)
+# GOVT_VAT_RATE derived as 1 / GOVT_VAT_RATE_DIVISOR per your requirement (default 21)
 try:
     GOVT_VAT_RATE_DIVISOR = float(os.getenv("GOVT_VAT_RATE_DIVISOR", "21"))
     GOVT_VAT_RATE = 1.0 / GOVT_VAT_RATE_DIVISOR
@@ -32,7 +30,9 @@ except Exception:
 BASE_CURRENCY_CODE = os.getenv("BASE_CURRENCY_CODE", "USD")
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", "10"))
 FEE_CACHE_TTL_DAYS = int(os.getenv("FEE_CACHE_TTL_DAYS", "7"))
-AMAZON_VAT_MULTIPLIER = float(os.getenv("FEES_ESTIMATE_VAT_MULTIPLIER", "1.0"))
+# FEES_ESTIMATE_VAT_MULTIPLIER should be configured to e.g. 1.05 if the fee API result is gross (net + VAT).
+FEES_VAT_MULTIPLIER = float(os.getenv("FEES_ESTIMATE_VAT_MULTIPLIER", "1.0"))
+AMAZON_VAT_MULTIPLIER = FEES_VAT_MULTIPLIER  # kept alias for backward compatibility
 MARKETPLACE_ID = os.getenv("MARKETPLACE_ID")
 
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
@@ -55,11 +55,19 @@ def _vat_from_net(net_amount: Optional[float]) -> Optional[float]:
     return net_amount * GOVT_VAT_RATE
 
 
-def _vat_from_gross(gross_amount: Optional[float]) -> Optional[float]:
-    if gross_amount is None:
+def _vat_from_gross_via_multiplier(gross_amount: Optional[float], multiplier: float) -> Optional[float]:
+    """
+    Given a gross amount and the multiplier used to transform net->gross (multiplier >= 1),
+    return the VAT portion: VAT = gross - net = gross * (1 - 1/multiplier)
+    """
+    if gross_amount is None or multiplier is None or multiplier == 0:
         return None
-    v = GOVT_VAT_RATE
-    return gross_amount * (v / (1.0 + v))
+    try:
+        if multiplier <= 1.0:
+            return None
+        return gross_amount * (1.0 - (1.0 / multiplier))
+    except Exception:
+        return None
 
 
 def _pick_first_nonnull(*vals):
@@ -202,43 +210,25 @@ async def get_order_items_batch_async(order_ids: List[str]) -> Dict[str, List[di
 
 
 def estimate_fees_for_item(sku, asin, price, cache, counters):
+    """
+    Use live fee estimate API (get_fees_estimate). Keep a short-lived in-process cache
+    provided by 'cache' dict to limit duplicate API calls within the same run.
+    """
     cache_key = (sku, asin, price)
     if cache_key in cache:
         counters["mem_hits"] += 1
         return cache[cache_key]
     counters["mem_misses"] += 1
 
-    conn = connect_database()
-    cursor = conn.cursor()
-    try:
-        db_entry = get_fee_estimate_from_product_mapping(cursor, sku)
-        if db_entry and db_entry.get("last_price") == price and db_entry.get("updated_at"):
-            updated_at = db_entry["updated_at"]
+    def _fetch():
+        fees_rate_limiter.acquire()
+        return get_fees_estimate(sku, asin, price)
 
-            # Convert SQL naive datetime → UTC-aware
-            if updated_at.tzinfo is None:
-                updated_at = updated_at.replace(tzinfo=timezone.utc)
-
-            if datetime.now(timezone.utc) - updated_at <= timedelta(days=FEE_CACHE_TTL_DAYS):
-                counters["db_hits"] += 1
-                cache[cache_key] = db_entry.get("fees")
-                return db_entry.get("fees")
-
-
-        def _fetch():
-            fees_rate_limiter.acquire()
-            return get_fees_estimate(sku, asin, price)
-
-        counters["sp_calls"] += 1
-        fees = retry_api_call(_fetch)
-        if fees and isinstance(fees, dict) and "errors" not in fees:
-            upsert_fee_estimate_to_product_mapping(cursor, sku, asin, price, fees)
-            conn.commit()
-            cache[cache_key] = fees
-        return fees
-    finally:
-        cursor.close()
-        conn.close()
+    counters["sp_calls"] += 1
+    fees = retry_api_call(_fetch)
+    if fees and isinstance(fees, dict) and "errors" not in fees:
+        cache[cache_key] = fees
+    return fees
 
 
 async def estimate_fees_batch_async(items, cache, counters):
@@ -322,20 +312,13 @@ async def get_orders_async(params, db_cursor=None):
                 qty = 1
 
             # Determine unit price:
-            # Primary: if a SubTotal exists in the item payload treat that as the subtotal for the line
-            # and compute unit_price = subtotal / qty. Otherwise fall back to ItemPrice/ListPrice or fallback_prices.
             subtotal_value = None
-
-            # common keys we might encounter
             if isinstance(item.get("SubTotal"), dict):
                 subtotal_value = item.get("SubTotal", {}).get("Amount")
             elif item.get("SubTotal") is not None:
-                # sometimes SubTotal is a raw numeric/string
                 subtotal_value = item.get("SubTotal")
 
-            # some variations: ItemPrice could be subtotal in your test data -> use it only when SubTotal not provided
             if subtotal_value is None and isinstance(item.get("ItemPrice"), dict):
-                # If ItemPrice.Amount is present but qty>1 and business says it's subtotal, use it divided by qty.
                 subtotal_value = item.get("ItemPrice", {}).get("Amount")
 
             unit_price = 0.0
@@ -347,7 +330,6 @@ async def get_orders_async(params, db_cursor=None):
                 except Exception:
                     unit_price = fallback_prices.get(sku, 0.0)
             else:
-                # fallback: try ListPrice or ItemPrice (per-unit)
                 per_unit = None
                 if isinstance(item.get("ListPrice"), dict):
                     per_unit = item.get("ListPrice", {}).get("Amount")
@@ -415,101 +397,91 @@ async def get_orders_async(params, db_cursor=None):
         }
 
         # Compute fees/VAT/RVAT robustly
+        # 1) Compute VAT on item (always, if unit_price present)
+        vat_value = None
+        if meta["unit_price"]:
+            vat_value = meta["unit_price"] * GOVT_VAT_RATE  # unit_price / DIVISOR
+            t["VAT"] = -vat_value
+        else:
+            t["VAT"] = None
+
         if f and isinstance(f, dict) and meta["unit_price"] > 0:
-            # extract possible keys (try several common variants)
-            ref_ex = _safe_float(_pick_first_nonnull(f.get("ReferralFees"), f.get("ReferralFee"), f.get("ReferralFee.Amount"), f.get("ReferralFeesAmount")))
-            ref_inc = _safe_float(_pick_first_nonnull(f.get("ReferralFeesIncl"), f.get("ReferralFeesWithTax"), f.get("ReferralFeeInclusive"), f.get("ReferralFeesGross")))
+            # Extract referral/fba amounts returned by get_fees_estimate (best-effort)
+            ref_amt = _safe_float(_pick_first_nonnull(f.get("ReferralFees"), f.get("ReferralFee"), f.get("ReferralFee.Amount"), f.get("ReferralFeesAmount")))
+            fba_amt = _safe_float(_pick_first_nonnull(f.get("FBAFees"), f.get("FBAFee"), f.get("FBAFeesAmount")))
 
-            fba_ex = _safe_float(_pick_first_nonnull(f.get("FBAFees"), f.get("FBAFee"), f.get("FBAFeesAmount")))
-            fba_inc = _safe_float(_pick_first_nonnull(f.get("FBAFeesIncl"), f.get("FBAFeesWithTax"), f.get("FBAFeeInclusive"), f.get("FBAFeesGross")))
-
-            # displayed (signed) amounts: prefer inclusive (gross) if available, else exclusive (net)
-            ref_display = None
-            if ref_inc is not None:
-                ref_display = -ref_inc * AMAZON_VAT_MULTIPLIER
-            elif ref_ex is not None:
-                ref_display = -ref_ex * AMAZON_VAT_MULTIPLIER
-
-            fba_display = None
-            if fba_inc is not None:
-                fba_display = -fba_inc * AMAZON_VAT_MULTIPLIER
-            elif fba_ex is not None:
-                fba_display = -fba_ex * AMAZON_VAT_MULTIPLIER
-
+            # Displayed (signed) amounts follow your negative convention
+            ref_display = -ref_amt if ref_amt is not None else None
+            fba_display = -fba_amt if fba_amt is not None else None
             total_fee_display = None
             if ref_display is not None or fba_display is not None:
                 total_fee_display = (ref_display or 0.0) + (fba_display or 0.0)
 
-            # fee percent - prefer referral exclusive amount for percentage calculation
+            # Fee percent - prefer referral base relative to unit price.
             fee_pct = None
-            ref_base_for_pct = _pick_first_nonnull(ref_ex, (abs(ref_display) if ref_display is not None else None))
-            if meta["unit_price"] and ref_base_for_pct:
+            if ref_amt is not None and meta["unit_price"]:
                 try:
-                    fee_pct = float(ref_base_for_pct) / float(meta["unit_price"]) * 100.0
+                    fee_pct = (ref_amt / meta["unit_price"]) * 100.0
                 except Exception:
                     fee_pct = None
 
-            # RVAT: compute VAT portion attributable to referral+FBA fees
-            parts = []
-            if ref_inc is not None and ref_ex is not None:
-                parts.append(ref_inc - ref_ex)
-            elif ref_inc is not None:
-                parts.append(_vat_from_gross(ref_inc))
-            elif ref_ex is not None:
-                parts.append(_vat_from_net(ref_ex))
+            # RVAT calculation:
+            # If FEES_VAT_MULTIPLIER > 1.0 we assume returned fee amounts are gross (net * multiplier).
+            # VAT on each fee = gross * (1 - 1/multiplier). Otherwise assume amounts are net and VAT = net * GOVT_VAT_RATE.
+            ref_vat = None
+            fba_vat = None
+            if ref_amt is not None:
+                if FEES_VAT_MULTIPLIER > 1.0:
+                    ref_vat = _vat_from_gross_via_multiplier(ref_amt, FEES_VAT_MULTIPLIER)
+                else:
+                    ref_vat = _vat_from_net(ref_amt)
+            if fba_amt is not None:
+                if FEES_VAT_MULTIPLIER > 1.0:
+                    fba_vat = _vat_from_gross_via_multiplier(fba_amt, FEES_VAT_MULTIPLIER)
+                else:
+                    fba_vat = _vat_from_net(fba_amt)
 
-            if fba_inc is not None and fba_ex is not None:
-                parts.append(fba_inc - fba_ex)
-            elif fba_inc is not None:
-                parts.append(_vat_from_gross(fba_inc))
-            elif fba_ex is not None:
-                parts.append(_vat_from_net(fba_ex))
-
-            if parts:
-                rvat_value = sum([p for p in parts if p is not None])
-                rvat = -rvat_value
+            if ref_vat is not None or fba_vat is not None:
+                total_rvat = (ref_vat or 0.0) + (fba_vat or 0.0)
+                t["Est R. VAT"] = -total_rvat
             else:
-                rvat = None
-
-            # per-unit VAT on item price (always compute if unit_price present)
-            vat = None
-            if meta["unit_price"]:
-                vat = -_vat_from_net(meta["unit_price"])
-            else:
-                vat = None
+                t["Est R. VAT"] = None
 
             t.update(
                 {
-                    "Est Fee": ref_display if ref_display is not None else "Not Available",
-                    "Est FBAFees": fba_display if fba_display is not None else "Not Available",
-                    "Est TotalAmazonFees": total_fee_display if total_fee_display is not None else "Not Available",
-                    "Est R. VAT": rvat if rvat is not None else "Not Available",
-                    "Est Fee%": fee_pct if fee_pct is not None else "Not Available",
-                    "VAT": vat if vat is not None else "Not Available",
+                    "Est Fee": ref_display if ref_display is not None else None,
+                    "Est FBAFees": fba_display if fba_display is not None else None,
+                    "Est TotalAmazonFees": total_fee_display,
+                    "Est Fee%": fee_pct,
                 }
             )
 
             c = parse_cost(d.get("cost"))
-            t["COG"] = -c if c is not None else "Not Available"
+            t["COG"] = -c if c is not None else None
 
-            t["Est Net Profit"] = (
-                meta["unit_price"] - (abs(ref_display or 0) + abs(fba_display or 0)) - (-(vat or 0)) + (rvat if rvat is not None else 0) - c
-                if c is not None
-                else "Not Available"
-            )
+            # Est Net Profit best-effort (leave None if insufficient data)
+            try:
+                net_profit = None
+                if c is not None and meta["unit_price"] is not None:
+                    # total fees and VAT are stored negative, convert to positive magnitudes where needed
+                    fees_mag = abs(total_fee_display) if total_fee_display is not None else 0.0
+                    vat_mag = vat_value if vat_value is not None else 0.0
+                    rvat_mag = total_rvat if (ref_vat is not None or fba_vat is not None) else 0.0
+                    net_profit = meta["unit_price"] - fees_mag - vat_mag + (rvat_mag) - c
+                t["Est Net Profit"] = net_profit
+            except Exception:
+                t["Est Net Profit"] = None
         else:
-            # No fees available — still compute VAT per unit if possible
-            vat = -_vat_from_net(meta["unit_price"]) if meta["unit_price"] else None
+            # No fees available — keep fee fields None and still keep VAT computed earlier if possible
             t.update(
                 {
-                    "Est Fee": "Not Available",
-                    "Est FBAFees": "Not Available",
-                    "Est TotalAmazonFees": "Not Available",
-                    "Est R. VAT": "Not Available",
-                    "Est Fee%": "Not Available",
-                    "VAT": vat if vat is not None else "Not Available",
-                    "COG": -parse_cost(d.get("cost")) if d.get("cost") else "Not Available",
-                    "Est Net Profit": "Not Available",
+                    "Est Fee": None,
+                    "Est FBAFees": None,
+                    "Est TotalAmazonFees": None,
+                    "Est R. VAT": None,
+                    "Est Fee%": None,
+                    "COG": -parse_cost(d.get("cost")) if d.get("cost") else None,
+                    "Est Net Profit": None,
                 }
             )
 

@@ -11,10 +11,6 @@ Usage:
 
 --dry-run : do not write to DB, just print the rows prepared for upsert.
 --verbose : more console output for debugging.
-
-Notes:
-- Requires same .env and project imports as other scripts.
-- This is intended for local testing/debugging only.
 """
 from __future__ import annotations
 import argparse
@@ -41,8 +37,6 @@ from app.database import (
     get_product_mapping,
     get_product_details_by_asin,
     parse_cost,
-    get_fee_estimate_from_product_mapping,
-    upsert_fee_estimate_to_product_mapping,
 )
 from app.estimates import get_fees_estimate
 from app.orders import get_listing_prices_batch  # reuse pricing batch helper
@@ -54,7 +48,16 @@ logger = logging.getLogger("test_sync_single_order")
 
 SQL_CS = os.getenv("SQLSERVER_CONNECTION_STRING")
 MARKETPLACE_ID = os.getenv("MARKETPLACE_ID")
-# Fee cache TTL consistent with other scripts
+# Fee multiplier and VAT config
+FEES_VAT_MULTIPLIER = float(os.getenv("FEES_ESTIMATE_VAT_MULTIPLIER", "1.0"))
+try:
+    GOVT_VAT_RATE_DIVISOR = float(os.getenv("GOVT_VAT_RATE_DIVISOR", "21"))
+    GOVT_VAT_RATE = 1.0 / GOVT_VAT_RATE_DIVISOR
+except Exception:
+    GOVT_VAT_RATE_DIVISOR = 21.0
+    GOVT_VAT_RATE = 1.0 / GOVT_VAT_RATE_DIVISOR
+
+# Fee cache TTL consistent with other scripts (not used for persistent cache here)
 FEE_CACHE_TTL_DAYS = int(os.getenv("FEE_CACHE_TTL_DAYS", "7"))
 
 def parse_args():
@@ -83,6 +86,36 @@ def safe_float(v):
         return float(v)
     except Exception:
         return None
+
+# helpers for VAT/RVAT computation
+def _safe_float(x: Any) -> Optional[float]:
+    try:
+        if x is None:
+            return None
+        return float(x)
+    except Exception:
+        return None
+
+def _vat_from_net(net_amount: Optional[float]) -> Optional[float]:
+    if net_amount is None:
+        return None
+    return net_amount * GOVT_VAT_RATE
+
+def _vat_from_gross_via_multiplier(gross_amount: Optional[float], multiplier: float) -> Optional[float]:
+    if gross_amount is None or multiplier is None or multiplier == 0:
+        return None
+    try:
+        if multiplier <= 1.0:
+            return None
+        return gross_amount * (1.0 - (1.0 / multiplier))
+    except Exception:
+        return None
+
+def _pick_first_nonnull(*vals):
+    for v in vals:
+        if v is not None:
+            return v
+    return None
 
 # duplicated lightweight upsert helper (temp table + MERGE) - mirrors sync_orders_live
 def upsert_order_items_bulk(conn: pyodbc.Connection, rows: List[Dict[str, Any]]):
@@ -218,29 +251,16 @@ def compute_order_item_key(amazon_order_id: str, order_item_id: Optional[str], s
         return f"{amazon_order_id}:{order_item_id}"
     return f"{amazon_order_id}:0:{sku}:{asin}"
 
-# Simple fee estimator that respects cache in DB (synchronous)
-def estimate_fees_with_cache(cursor, sku: str, asin: str, price: float):
-    # check DB cache
-    db_entry = get_fee_estimate_from_product_mapping(cursor, sku)
-    if db_entry and db_entry.get("last_price") == price and db_entry.get("updated_at"):
-        updated_at = db_entry["updated_at"]
-        if isinstance(updated_at, dt.datetime) and updated_at.tzinfo is None:
-            updated_at = updated_at.replace(tzinfo=dt.timezone.utc)
-        if (dt.datetime.now(dt.timezone.utc) - updated_at).days <= FEE_CACHE_TTL_DAYS:
-            return db_entry.get("fees")
-    # otherwise call estimate API
+# Live fee estimator (no persistent DB cache)
+def estimate_fees_live(sku: str, asin: str, price: float):
     try:
         fees = get_fees_estimate(sku, asin, price)
     except Exception as e:
         logger.exception("Fee estimate API error for %s/%s/%s: %s", sku, asin, price, e)
         return None
     if fees and isinstance(fees, dict) and "errors" not in fees:
-        # persist cache
-        try:
-            upsert_fee_estimate_to_product_mapping(cursor, sku, asin, price, fees)
-        except Exception:
-            logger.exception("Failed to upsert fee cache for %s", sku)
-    return fees
+        return fees
+    return None
 
 def main():
     args = parse_args()
@@ -290,7 +310,7 @@ def main():
     fallback_prices = get_listing_prices_batch(missing_price_skus) if missing_price_skus else {}
 
     rows: List[Dict[str, Any]] = []
-    # open DB connection for fee caching during loop
+    # open DB connection for fee-calls (no persistent cache)
     conn = connect_database()
     cur = conn.cursor()
     try:
@@ -332,22 +352,68 @@ def main():
             d = details.get(asin, {}) if asin else {}
             title = d.get("item_name") or d.get("title") or d.get("name") or None
 
-            # estimate fees (cached in DB)
-            fees = estimate_fees_with_cache(cur, sku or "", asin or "", unit_price or 0.0) if sku and asin else None
-            if fees and isinstance(fees, dict):
-                ref_w = fees.get("ReferralFees", 0)
-                fba_w = fees.get("FBAFees", 0)
-                fee_incl = -ref_w
-                fba_fees_incl = -fba_w
-                total_fee = -(ref_w + fba_w)
-                fee_pct = (ref_w / unit_price) * 100 if unit_price else None
-                rv = (ref_w + fba_w) - (fees.get("ReferralFees", 0) + fees.get("FBAFees", 0))
-            else:
-                fee_incl = None
-                fba_fees_incl = None
-                total_fee = None
-                fee_pct = None
-                rv = None
+            # estimate fees (live)
+            fees = estimate_fees_live(sku or "", asin or "", unit_price or 0.0) if sku and asin else None
+
+            # Debug: log raw fees and env settings if verbose
+            if args.verbose:
+                logger.debug("FEES_VAT_MULTIPLIER=%s GOVT_VAT_RATE_DIVISOR=%s GOVT_VAT_RATE=%s", FEES_VAT_MULTIPLIER, GOVT_VAT_RATE_DIVISOR, GOVT_VAT_RATE)
+                logger.debug("Raw fees payload for SKU=%s ASIN=%s price=%s: %s", sku, asin, unit_price, fees)
+
+            # compute VAT on item (unit_price / divisor)
+            vat_amount = None
+            if unit_price is not None:
+                vat_amount = unit_price * GOVT_VAT_RATE  # unit_price / GOVT_VAT_RATE_DIVISOR
+
+            # parse referral & fba amounts from fee payload (best effort)
+            ref_amt = _safe_float(_pick_first_nonnull(
+                fees.get("ReferralFees") if isinstance(fees, dict) else None,
+                fees.get("ReferralFee") if isinstance(fees, dict) else None,
+                fees.get("ReferralFee.Amount") if isinstance(fees, dict) else None,
+                fees.get("ReferralFeesAmount") if isinstance(fees, dict) else None
+            )) if fees else None
+
+            fba_amt = _safe_float(_pick_first_nonnull(
+                fees.get("FBAFees") if isinstance(fees, dict) else None,
+                fees.get("FBAFee") if isinstance(fees, dict) else None,
+                fees.get("FBAFeesAmount") if isinstance(fees, dict) else None
+            )) if fees else None
+
+            # compute RVAT: VAT on fees that is claimable
+            ref_vat = None
+            fba_vat = None
+            if ref_amt is not None:
+                if FEES_VAT_MULTIPLIER > 1.0:
+                    ref_vat = _vat_from_gross_via_multiplier(ref_amt, FEES_VAT_MULTIPLIER)
+                else:
+                    ref_vat = _vat_from_net(ref_amt)
+            if fba_amt is not None:
+                if FEES_VAT_MULTIPLIER > 1.0:
+                    fba_vat = _vat_from_gross_via_multiplier(fba_amt, FEES_VAT_MULTIPLIER)
+                else:
+                    fba_vat = _vat_from_net(fba_amt)
+
+            total_rvat = None
+            if (ref_vat is not None) or (fba_vat is not None):
+                total_rvat = (ref_vat or 0.0) + (fba_vat or 0.0)
+
+            # Debug prints for computations
+            if args.verbose:
+                logger.debug("Computed values for SKU=%s: unit_price=%s subtotal=%s qty=%s", sku, unit_price, subtotal, qty)
+                logger.debug("Parsed fee amounts: referral=%s fba=%s", ref_amt, fba_amt)
+                logger.debug("VAT on item (unit_price / %s) = %s", GOVT_VAT_RATE_DIVISOR, vat_amount)
+                logger.debug("RVAT components: ref_vat=%s fba_vat=%s total_rvat=%s (multiplier=%s)", ref_vat, fba_vat, total_rvat, FEES_VAT_MULTIPLIER)
+
+            # prepare display values (matching DB negative convention)
+            fee_incl = -ref_amt if ref_amt is not None else None
+            fba_incl = -fba_amt if fba_amt is not None else None
+            total_fee = -((ref_amt or 0.0) + (fba_amt or 0.0)) if (ref_amt is not None or fba_amt is not None) else None
+            fee_pct = None
+            if ref_amt is not None and unit_price:
+                try:
+                    fee_pct = (ref_amt / unit_price) * 100.0
+                except Exception:
+                    fee_pct = None
 
             row = {
                 "AmazonOrderId": order_payload.get("AmazonOrderId") or order_payload.get("AmazonOrderId") or order_id,
@@ -367,10 +433,10 @@ def main():
                 "LastUpdateDate": normalize_datetime_for_sql(order_payload.get("LastUpdateDate") or order_payload.get("LastUpdatedDate")),
                 "FeeIncl": fee_incl,
                 "FeePct": fee_pct,
-                "FBAFeesIncl": fba_fees_incl,
+                "FBAFeesIncl": fba_incl,
                 "TotalFee": total_fee,
-                "RVAT": rv,
-                "VAT": None,
+                "RVAT": -total_rvat if total_rvat is not None else None,
+                "VAT": -vat_amount if vat_amount is not None else None,
                 "COG": (-parse_cost(d.get("cost"))) if d.get("cost") else None,
                 "Profit": None,
             }

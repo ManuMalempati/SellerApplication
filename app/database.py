@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import pyodbc
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import os
 from dotenv import load_dotenv
 import json
@@ -22,18 +22,20 @@ def connect_database():
 
 def get_product_mapping(cursor, seller_sku_list):
     """
-    Get complete SKU -> ASIN -> SSKU mapping (+ fee cache fields) from database
+    Get SKU -> ASIN -> SSKU mapping from ProductMapping.
 
     Returns:
         dict: {
           sku: {
-            asin: str,
-            ssku: str,
-            last_price: float|None,
-            fees_json: dict|None,
-            fee_updated_at: datetime|None
+            "asin": str|None,
+            "ssku": str|None,
+            "last_price": None,      # kept for compatibility
+            "fees": None,            # kept for compatibility
+            "fee_updated_at": None,  # kept for compatibility
           }
         }
+    Note: Fee-cache columns were removed from the DB; this function intentionally
+    selects only sku, asin, ssku so it works regardless of those columns.
     """
     product_mapping = {}
 
@@ -43,9 +45,9 @@ def get_product_mapping(cursor, seller_sku_list):
     unique_skus = list(set(seller_sku_list))
     placeholders = ",".join("?" * len(unique_skus))
 
-    # Include fee cache columns in the mapping
+    # Select only the core mapping columns. Fee cache columns (if present) are ignored.
     query = f"""
-        SELECT sku, asin, ssku, last_price, fees_json, fee_updated_at
+        SELECT sku, asin, ssku
         FROM ProductMapping
         WHERE sku IN ({placeholders})
     """
@@ -56,23 +58,14 @@ def get_product_mapping(cursor, seller_sku_list):
         sku = row[0]
         asin = row[1]
         ssku = row[2]
-        last_price = row[3]
-        fees_json = row[4]
-        fee_updated_at = row[5]
-
-        parsed_fees = None
-        if fees_json:
-            try:
-                parsed_fees = json.loads(fees_json)
-            except Exception:
-                parsed_fees = None
 
         product_mapping[sku] = {
             "asin": asin,
             "ssku": ssku,
-            "last_price": float(last_price) if last_price is not None else None,
-            "fees": parsed_fees,
-            "fee_updated_at": fee_updated_at,
+            # keep these keys for compatibility with call sites; values are None
+            "last_price": None,
+            "fees": None,
+            "fee_updated_at": None,
         }
 
     return product_mapping
@@ -143,67 +136,20 @@ def parse_cost(cost_value):
 
 
 # -------------------------------------------------------------------
-# Fee cache is now stored on ProductMapping (NOT FeeEstimateCache)
-# Columns:
-#   last_price (decimal)
-#   fees_json (nvarchar(max)) - JSON string
-#   fee_updated_at (datetime)
+# Fee cache stubs — persistent cache removed
 # -------------------------------------------------------------------
 
 def get_fee_estimate_from_product_mapping(cursor, sku: str):
     """
-    Retrieve cached fees for a SKU from ProductMapping.
-
-    Returns:
-        dict or None:
-          {
-            asin: str,
-            last_price: float|None,
-            fees: dict|None,
-            updated_at: datetime|None
-          }
+    Fee cache disabled — always return None to force live fee estimate.
+    Kept as a stub to avoid changing many call sites.
     """
-    query = """
-        SELECT asin, last_price, fees_json, fee_updated_at
-        FROM ProductMapping
-        WHERE sku = ?
-    """
-    cursor.execute(query, (sku,))
-    row = cursor.fetchone()
-    if not row:
-        return None
-
-    asin, last_price, fees_json, fee_updated_at = row
-
-    fees = None
-    if fees_json:
-        try:
-            fees = json.loads(fees_json)
-        except Exception:
-            fees = None
-
-    return {
-        "asin": asin,
-        "last_price": float(last_price) if last_price is not None else None,
-        "fees": fees,
-        "updated_at": fee_updated_at,
-    }
+    return None
 
 
 def upsert_fee_estimate_to_product_mapping(cursor, sku: str, asin: str, price: float, fees_dict: dict):
     """
-    Update ProductMapping row for this SKU with the latest fee cache.
-
-    IMPORTANT (production safety):
-    - We update ONLY last_price, fees_json, fee_updated_at.
-    - We DO NOT overwrite asin/ssku mappings (your mapping is production-critical).
+    Fee cache disabled — no-op stub.
+    Kept as a stub to avoid changing many call sites.
     """
-    now = datetime.now(timezone.utc)
-    fees_json = json.dumps(fees_dict)
-
-    query = """
-        UPDATE ProductMapping
-        SET last_price = ?, fees_json = ?, fee_updated_at = ?
-        WHERE sku = ?
-    """
-    cursor.execute(query, (price, fees_json, now, sku))
+    return None
