@@ -135,21 +135,146 @@ def parse_cost(cost_value):
         return None
 
 
-# -------------------------------------------------------------------
-# Fee cache stubs — persistent cache removed
-# -------------------------------------------------------------------
-
-def get_fee_estimate_from_product_mapping(cursor, sku: str):
-    """
-    Fee cache disabled — always return None to force live fee estimate.
-    Kept as a stub to avoid changing many call sites.
-    """
-    return None
+import pyodbc
+from .database import connect_database
 
 
-def upsert_fee_estimate_to_product_mapping(cursor, sku: str, asin: str, price: float, fees_dict: dict):
+def upsert_order_item(cursor, row):
     """
-    Fee cache disabled — no-op stub.
-    Kept as a stub to avoid changing many call sites.
+    Perform a MERGE-based UPSERT of a single order item row.
+    Matches the exact output fields from orders.py (Option B).
     """
-    return None
+    merge_sql = """
+    MERGE INTO OrderItems AS target
+    USING (SELECT ? AS OrderItemKey) AS src
+    ON target.OrderItemKey = src.OrderItemKey
+
+    WHEN MATCHED THEN
+        UPDATE SET
+            AmazonOrderId = ?,
+            OrderItemId = ?,
+            OrderDate = ?,
+            SKU = ?,
+            ASIN = ?,
+            SSKU = ?,
+            Brand = ?,
+            Category = ?,
+            Title = ?,
+            Qty = ?,
+            UnitPrice = ?,
+            Subtotal = ?,
+            Currency = ?,
+            OrderStatus = ?,
+            LastUpdateDate = ?,
+            FeeIncl = ?,
+            FeePct = ?,
+            FBAFeesIncl = ?,
+            TotalFee = ?,
+            RVAT = ?,
+            VAT = ?,
+            COG = ?,
+            Profit = ?
+
+    WHEN NOT MATCHED THEN
+        INSERT (
+            OrderItemKey, AmazonOrderId, OrderItemId, OrderDate, SKU, ASIN, SSKU,
+            Brand, Category, Title, Qty, UnitPrice, Subtotal, Currency,
+            OrderStatus, LastUpdateDate, FeeIncl, FeePct, FBAFeesIncl,
+            TotalFee, RVAT, VAT, COG, Profit
+        )
+        VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        );
+    """
+
+    params = (
+        # MATCH KEY
+        row.get("OrderItemKey"),
+
+        # UPDATE fields
+        row.get("AmazonOrderId"),
+        row.get("OrderItemId"),
+        row.get("OrderDate"),
+        row.get("SKU"),
+        row.get("ASIN"),
+        row.get("SSKU"),
+        row.get("Brand"),
+        row.get("Category"),
+        row.get("Title"),
+        row.get("Qty"),
+        row.get("UnitPrice"),
+        row.get("Subtotal"),
+        row.get("Currency"),
+        row.get("OrderStatus"),
+        row.get("LastUpdateDate"),
+        row.get("FeeIncl"),
+        row.get("FeePct"),
+        row.get("FBAFeesIncl"),
+        row.get("TotalFee"),
+        row.get("RVAT"),
+        row.get("VAT"),
+        row.get("COG"),
+        row.get("Profit"),
+
+        # INSERT fields (duplicate)
+        row.get("OrderItemKey"),
+        row.get("AmazonOrderId"),
+        row.get("OrderItemId"),
+        row.get("OrderDate"),
+        row.get("SKU"),
+        row.get("ASIN"),
+        row.get("SSKU"),
+        row.get("Brand"),
+        row.get("Category"),
+        row.get("Title"),
+        row.get("Qty"),
+        row.get("UnitPrice"),
+        row.get("Subtotal"),
+        row.get("Currency"),
+        row.get("OrderStatus"),
+        row.get("LastUpdateDate"),
+        row.get("FeeIncl"),
+        row.get("FeePct"),
+        row.get("FBAFeesIncl"),
+        row.get("TotalFee"),
+        row.get("RVAT"),
+        row.get("VAT"),
+        row.get("COG"),
+        row.get("Profit"),
+    )
+
+    cursor.execute(merge_sql, params)
+
+
+def robust_upsert_order_items(cursor, row):
+    """
+    Robust wrapper around upsert_order_item:
+    - Retries once on SQL Server connection drop (08S01)
+    - Returns True on success, False on failure
+    """
+    try:
+        upsert_order_item(cursor, row)
+        return True
+
+    except pyodbc.OperationalError as exc:
+        msg = str(exc)
+        if "08S01" in msg:
+            print("DB connection lost during upsert. Reconnecting...")
+            try:
+                conn = connect_database()
+                new_cursor = conn.cursor()
+                upsert_order_item(new_cursor, row)
+                conn.commit()
+                new_cursor.close()
+                conn.close()
+                return True
+            except Exception as retry_exc:
+                print("Retry upsert failed: {}".format(retry_exc))
+                return False
+        else:
+            print("OperationalError during upsert: {}".format(exc))
+            return False
+
+    except Exception as exc:
+        print("General DB upsert error: {}".format(exc))
+        return False
