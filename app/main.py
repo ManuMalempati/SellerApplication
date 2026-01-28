@@ -35,18 +35,12 @@ async def transactions(days: int = 1, hours: int = 0, minutes: int = 0):
     return filtered_data
 
 @app.get("/orders")
-async def orders(days: int = 0, hours: int = 5, minutes: int = 0):
+async def orders(days: int = 0, hours: int = 10, minutes: int = 0):
     delta = timedelta(days=days, hours=hours, minutes=minutes)
     last_updated_after = format_dt_z(datetime.now(timezone.utc) - delta)
     params = {"LastUpdatedAfter": last_updated_after, "MaxResultsPerPage": 100}
 
-    conn = connect_database()
-    cursor = conn.cursor()
-    try:
-        response = await get_orders(params=params, db_cursor=cursor)
-    finally:
-        cursor.close()
-        conn.close()
+    response = await get_orders(params=params)
     return response
 
 if __name__ == "__main__":

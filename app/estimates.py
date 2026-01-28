@@ -57,44 +57,64 @@ def _extract_from_response(response: Dict[str, Any]) -> Optional[Dict[str, Any]]
     if "errors" in response:
         return {"errors": response.get("errors")}
 
-    # Try the standard structure under response["payload"]["FeesEstimateResult"]
-    result_root = (response.get("payload") or {}).get("FeesEstimateResult") or response.get("FeesEstimateResult") or {}
+    # Standard SP-API structure
+    result_root = (
+        (response.get("payload") or {}).get("FeesEstimateResult")
+        or response.get("FeesEstimateResult")
+        or {}
+    )
 
-    # If there is a Status and it's not Success, treat as no estimate
+    # If Status exists and is not Success → no estimate
     status_value = result_root.get("Status")
     if status_value and status_value != "Success":
         return None
 
-    fees_estimate_section = (result_root.get("FeesEstimate") or {}) or response.get("FeesEstimate") or {}
+    fees_section = (
+        result_root.get("FeesEstimate")
+        or response.get("FeesEstimate")
+        or {}
+    )
 
-    # Extract total + currency if present
+    # Extract total fees if present
     total_fees_amount = None
     total_fees_currency = None
-    total_fees_section = fees_estimate_section.get("TotalFeesEstimate") or {}
-    if total_fees_section:
-        total_fees_amount = _safe_float(total_fees_section.get("Amount"))
-        total_fees_currency = total_fees_section.get("CurrencyCode")
+    total_section = fees_section.get("TotalFeesEstimate") or {}
+    if total_section:
+        total_fees_amount = _safe_float(total_section.get("Amount"))
+        total_fees_currency = total_section.get("CurrencyCode")
 
-    # Prefer FeeDetailList -> FinalFee values (authoritative)
+    # Extract per-fee details
     referral_fee_net = 0.0
     fba_fee_net = 0.0
-    fee_detail_list = fees_estimate_section.get("FeeDetailList") or []
 
+    fee_detail_list = fees_section.get("FeeDetailList") or []
     if fee_detail_list:
         for fee_item in fee_detail_list:
-            fee_type = (fee_item.get("FeeType") or "") or ""
-            final_fee_amount = _safe_float((fee_item.get("FinalFee") or {}).get("Amount") or (fee_item.get("FeeAmount") or {}).get("Amount"))
+            fee_type = (fee_item.get("FeeType") or "").lower()
+            final_fee_amount = _safe_float(
+                (fee_item.get("FinalFee") or {}).get("Amount")
+                or (fee_item.get("FeeAmount") or {}).get("Amount")
+            )
             if final_fee_amount is None:
                 continue
-            fee_type_lower = fee_type.lower()
-            if "referral" in fee_type_lower:
+
+            if "referral" in fee_type:
                 referral_fee_net += final_fee_amount
-            elif fee_type_lower.startswith("fba") or "fba" in fee_type_lower or "pick" in fee_type_lower:
+            elif fee_type.startswith("fba") or "fba" in fee_type or "pick" in fee_type:
                 fba_fee_net += final_fee_amount
     else:
-        # Fallback to legacy / top-level shapes
-        referral_fee_net = _safe_float(fees_estimate_section.get("ReferralFee") or fees_estimate_section.get("ReferralFees") or 0.0) or 0.0
-        fba_fee_net = _safe_float(fees_estimate_section.get("FBAFees") or fees_estimate_section.get("FBAFee") or 0.0) or 0.0
+        # Legacy fallback
+        referral_fee_net = _safe_float(
+            fees_section.get("ReferralFee")
+            or fees_section.get("ReferralFees")
+            or 0.0
+        ) or 0.0
+
+        fba_fee_net = _safe_float(
+            fees_section.get("FBAFees")
+            or fees_section.get("FBAFee")
+            or 0.0
+        ) or 0.0
 
     return {
         "raw": response,
@@ -123,58 +143,64 @@ def get_fees_estimate(sku: str, asin: str, price: float) -> Dict[str, Any]:
     if price is None:
         return {"errors": [{"code": "InvalidPrice", "message": "Price is required for fee estimation"}]}
 
-    # Prepare body template (MarketplaceId may be None, spapi_request will handle it)
-    def build_request_body(identifier: str) -> Dict[str, Any]:
-        return {
-            "FeesEstimateRequest": {
-                "MarketplaceId": MARKETING_ID if False else (MARKETPLACE_ID or ""),
-                "IsAmazonFulfilled": True,
-                "PriceToEstimateFees": {
-                    "ListingPrice": {"CurrencyCode": BASE_CURRENCY_CODE, "Amount": price}
-                },
-                "Identifier": identifier,
-            }
-        }
-
-    # Attempt SKU-based call if SKU provided
+    # --- SKU-based request ---
     if sku:
         try:
-            sku_identifier = f"{sku}-estimate"
-            sku_request_body = {
+            safe_sku = quote(sku, safe="")
+            body = {
                 "FeesEstimateRequest": {
                     "MarketplaceId": MARKETPLACE_ID or "",
                     "IsAmazonFulfilled": True,
-                    "PriceToEstimateFees": {"ListingPrice": {"CurrencyCode": BASE_CURRENCY_CODE, "Amount": price}},
-                    "Identifier": sku_identifier,
+                    "PriceToEstimateFees": {
+                        "ListingPrice": {
+                            "CurrencyCode": BASE_CURRENCY_CODE,
+                            "Amount": price,
+                        }
+                    },
+                    "Identifier": f"{sku}-estimate",
                 }
             }
-            safe_sku = quote(sku, safe="")
-            sku_response = spapi_request("POST", f"/products/fees/v0/listings/{safe_sku}/feesEstimate", body=sku_request_body)
-            extracted = _extract_from_response(sku_response)
+
+            resp = spapi_request(
+                "POST",
+                f"/products/fees/v0/listings/{safe_sku}/feesEstimate",
+                body=body,
+            )
+            extracted = _extract_from_response(resp)
             if extracted is not None:
                 return extracted
+
         except Exception as exc:
-            # Swallow exception and fallback to ASIN attempt
             return {"errors": [{"code": "RequestException", "message": str(exc)}]}
 
-    # Attempt ASIN-based call if ASIN provided
+    # --- ASIN-based request ---
     if asin:
         try:
-            asin_identifier = f"{asin}-estimate"
-            asin_request_body = {
+            body = {
                 "FeesEstimateRequest": {
                     "MarketplaceId": MARKETPLACE_ID or "",
                     "IsAmazonFulfilled": True,
-                    "PriceToEstimateFees": {"ListingPrice": {"CurrencyCode": BASE_CURRENCY_CODE, "Amount": price}},
-                    "Identifier": asin_identifier,
+                    "PriceToEstimateFees": {
+                        "ListingPrice": {
+                            "CurrencyCode": BASE_CURRENCY_CODE,
+                            "Amount": price,
+                        }
+                    },
+                    "Identifier": f"{asin}-estimate",
                 }
             }
-            asin_response = spapi_request("POST", f"/products/fees/v0/items/{asin}/feesEstimate", body=asin_request_body)
-            extracted_asin = _extract_from_response(asin_response)
-            if extracted_asin is not None:
-                return extracted_asin
+
+            resp = spapi_request(
+                "POST",
+                f"/products/fees/v0/items/{asin}/feesEstimate",
+                body=body,
+            )
+            extracted = _extract_from_response(resp)
+            if extracted is not None:
+                return extracted
+
         except Exception as exc:
             return {"errors": [{"code": "RequestException", "message": str(exc)}]}
 
-    # If neither returned a usable estimate, return a NoEstimate error
+    # No usable estimate
     return {"errors": [{"code": "NoEstimate", "message": "No fees estimate returned from SP-API"}]}
