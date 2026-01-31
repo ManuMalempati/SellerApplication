@@ -70,6 +70,35 @@ def get_product_mapping(cursor, seller_sku_list):
 
     return product_mapping
 
+def get_all_product_mapping(cursor):
+    """
+    Return a dict of all SKUs -> { asin, ssku } from ProductMapping.
+    This is used by buybox.py to load every SKU in the system.
+    """
+    query = """
+        SELECT sku, asin, ssku
+        FROM ProductMapping
+    """
+
+    cursor.execute(query)
+    rows = cursor.fetchall()
+
+    mapping = {}
+    for row in rows:
+        sku = row[0]
+        asin = row[1]
+        ssku = row[2]
+
+        mapping[sku] = {
+            "asin": asin,
+            "ssku": ssku,
+            "last_price": None,
+            "fees": None,
+            "fee_updated_at": None,
+        }
+
+    return mapping
+
 
 def get_product_details_by_asin(cursor, asin_list):
     """
@@ -133,10 +162,6 @@ def parse_cost(cost_value):
         return float(cost_str)
     except (ValueError, AttributeError):
         return None
-
-
-import pyodbc
-from .database import connect_database
 
 
 def upsert_order_item(cursor, row):
