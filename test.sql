@@ -1,2 +1,3 @@
-SELECT * FROM spapi_app_user.OrderItems
-WHERE Qty > 1
+SELECT COUNT(*)
+FROM spapi_app_user.OrderItems
+WHERE LastSeenAt >= '2026-01-31';

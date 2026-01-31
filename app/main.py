@@ -5,6 +5,7 @@ from .database import connect_database
 from .estimates import get_fees_estimate
 from datetime import datetime, timedelta, timezone
 from .orders import get_orders
+from .buybox import buyboxes
 from .test import router as test_router
 import os
 
@@ -35,13 +36,18 @@ async def transactions(days: int = 1, hours: int = 0, minutes: int = 0):
     return filtered_data
 
 @app.get("/orders")
-async def orders(days: int = 0, hours: int = 10, minutes: int = 0):
+async def orders(days: int = 4, hours: int = 0, minutes: int = 0):
     delta = timedelta(days=days, hours=hours, minutes=minutes)
     last_updated_after = format_dt_z(datetime.now(timezone.utc) - delta)
     params = {"LastUpdatedAfter": last_updated_after, "MaxResultsPerPage": 100}
 
     response = await get_orders(params=params)
     return response
+
+@app.get("/buybox")
+async def buybox():
+    return buyboxes()
+
 
 if __name__ == "__main__":
     import uvicorn

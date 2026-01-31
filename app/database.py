@@ -145,103 +145,101 @@ def upsert_order_item(cursor, row):
     Matches the exact output fields from orders.py (Option B).
     """
     merge_sql = """
-    MERGE INTO OrderItems AS target
-    USING (SELECT ? AS OrderItemKey) AS src
-    ON target.OrderItemKey = src.OrderItemKey
+        MERGE INTO OrderItems AS target
+        USING (SELECT ? AS OrderItemKey) AS src
+        ON target.OrderItemKey = src.OrderItemKey
 
-    WHEN MATCHED THEN
-        UPDATE SET
-            AmazonOrderId = ?,
-            OrderItemId = ?,
-            OrderDate = ?,
-            SKU = ?,
-            ASIN = ?,
-            SSKU = ?,
-            Brand = ?,
-            Category = ?,
-            Title = ?,
-            Qty = ?,
-            UnitPrice = ?,
-            Subtotal = ?,
-            Currency = ?,
-            OrderStatus = ?,
-            LastUpdateDate = ?,
-            FeeIncl = ?,
-            FeePct = ?,
-            FBAFeesIncl = ?,
-            TotalFee = ?,
-            RVAT = ?,
-            VAT = ?,
-            COG = ?,
-            Profit = ?
+        WHEN MATCHED THEN
+            UPDATE SET
+                AmazonOrderId = ?,
+                OrderDate = ?,
+                SKU = ?,
+                ASIN = ?,
+                SSKU = ?,
+                Brand = ?,
+                Category = ?,
+                Title = ?,
+                Qty = ?,
+                UnitPrice = ?,
+                Subtotal = ?,
+                Currency = ?,
+                OrderStatus = ?,
+                LastUpdateDate = ?,
+                FeeIncl = ?,
+                FeePct = ?,
+                FBAFeesIncl = ?,
+                TotalFee = ?,
+                RVAT = ?,
+                VAT = ?,
+                COG = ?,
+                Profit = ?
 
-    WHEN NOT MATCHED THEN
-        INSERT (
-            OrderItemKey, AmazonOrderId, OrderItemId, OrderDate, SKU, ASIN, SSKU,
-            Brand, Category, Title, Qty, UnitPrice, Subtotal, Currency,
-            OrderStatus, LastUpdateDate, FeeIncl, FeePct, FBAFeesIncl,
-            TotalFee, RVAT, VAT, COG, Profit
-        )
-        VALUES (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-        );
-    """
+        WHEN NOT MATCHED THEN
+            INSERT (
+                OrderItemKey, AmazonOrderId, OrderDate, SKU, ASIN, SSKU,
+                Brand, Category, Title, Qty, UnitPrice, Subtotal, Currency,
+                OrderStatus, LastUpdateDate, FeeIncl, FeePct, FBAFeesIncl,
+                TotalFee, RVAT, VAT, COG, Profit
+            )
+            VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            );
+        """
+
 
     params = (
-        # MATCH KEY
-        row.get("OrderItemKey"),
+            # MATCH KEY
+            row.get("OrderItemKey"),
 
-        # UPDATE fields
-        row.get("AmazonOrderId"),
-        row.get("OrderItemId"),
-        row.get("OrderDate"),
-        row.get("SKU"),
-        row.get("ASIN"),
-        row.get("SSKU"),
-        row.get("Brand"),
-        row.get("Category"),
-        row.get("Title"),
-        row.get("Qty"),
-        row.get("UnitPrice"),
-        row.get("Subtotal"),
-        row.get("Currency"),
-        row.get("OrderStatus"),
-        row.get("LastUpdateDate"),
-        row.get("FeeIncl"),
-        row.get("FeePct"),
-        row.get("FBAFeesIncl"),
-        row.get("TotalFee"),
-        row.get("RVAT"),
-        row.get("VAT"),
-        row.get("COG"),
-        row.get("Profit"),
+            # UPDATE fields
+            row.get("AmazonOrderId"),
+            row.get("OrderDate"),
+            row.get("SKU"),
+            row.get("ASIN"),
+            row.get("SSKU"),
+            row.get("Brand"),
+            row.get("Category"),
+            row.get("Title"),
+            row.get("Qty"),
+            row.get("UnitPrice"),
+            row.get("Subtotal"),
+            row.get("Currency"),
+            row.get("OrderStatus"),
+            row.get("LastUpdateDate"),
+            row.get("FeeIncl"),
+            row.get("FeePct"),
+            row.get("FBAFeesIncl"),
+            row.get("TotalFee"),
+            row.get("RVAT"),
+            row.get("VAT"),
+            row.get("COG"),
+            row.get("Profit"),
 
-        # INSERT fields (duplicate)
-        row.get("OrderItemKey"),
-        row.get("AmazonOrderId"),
-        row.get("OrderItemId"),
-        row.get("OrderDate"),
-        row.get("SKU"),
-        row.get("ASIN"),
-        row.get("SSKU"),
-        row.get("Brand"),
-        row.get("Category"),
-        row.get("Title"),
-        row.get("Qty"),
-        row.get("UnitPrice"),
-        row.get("Subtotal"),
-        row.get("Currency"),
-        row.get("OrderStatus"),
-        row.get("LastUpdateDate"),
-        row.get("FeeIncl"),
-        row.get("FeePct"),
-        row.get("FBAFeesIncl"),
-        row.get("TotalFee"),
-        row.get("RVAT"),
-        row.get("VAT"),
-        row.get("COG"),
-        row.get("Profit"),
-    )
+            # INSERT fields
+            row.get("OrderItemKey"),
+            row.get("AmazonOrderId"),
+            row.get("OrderDate"),
+            row.get("SKU"),
+            row.get("ASIN"),
+            row.get("SSKU"),
+            row.get("Brand"),
+            row.get("Category"),
+            row.get("Title"),
+            row.get("Qty"),
+            row.get("UnitPrice"),
+            row.get("Subtotal"),
+            row.get("Currency"),
+            row.get("OrderStatus"),
+            row.get("LastUpdateDate"),
+            row.get("FeeIncl"),
+            row.get("FeePct"),
+            row.get("FBAFeesIncl"),
+            row.get("TotalFee"),
+            row.get("RVAT"),
+            row.get("VAT"),
+            row.get("COG"),
+            row.get("Profit"),
+        )
 
     cursor.execute(merge_sql, params)
 
