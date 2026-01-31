@@ -1,36 +1,502 @@
-=== Started Wed 01/28/2026  7:09:53.83 === 
+=== Started Fri 01/30/2026  0:50:18.69 === 
 Backfill starting
-Start: 2025-01-28T01:09:54Z
-End:   2026-01-28T01:09:54Z
+Start: 2025-12-29T18:50:19Z
+End:   2026-01-29T18:50:19Z
 Window size: 1 days
 
 ------------------------------------------------------------
-Window 1: 2025-01-28T01:09:54Z -> 2025-01-29T01:09:54Z
+Window 1: 2025-12-29T18:50:19Z -> 2025-12-30T18:50:19Z
 Fetching...
-Fetching orders...
-Retrieved 163 orders
-Fetching order items...
-Estimated time: 5.4 minutes
-Rate limit hit - Retry 1/3 after 5.0s
-Rate limit hit - Retry 1/3 after 5.0s
-Rate limit hit - Retry 1/3 after 5.0s
-Rate limit hit - Retry 1/3 after 5.0s
-Estimating fees for 79 unique items
+Requesting report for 2025-12-29T18:50:19+00:00 to 2025-12-30T18:50:19+00:00
+Estimating fees for 106 unique items...
 Rate limit hit - Retry 1/3 after 5.0s
 Rate limit hit - Retry 1/3 after 5.0s
 Rate limit hit - Retry 1/3 after 5.0s
 Rate limit hit - Retry 1/3 after 5.0s
 SUMMARY
-Orders: 163
-OrderItems rows: 168
-Time: 6.7m
-Fetched 168 rows
-Upserted 168 rows
+OrderItems rows: 260
+Time: 3.4m
+Fetched 260 rows
+Upserted 260 rows
 
 ------------------------------------------------------------
-Window 2: 2025-01-29T01:09:54Z -> 2025-01-30T01:09:54Z
+Window 2: 2025-12-30T18:50:19Z -> 2025-12-31T18:50:19Z
 Fetching...
-Fetching orders...
-Retrieved 134 orders
-Fetching order items...
-Estimated time: 4.5 minutes
+Requesting report for 2025-12-30T18:50:19+00:00 to 2025-12-31T18:50:19+00:00
+Estimating fees for 59 unique items...
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+SUMMARY
+OrderItems rows: 122
+Time: 3.3m
+Fetched 122 rows
+Upserted 122 rows
+
+------------------------------------------------------------
+Window 3: 2025-12-31T18:50:19Z -> 2026-01-01T18:50:19Z
+Fetching...
+Requesting report for 2025-12-31T18:50:19+00:00 to 2026-01-01T18:50:19+00:00
+Estimating fees for 64 unique items...
+Rate limit hit - Retry 1/3 after 5.0s
+SUMMARY
+OrderItems rows: 121
+Time: 1.4m
+Fetched 121 rows
+Upserted 121 rows
+
+------------------------------------------------------------
+Window 4: 2026-01-01T18:50:19Z -> 2026-01-02T18:50:19Z
+Fetching...
+Requesting report for 2026-01-01T18:50:19+00:00 to 2026-01-02T18:50:19+00:00
+Estimating fees for 117 unique items...
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+SUMMARY
+OrderItems rows: 202
+Time: 3.1m
+Fetched 202 rows
+Upserted 202 rows
+
+------------------------------------------------------------
+Window 5: 2026-01-02T18:50:19Z -> 2026-01-03T18:50:19Z
+Fetching...
+Requesting report for 2026-01-02T18:50:19+00:00 to 2026-01-03T18:50:19+00:00
+Estimating fees for 123 unique items...
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+SUMMARY
+OrderItems rows: 230
+Time: 2.6m
+Fetched 230 rows
+Upserted 230 rows
+
+------------------------------------------------------------
+Window 6: 2026-01-03T18:50:19Z -> 2026-01-04T18:50:19Z
+Fetching...
+Requesting report for 2026-01-03T18:50:19+00:00 to 2026-01-04T18:50:19+00:00
+Estimating fees for 100 unique items...
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+SUMMARY
+OrderItems rows: 218
+Time: 2.1m
+Fetched 218 rows
+Upserted 218 rows
+
+------------------------------------------------------------
+Window 7: 2026-01-04T18:50:19Z -> 2026-01-05T18:50:19Z
+Fetching...
+Requesting report for 2026-01-04T18:50:19+00:00 to 2026-01-05T18:50:19+00:00
+Estimating fees for 126 unique items...
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+SUMMARY
+OrderItems rows: 243
+Time: 2.6m
+Fetched 243 rows
+Upserted 243 rows
+
+------------------------------------------------------------
+Window 8: 2026-01-05T18:50:19Z -> 2026-01-06T18:50:19Z
+Fetching...
+Requesting report for 2026-01-05T18:50:19+00:00 to 2026-01-06T18:50:19+00:00
+Estimating fees for 124 unique items...
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+SUMMARY
+OrderItems rows: 263
+Time: 2.5m
+Fetched 263 rows
+Upserted 263 rows
+
+------------------------------------------------------------
+Window 9: 2026-01-06T18:50:19Z -> 2026-01-07T18:50:19Z
+Fetching...
+Requesting report for 2026-01-06T18:50:19+00:00 to 2026-01-07T18:50:19+00:00
+Estimating fees for 128 unique items...
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+SUMMARY
+OrderItems rows: 269
+Time: 2.6m
+Fetched 269 rows
+Upserted 269 rows
+
+------------------------------------------------------------
+Window 10: 2026-01-07T18:50:19Z -> 2026-01-08T18:50:19Z
+Fetching...
+Requesting report for 2026-01-07T18:50:19+00:00 to 2026-01-08T18:50:19+00:00
+Estimating fees for 127 unique items...
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+SUMMARY
+OrderItems rows: 281
+Time: 2.5m
+Fetched 281 rows
+Upserted 281 rows
+
+------------------------------------------------------------
+Window 11: 2026-01-08T18:50:19Z -> 2026-01-09T18:50:19Z
+Fetching...
+Requesting report for 2026-01-08T18:50:19+00:00 to 2026-01-09T18:50:19+00:00
+Estimating fees for 139 unique items...
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+SUMMARY
+OrderItems rows: 331
+Time: 2.8m
+Fetched 331 rows
+Upserted 331 rows
+
+------------------------------------------------------------
+Window 12: 2026-01-09T18:50:19Z -> 2026-01-10T18:50:19Z
+Fetching...
+Requesting report for 2026-01-09T18:50:19+00:00 to 2026-01-10T18:50:19+00:00
+Estimating fees for 120 unique items...
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+SUMMARY
+OrderItems rows: 312
+Time: 3.7m
+Fetched 312 rows
+Upserted 312 rows
+
+------------------------------------------------------------
+Window 13: 2026-01-10T18:50:19Z -> 2026-01-11T18:50:19Z
+Fetching...
+Requesting report for 2026-01-10T18:50:19+00:00 to 2026-01-11T18:50:19+00:00
+Estimating fees for 112 unique items...
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+SUMMARY
+OrderItems rows: 316
+Time: 4.0m
+Fetched 316 rows
+Upserted 316 rows
+
+------------------------------------------------------------
+Window 14: 2026-01-11T18:50:19Z -> 2026-01-12T18:50:19Z
+Fetching...
+Requesting report for 2026-01-11T18:50:19+00:00 to 2026-01-12T18:50:19+00:00
+Estimating fees for 144 unique items...
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+SUMMARY
+OrderItems rows: 386
+Time: 2.8m
+Fetched 386 rows
+Upserted 386 rows
+
+------------------------------------------------------------
+Window 15: 2026-01-12T18:50:19Z -> 2026-01-13T18:50:19Z
+Fetching...
+Requesting report for 2026-01-12T18:50:19+00:00 to 2026-01-13T18:50:19+00:00
+Estimating fees for 143 unique items...
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 2/3 after 10.0s
+SUMMARY
+OrderItems rows: 352
+Time: 2.8m
+Fetched 352 rows
+Upserted 352 rows
+
+------------------------------------------------------------
+Window 16: 2026-01-13T18:50:19Z -> 2026-01-14T18:50:19Z
+Fetching...
+Requesting report for 2026-01-13T18:50:19+00:00 to 2026-01-14T18:50:19+00:00
+Estimating fees for 121 unique items...
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+SUMMARY
+OrderItems rows: 272
+Time: 2.4m
+Fetched 272 rows
+Upserted 272 rows
+
+------------------------------------------------------------
+Window 17: 2026-01-14T18:50:19Z -> 2026-01-15T18:50:19Z
+Fetching...
+Requesting report for 2026-01-14T18:50:19+00:00 to 2026-01-15T18:50:19+00:00
+Estimating fees for 149 unique items...
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+SUMMARY
+OrderItems rows: 336
+Time: 3.0m
+Fetched 336 rows
+Upserted 336 rows
+
+------------------------------------------------------------
+Window 18: 2026-01-15T18:50:19Z -> 2026-01-16T18:50:19Z
+Fetching...
+Requesting report for 2026-01-15T18:50:19+00:00 to 2026-01-16T18:50:19+00:00
+Estimating fees for 136 unique items...
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 2/3 after 10.0s
+SUMMARY
+OrderItems rows: 350
+Time: 2.7m
+Fetched 350 rows
+Upserted 350 rows
+
+------------------------------------------------------------
+Window 19: 2026-01-16T18:50:19Z -> 2026-01-17T18:50:19Z
+Fetching...
+Requesting report for 2026-01-16T18:50:19+00:00 to 2026-01-17T18:50:19+00:00
+Estimating fees for 118 unique items...
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+SUMMARY
+OrderItems rows: 327
+Time: 2.4m
+Fetched 327 rows
+Upserted 327 rows
+
+------------------------------------------------------------
+Window 20: 2026-01-17T18:50:19Z -> 2026-01-18T18:50:19Z
+Fetching...
+Requesting report for 2026-01-17T18:50:19+00:00 to 2026-01-18T18:50:19+00:00
+Estimating fees for 109 unique items...
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+SUMMARY
+OrderItems rows: 290
+Time: 2.2m
+Fetched 290 rows
+Upserted 290 rows
+
+------------------------------------------------------------
+Window 21: 2026-01-18T18:50:19Z -> 2026-01-19T18:50:19Z
+Fetching...
+Requesting report for 2026-01-18T18:50:19+00:00 to 2026-01-19T18:50:19+00:00
+Estimating fees for 143 unique items...
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 2/3 after 10.0s
+SUMMARY
+OrderItems rows: 395
+Time: 3.1m
+Fetched 395 rows
+Upserted 395 rows
+
+------------------------------------------------------------
+Window 22: 2026-01-19T18:50:19Z -> 2026-01-20T18:50:19Z
+Fetching...
+Requesting report for 2026-01-19T18:50:19+00:00 to 2026-01-20T18:50:19+00:00
+Estimating fees for 146 unique items...
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+SUMMARY
+OrderItems rows: 369
+Time: 2.9m
+Fetched 369 rows
+Upserted 369 rows
+
+------------------------------------------------------------
+Window 23: 2026-01-20T18:50:19Z -> 2026-01-21T18:50:19Z
+Fetching...
+Requesting report for 2026-01-20T18:50:19+00:00 to 2026-01-21T18:50:19+00:00
+Estimating fees for 140 unique items...
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+SUMMARY
+OrderItems rows: 445
+Time: 2.8m
+Fetched 445 rows
+Upserted 445 rows
+
+------------------------------------------------------------
+Window 24: 2026-01-21T18:50:19Z -> 2026-01-22T18:50:19Z
+Fetching...
+Requesting report for 2026-01-21T18:50:19+00:00 to 2026-01-22T18:50:19+00:00
+Estimating fees for 127 unique items...
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+SUMMARY
+OrderItems rows: 404
+Time: 2.6m
+Fetched 404 rows
+Upserted 404 rows
+
+------------------------------------------------------------
+Window 25: 2026-01-22T18:50:19Z -> 2026-01-23T18:50:19Z
+Fetching...
+Requesting report for 2026-01-22T18:50:19+00:00 to 2026-01-23T18:50:19+00:00
+Estimating fees for 143 unique items...
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+SUMMARY
+OrderItems rows: 360
+Time: 3.1m
+Fetched 360 rows
+Upserted 360 rows
+
+------------------------------------------------------------
+Window 26: 2026-01-23T18:50:19Z -> 2026-01-24T18:50:19Z
+Fetching...
+Requesting report for 2026-01-23T18:50:19+00:00 to 2026-01-24T18:50:19+00:00
+Estimating fees for 102 unique items...
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 2/3 after 10.0s
+SUMMARY
+OrderItems rows: 314
+Time: 2.7m
+Fetched 314 rows
+Upserted 314 rows
+
+------------------------------------------------------------
+Window 27: 2026-01-24T18:50:19Z -> 2026-01-25T18:50:19Z
+Fetching...
+Requesting report for 2026-01-24T18:50:19+00:00 to 2026-01-25T18:50:19+00:00
+Estimating fees for 111 unique items...
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+SUMMARY
+OrderItems rows: 279
+Time: 2.2m
+Fetched 279 rows
+Upserted 279 rows
+
+------------------------------------------------------------
+Window 28: 2026-01-25T18:50:19Z -> 2026-01-26T18:50:19Z
+Fetching...
+Requesting report for 2026-01-25T18:50:19+00:00 to 2026-01-26T18:50:19+00:00
+Estimating fees for 107 unique items...
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+SUMMARY
+OrderItems rows: 325
+Time: 2.2m
+Fetched 325 rows
+Upserted 325 rows
+
+------------------------------------------------------------
+Window 29: 2026-01-26T18:50:19Z -> 2026-01-27T18:50:19Z
+Fetching...
+Requesting report for 2026-01-26T18:50:19+00:00 to 2026-01-27T18:50:19+00:00
+Estimating fees for 126 unique items...
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+SUMMARY
+OrderItems rows: 312
+Time: 2.5m
+Fetched 312 rows
+Upserted 312 rows
+
+------------------------------------------------------------
+Window 30: 2026-01-27T18:50:19Z -> 2026-01-28T18:50:19Z
+Fetching...
+Requesting report for 2026-01-27T18:50:19+00:00 to 2026-01-28T18:50:19+00:00
+Estimating fees for 108 unique items...
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+SUMMARY
+OrderItems rows: 271
+Time: 2.2m
+Fetched 271 rows
+Upserted 271 rows
+
+------------------------------------------------------------
+Window 31: 2026-01-28T18:50:19Z -> 2026-01-29T18:50:19Z
+Fetching...
+Requesting report for 2026-01-28T18:50:19+00:00 to 2026-01-29T18:50:19+00:00
+Estimating fees for 145 unique items...
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+Rate limit hit - Retry 1/3 after 5.0s
+SUMMARY
+OrderItems rows: 254
+Time: 3.1m
+Fetched 254 rows
+Upserted 254 rows
+
+============================================================
+Backfill complete. Total rows upserted: 9209
+============================================================
+
+Finished in 7637.3 seconds
+=== Ended Fri 01/30/2026  2:57:36.41 === 
