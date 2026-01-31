@@ -28,3 +28,4 @@ idna
 pyodbc
 openpyxl==3.1.2
 requests
+lxml

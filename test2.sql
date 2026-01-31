@@ -1,3 +1,4 @@
-UPDATE spapi_app_user.SyncState
-SET LastSuccessfulSyncUtc = DATEADD(day, -3, SYSUTCDATETIME())
-WHERE Id = 1;
+SELECT *
+FROM spapi_app_user.OrderItems
+WHERE CAST(OrderDate AS DATE) = CAST(GETUTCDATE() AS DATE)
+ORDER BY OrderDate DESC;

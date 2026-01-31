@@ -126,7 +126,7 @@ def main():
     now = datetime.now(timezone.utc)
     end_date = now - timedelta(hours=SYNC_OVERLAP_HOURS)
 
-    # Default: backfill 365 days unless user overrides
+    # Default: backfill days unless user overrides
     days_back = int(os.getenv("BACKFILL_DAYS", "31"))
     start_date = end_date - timedelta(days=days_back)
 
