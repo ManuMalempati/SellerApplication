@@ -3,7 +3,7 @@
 sync_orders_live.py
 
 Runs a single live sync:
-- Fetch orders via REPORTS (app.orders.get_orders)
+- Fetch orders via API(app.orders.get_orders)
 - Transform rows
 - UPSERT each row using robust_upsert_order_items() from database.py
 - Maintain LastSuccessfulSyncUtc with overlap to avoid gaps
@@ -21,6 +21,40 @@ from logging.handlers import RotatingFileHandler
 from typing import List, Dict, Any
 
 # -------------------------------------------------------------------
+# Logging (must be first, before ANYTHING else, including print)
+# -------------------------------------------------------------------
+
+LOG_DIR = os.path.join(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")), "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+LOG_PATH = os.path.join(LOG_DIR, "sync_orders_live.log")
+
+logger = logging.getLogger("sync_orders_live")
+logger.setLevel(logging.INFO)
+
+file_handler = RotatingFileHandler(
+    LOG_PATH, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
+)
+formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
+
+console = logging.StreamHandler()
+console.setFormatter(formatter)
+logger.addHandler(console)
+
+logger.info("Logger initialized. Writing to %s", LOG_PATH)
+
+def flush_logs():
+    for h in logger.handlers:
+        try:
+            h.flush()
+        except Exception:
+            pass
+
+# TEMP diagnostic print for Task Scheduler
+print("Script startup reached")
+
+# -------------------------------------------------------------------
 # Repo / env
 # -------------------------------------------------------------------
 
@@ -36,31 +70,9 @@ if os.path.exists(ENV_PATH):
 # Settings
 # -------------------------------------------------------------------
 
-OVERLAP_HOURS = int(os.getenv("SYNC_OVERLAP_HOURS", "3"))
+OVERLAP_HOURS = int(os.getenv("SYNC_OVERLAP_HOURS", "2"))
 LOCKFILE = os.path.join(REPO_ROOT, "sync_orders_live.lock")
-LOG_DIR = os.path.join(REPO_ROOT, "logs")
-LOG_PATH = os.path.join(LOG_DIR, "sync_orders_live.log")
 LOCK_TIMEOUT_SECONDS = int(os.getenv("SYNC_LOCK_TIMEOUT_SECONDS", str(6 * 3600)))
-
-os.makedirs(LOG_DIR, exist_ok=True)
-
-# -------------------------------------------------------------------
-# Logging
-# -------------------------------------------------------------------
-
-logger = logging.getLogger("sync_orders_live")
-logger.setLevel(logging.INFO)
-
-file_handler = RotatingFileHandler(
-    LOG_PATH, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
-)
-formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
-file_handler.setFormatter(formatter)
-logger.addHandler(file_handler)
-
-console = logging.StreamHandler()
-console.setFormatter(formatter)
-logger.addHandler(console)
 
 # -------------------------------------------------------------------
 # App imports
@@ -189,6 +201,7 @@ async def fetch_and_upsert():
 
     if not items:
         update_last_sync_at(report_end_dt)  # <-- Use report's window end
+        flush_logs()
         return 0
 
     # 4) UPSERT each row
@@ -247,6 +260,7 @@ async def fetch_and_upsert():
     # 5) Save the TRUE report window end
     update_last_sync_at(report_end_dt)
     logger.info("Sync complete. Rows processed: %d", processed)
+    flush_logs()
     return processed
 
 # -------------------------------------------------------------------
@@ -259,6 +273,7 @@ def acquire_lock():
         with os.fdopen(fd, "w") as fh:
             fh.write(f"{os.getpid()}\n{time.time()}\n")
         logger.info("Acquired lock")
+        flush_logs()
         return True
     except FileExistsError:
         try:
@@ -268,9 +283,11 @@ def acquire_lock():
                 os.remove(LOCKFILE)
                 return acquire_lock()
             logger.info("Lockfile exists (%.0fs). Exiting.", age)
+            flush_logs()
             return False
         except Exception:
             logger.exception("Error inspecting lockfile")
+            flush_logs()
             return False
 
 
@@ -279,8 +296,10 @@ def release_lock():
         if os.path.exists(LOCKFILE):
             os.remove(LOCKFILE)
             logger.info("Released lock")
+            flush_logs()
     except Exception:
         logger.exception("Failed to remove lockfile")
+        flush_logs()
 
 # -------------------------------------------------------------------
 # Entry
@@ -288,6 +307,7 @@ def release_lock():
 
 def main():
     logger.info("Starting sync run")
+    flush_logs()
     if not acquire_lock():
         return 0
     try:
@@ -296,13 +316,14 @@ def main():
     finally:
         release_lock()
         logger.info("Sync finished")
-
+        flush_logs()
 
 if __name__ == "__main__":
-    # In your main()
     try:
         rc = main()
+        flush_logs()
         sys.exit(0 if rc else 1)   # 0 for success, 1 for failure
     except Exception:
         logger.exception("Fatal error in sync_orders_live")
+        flush_logs()
         sys.exit(1)
