@@ -227,7 +227,7 @@ async def get_orders_async(params):
                 qty = 1
 
             # ----- UNIT PRICE FIX -----
-            unit_price = 0.0
+            unit_price = None
 
             # Prefer SubTotal if present
             subtotal_field = None
@@ -240,7 +240,7 @@ async def get_orders_async(params):
                 try:
                     unit_price = float(subtotal_field) / max(qty, 1)
                 except Exception:
-                    unit_price = 0.0
+                    unit_price = None
             else:
                 # Fallback: ItemPrice.Amount is TOTAL for the line
                 item_price_total = None
@@ -251,11 +251,7 @@ async def get_orders_async(params):
                     try:
                         unit_price = float(item_price_total) / max(qty, 1)
                     except Exception:
-                        unit_price = 0.0
-
-            # If no price found, leave it as None
-            if unit_price == 0.0:
-                unit_price = None
+                        unit_price = None
 
             # Only estimate fees when price is valid
             if unit_price is not None and unit_price > 0:
@@ -298,30 +294,54 @@ async def get_orders_async(params):
         asin = meta["asin"]
         unit_price = meta["unit_price"]
         qty = meta["qty"]
-        subtotal = unit_price * qty if unit_price else 0.0
+        subtotal = unit_price * qty if unit_price is not None else 0.0
 
-        f = fees_by_key.get((sku, asin, round(unit_price, 2)))
-        d = details.get(asin, {})
+        # Fix for None unit_price: never round None
+        if unit_price is not None:
+            price_key = round(unit_price, 2)
+        else:
+            price_key = None
 
-        # Extract net fees
+        f = fees_by_key.get((sku, asin, price_key))
+
+        # Fix: Safe fee extraction
         f_net = f.get("net") if isinstance(f, dict) else None
-        referral_per_unit = float(f_net.get("ReferralFees", 0.0)) if f_net else 0.0
-        fba_per_unit = float(f_net.get("FBAFees", 0.0)) if f_net else 0.0
+        referral_per_unit = float(f_net.get("ReferralFees", 0.0)) if f_net and f_net.get("ReferralFees") is not None else 0.0
+        fba_per_unit = float(f_net.get("FBAFees", 0.0)) if f_net and f_net.get("FBAFees") is not None else 0.0
 
-        # Totals
-        ref_total = referral_per_unit * AMAZON_VAT_MULTIPLIER * qty
-        fba_total = fba_per_unit * AMAZON_VAT_MULTIPLIER * qty
-        total_fee = ref_total + fba_total
+        # Fix: always numbers for total calculations
+        referral_per_unit = referral_per_unit or 0.0
+        fba_per_unit = fba_per_unit or 0.0
 
-        vat_total = subtotal * GOVT_VAT_RATE if subtotal else 0.0
-        rvat_total = ((referral_per_unit + fba_per_unit) * (AMAZON_VAT_MULTIPLIER - 1.0)) * qty
+        # Totals (fix math with None)
+        ref_total = referral_per_unit * AMAZON_VAT_MULTIPLIER * qty if unit_price is not None else None
+        fba_total = fba_per_unit * AMAZON_VAT_MULTIPLIER * qty if unit_price is not None else None
+        total_fee = (ref_total or 0.0) + (fba_total or 0.0) if unit_price is not None else None
 
-        cost_per_unit = parse_cost(d.get("cost"))
+        vat_total = subtotal * GOVT_VAT_RATE if subtotal is not None else None
+        rvat_total = ((referral_per_unit + fba_per_unit) * (AMAZON_VAT_MULTIPLIER - 1.0)) * qty if unit_price is not None else None
+
+        cost_per_unit = parse_cost(details.get(asin, {}).get("cost")) if asin else None
         cog_total = cost_per_unit * qty if cost_per_unit is not None else None
 
-        profit_value = None
-        if cost_per_unit is not None and unit_price:
+        # Fix: Safe fee percent calculation (no zero or None)
+        if unit_price not in (None, 0):
+            fee_pct = (referral_per_unit / unit_price) * 100
+        else:
+            fee_pct = None
+
+        # Fix: Safe profit calculation (all prereqs must be valid, never None, never zero)
+        if (
+            unit_price not in (None, 0)
+            and cost_per_unit is not None
+            and total_fee is not None
+            and vat_total is not None
+            and rvat_total is not None
+            and cog_total is not None
+        ):
             profit_value = subtotal - total_fee - vat_total + rvat_total - cog_total
+        else:
+            profit_value = None
 
         t = {
             "OrderItemKey": "{}:{}:{}:{}".format(
@@ -336,9 +356,9 @@ async def get_orders_async(params):
             "SKU": sku,
             "ASIN": asin,
             "SSKU": meta["m"].get("ssku", "Not Available"),
-            "Brand": d.get("brand", "Not Available"),
-            "Category": d.get("category", "Not Available"),
-            "Title": d.get("item_name", "Not Available"),
+            "Brand": details.get(asin, {}).get("brand", "Not Available"),
+            "Category": details.get(asin, {}).get("category", "Not Available"),
+            "Title": details.get(asin, {}).get("item_name", "Not Available"),
             "Qty": qty,
             "UnitPrice": unit_price,
             "Subtotal": subtotal,
@@ -349,12 +369,12 @@ async def get_orders_async(params):
 
         t.update(
             {
-                "FeeIncl": -ref_total if ref_total else None,
-                "FBAFeesIncl": -fba_total if fba_total else None,
-                "TotalFee": -total_fee if total_fee else None,
-                "VAT": -vat_total if vat_total else None,
-                "RVAT": rvat_total if rvat_total else None,
-                "FeePct": (referral_per_unit / unit_price) * 100 if unit_price else None,
+                "FeeIncl": -ref_total if ref_total is not None else None,
+                "FBAFeesIncl": -fba_total if fba_total is not None else None,
+                "TotalFee": -total_fee if total_fee is not None else None,
+                "VAT": -vat_total if vat_total is not None else None,
+                "RVAT": rvat_total if rvat_total is not None else None,
+                "FeePct": fee_pct,
                 "COG": -cog_total if cog_total is not None else None,
                 "Profit": profit_value,
             }
