@@ -257,8 +257,10 @@ async def get_orders_async(params):
             if unit_price == 0.0:
                 unit_price = None
 
-            if unit_price > 0:
+            # Only estimate fees when price is valid
+            if unit_price is not None and unit_price > 0:
                 items_to_est.append((sku, asin, round(unit_price, 2)))
+
 
             metadata.append(
                 {
