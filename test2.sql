@@ -1,5 +1,3 @@
-SELECT AmazonOrderId
+SELECT *
 FROM OrderItems
-WHERE OrderStatus IN ('Pending', 'Shipped')
-GROUP BY AmazonOrderId
-HAVING COUNT(DISTINCT OrderStatus) = 2;
+WHERE AmazonOrderId = '403-9958841-6180347'
