@@ -185,8 +185,14 @@ async def fetch_and_upsert():
 
     # 3) Fetch report-based items (UPDATED to get items and true report end)
     fetch_start = time.time()
+    
     # Change your get_orders to return: items, end_dt
+    logger.info("About to fetch orders with params: %s", params)
+    flush_logs()
     result = await get_orders(params=params)
+    logger.info("Completed fetch_orders, got result of type: %s", type(result))
+    flush_logs()
+
     if isinstance(result, tuple) and len(result) == 2:
         items, report_end_dt = result
     else:

@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Dict, List, Any
 import threading
+import logging
 
 from .auth import spapi_request
 from .database import (
@@ -15,6 +16,13 @@ from .database import (
     connect_database,
 )
 from .estimates import get_fees_estimate
+
+# -------------------------------------------------------------------
+# Logger
+# -------------------------------------------------------------------
+
+logger = logging.getLogger("sync_orders_live")
+logger.setLevel(logging.INFO)
 
 # -------------------------------------------------------------------
 # Environment
@@ -78,7 +86,7 @@ def retry_api_call(func, *args, max_retries=MAX_RETRIES, initial_delay=INITIAL_R
             codes = [err.get("code") for err in result.get("errors", [])]
             if "QuotaExceeded" in codes or "RequestThrottled" in codes:
                 if attempt < max_retries - 1:
-                    print("Rate limit hit - Retry {}/{} after {:.1f}s".format(attempt + 1, max_retries, delay))
+                    logger.info("Rate limit hit - Retry {}/{} after {:.1f}s".format(attempt + 1, max_retries, delay))
                     time.sleep(delay)
                     delay *= 2
                     continue
@@ -164,15 +172,15 @@ async def estimate_fees_batch_async(items, counters):
 async def get_orders_async(params):
     start_time = time.time()
 
-    print("Fetching orders...")
+    logger.info("Fetching orders...")
     orders = retrieve_orders_list("GET", "/orders/v0/orders", params)
     if not orders:
-        print("SUMMARY\nOrders: 0")
+        logger.info("SUMMARY\nOrders: 0")
         return []
 
-    print("Retrieved {} orders".format(len(orders)))
-    print("Fetching order items...")
-    print("Estimated time: {:.1f} minutes".format(len(orders) / 0.5 / 60))
+    logger.info("Retrieved %d orders", len(orders))
+    logger.info("Fetching order items...")
+    logger.info("Estimated time: %.1f minutes", len(orders) / 0.5 / 60)
 
     order_ids = [o["AmazonOrderId"] for o in orders]
     order_items_map = await get_order_items_batch_async(order_ids)
@@ -278,7 +286,7 @@ async def get_orders_async(params):
     # Fee estimation
     # -------------------------------------------------------------------
     unique_items = list(set(items_to_est))
-    print("Estimating fees for {} unique items".format(len(unique_items)))
+    logger.info("Estimating fees for %d unique items", len(unique_items))
 
     counters = {"sp_calls": 0}
     estimates = await estimate_fees_batch_async(unique_items, counters)
@@ -382,10 +390,9 @@ async def get_orders_async(params):
 
         out.append(t)
 
-    print(
-        "SUMMARY\nOrders: {}\nOrderItems rows: {}\nTime: {:.1f}m".format(
-            len(orders), len(out), (time.time() - start_time) / 60
-        )
+    logger.info(
+        "SUMMARY\nOrders: %d\nOrderItems rows: %d\nTime: %.1fm",
+        len(orders), len(out), (time.time() - start_time) / 60
     )
 
     return out
