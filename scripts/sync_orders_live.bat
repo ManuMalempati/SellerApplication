@@ -22,6 +22,3 @@ REM Run the live sync script with unbuffered output, capturing all output in the
 
 REM Timestamp end of run for easy debugging
 echo === Ended %date% %time% === >> logs\sync_live_log.txt 2>&1
-
-REM Optionally, keep window open on manual run for debugging
-pause

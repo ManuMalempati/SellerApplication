@@ -84,9 +84,8 @@ async def fetch_and_upsert():
     effective_from = (last_sync - dt.timedelta(hours=overlap_hours)).replace(microsecond=0)
     last_updated_after = effective_from.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    # Use a fixed window size for the sync (default 24 hours, configurable)
-    window_hours = int(os.getenv("SYNC_WINDOW_HOURS", "24"))
-    end_dt = effective_from + dt.timedelta(hours=window_hours)
+    # Use current time for the sync end
+    end_dt = dt.datetime.now(dt.timezone.utc)
     last_updated_before = end_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     params = {
@@ -108,7 +107,7 @@ async def fetch_and_upsert():
 
     if not items:
         print("No items returned. Updating sync state and exiting.")
-        update_last_sync_at(end_dt)  # <-- FIX: use actual window end, not now()
+        update_last_sync_at(end_dt)  # <-- use actual now (upper window end)
         return 0
 
     # Group rows by order
@@ -137,7 +136,7 @@ async def fetch_and_upsert():
         conn.close()
 
     # Update sync state
-    update_last_sync_at(end_dt)  # <-- FIX: use actual window end, not now()
+    update_last_sync_at(end_dt)  # <-- use actual now (upper window end)
     print("Sync completed successfully.")
     print("------------------------------------------------------------")
 
