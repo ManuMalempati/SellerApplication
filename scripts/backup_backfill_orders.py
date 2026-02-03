@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from app.orders import get_orders
 from app.database import connect_database
-from app.database import replace_order_items_for_order  # Use the delete-and-replace function
+from app.database import robust_upsert_order_items  # your MERGE-based UPSERT
 
 # -------------------------------------------------------------------
 # Environment
@@ -84,21 +84,18 @@ async def run_backfill(start_date: datetime, end_date: datetime):
         rows = await fetch_with_retries(params)
         print(f"Fetched {len(rows)} rows")
 
-        # ---------------- DB UPSERT BLOCK (delete-and-replace logic) ----------------
+        # ---------------- DB UPSERT BLOCK ----------------
         try:
-            # Group rows by AmazonOrderId
-            grouped = {}
-            for row in rows:
-                oid = row["AmazonOrderId"]
-                grouped.setdefault(oid, []).append(row)
-
             conn = connect_database()
             cursor = conn.cursor()
 
             upserted = 0
-            for oid, group in grouped.items():
-                replace_order_items_for_order(cursor, oid, group)
-                upserted += len(group)
+            for row in rows:
+                try:
+                    robust_upsert_order_items(cursor, row)
+                    upserted += 1
+                except Exception as exc:
+                    print(f"Upsert error: {exc}")
 
             conn.commit()
             cursor.close()

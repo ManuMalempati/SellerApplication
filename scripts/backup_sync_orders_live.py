@@ -9,14 +9,14 @@ import threading
 import csv
 import io
 
-from .auth import spapi_request
-from .database import (
+from app.auth import spapi_request
+from app.database import (
     get_product_mapping,
     get_product_details_by_asin,
     parse_cost,
     connect_database,
 )
-from .estimates import get_fees_estimate
+from app.estimates import get_fees_estimate
 
 # -------------------------------------------------------------------
 # Environment
@@ -197,10 +197,10 @@ async def get_orders_async(params):
         print("No rows in report.")
         return []
 
-    # ✅ CHANGE 1 — Load existing Pending rows from DB
+    # ✅ CHANGE 1 — Load existing Pending rows from DB (now supports duplicates)
     conn = connect_database()
     cursor = conn.cursor()
-    pending_key_map = {}
+    pending_key_map = {}  # (orderId, sku, asin) -> list of keys
     try:
         cursor.execute("""
             SELECT OrderItemKey, AmazonOrderId, SKU, ASIN
@@ -209,7 +209,7 @@ async def get_orders_async(params):
         """)
         for key, oid, sku_db, asin_db in cursor.fetchall():
             if oid and sku_db and asin_db:
-                pending_key_map[(oid, sku_db, asin_db)] = key
+                pending_key_map.setdefault((oid, sku_db, asin_db), []).append(key)
     finally:
         cursor.close()
         conn.close()
@@ -286,10 +286,20 @@ async def get_orders_async(params):
         qty = item["qty"]
         unit_price = item["unit_price"]
 
-        # ✅ CHANGE 2 — Only update if there is a Pending row; reuse the original OrderItemKey
-        existing_key = pending_key_map.get((order_id, sku, asin))
-        if not existing_key:
+        # ✅ CHANGE 2 — Only update if one (and only one) Pending row exists
+        keys = pending_key_map.get((order_id, sku, asin))
+
+        # Skip if no Pending row exists
+        if not keys:
             continue
+
+        # Skip if duplicates exist (more than 1 Pending row)
+        if len(keys) != 1:
+            # Optionally log:
+            # print(f"Skipping duplicate pending rows for {order_id}, {sku}, {asin}")
+            continue
+
+        existing_key = keys[0]
 
         mapping = product_mapping.get(sku, {})
         prod_details = product_details.get(asin, {})
@@ -346,7 +356,6 @@ async def get_orders_async(params):
 
             # Set profit calculation
             profit = None
-            # If any are None, set profit=None
             if (
                 subtotal_val is not None and
                 total_fee_val is not None and

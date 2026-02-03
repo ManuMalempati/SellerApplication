@@ -1,13 +1,9 @@
--- SELECT 
---     SUM(Subtotal) AS TotalSales,
---     SUM(Profit) AS NetProfit
--- FROM OrderItems
--- WHERE OrderDate >= '2026-01-01'
---   AND OrderDate <  '2026-02-01';
-
-SELECT COUNT(*) AS Orders
-FROM OrderItems
-WHERE OrderDate >= '2026-01-01'
-  AND OrderDate <  '2026-02-01'
-  AND OrderStatus = 'Shipped';
-
+SELECT 
+    tc.CONSTRAINT_NAME,
+    tc.CONSTRAINT_TYPE,
+    c.COLUMN_NAME
+FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE c
+    ON tc.CONSTRAINT_NAME = c.CONSTRAINT_NAME
+WHERE tc.TABLE_NAME = 'OrderItems'
+  AND c.COLUMN_NAME = 'OrderItemKey';

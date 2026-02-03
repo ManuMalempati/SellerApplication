@@ -3,10 +3,11 @@ import os
 import time
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
-from typing import Dict, List, Any
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List, Any, Optional
 import threading
-import logging
+import csv
+import io
 
 from .auth import spapi_request
 from .database import (
@@ -18,25 +19,17 @@ from .database import (
 from .estimates import get_fees_estimate
 
 # -------------------------------------------------------------------
-# Logger
-# -------------------------------------------------------------------
-
-logger = logging.getLogger("sync_orders_live")
-logger.setLevel(logging.INFO)
-
-# -------------------------------------------------------------------
 # Environment
 # -------------------------------------------------------------------
 
 GOVT_VAT_RATE = 1 / float(os.getenv("GOVT_VAT_RATE_DIVISOR", "1")) if os.getenv("GOVT_VAT_RATE_DIVISOR") else 0.0
-BASE_CURRENCY_CODE = os.getenv("BASE_CURRENCY_CODE", "USD")
+BASE_CURRENCY_CODE = os.getenv("BASE_CURRENCY_CODE", "AED")
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", "10"))
 AMAZON_VAT_MULTIPLIER = float(os.getenv("FEES_ESTIMATE_VAT_MULTIPLIER", "1.0"))
 MARKETPLACE_ID = os.getenv("MARKETPLACE_ID")
 
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 INITIAL_RETRY_DELAY = float(os.getenv("INITIAL_RETRY_DELAY", "5.0"))
-
 
 # -------------------------------------------------------------------
 # Rate Limiters
@@ -67,82 +60,24 @@ class TokenBucketRateLimiter:
             time.sleep(wait_time)
 
 
-orders_rate_limiter = TokenBucketRateLimiter(rate=0.0167, burst=20)
-order_items_rate_limiter = TokenBucketRateLimiter(rate=0.5, burst=30)
-pricing_rate_limiter = TokenBucketRateLimiter(rate=0.4, burst=1)
 fees_rate_limiter = TokenBucketRateLimiter(rate=1.0, burst=2)
 
-
-# -------------------------------------------------------------------
-# Helpers
-# -------------------------------------------------------------------
 
 def retry_api_call(func, *args, max_retries=MAX_RETRIES, initial_delay=INITIAL_RETRY_DELAY, **kwargs):
     delay = initial_delay
     for attempt in range(max_retries):
         result = func(*args, **kwargs)
-
         if isinstance(result, dict) and "errors" in result:
             codes = [err.get("code") for err in result.get("errors", [])]
             if "QuotaExceeded" in codes or "RequestThrottled" in codes:
                 if attempt < max_retries - 1:
-                    logger.info("Rate limit hit - Retry {}/{} after {:.1f}s".format(attempt + 1, max_retries, delay))
+                    print("Rate limit hit - Retry {}/{} after {:.1f}s".format(attempt + 1, max_retries, delay))
                     time.sleep(delay)
                     delay *= 2
                     continue
-
         return result
-
     return result
 
-def retrieve_orders_list(method, path, params):
-    orders = []
-    orders_rate_limiter.acquire()
-
-    resp = spapi_request(method=method, path=path, params=params)
-    if "errors" in resp:
-        return orders
-
-    payload = resp.get("payload") or {}
-    orders.extend(payload.get("Orders", []))
-    next_token = payload.get("NextToken")
-
-    while next_token:
-        orders_rate_limiter.acquire()
-        resp = spapi_request(method=method, path=path, params={"NextToken": next_token})
-
-        if "errors" in resp:
-            break
-
-        payload = resp.get("payload") or {}
-        orders.extend(payload.get("Orders", []))
-        next_token = payload.get("NextToken")
-
-    return orders
-
-
-def get_single_order_items(order_id):
-    def _fetch():
-        order_items_rate_limiter.acquire()
-        return spapi_request("GET", f"/orders/v0/orders/{order_id}/orderItems")
-
-    resp = retry_api_call(_fetch)
-    return resp.get("payload", {}).get("OrderItems", []) if "payload" in resp else []
-
-
-async def get_order_items_batch_async(order_ids: List[str]):
-    loop = asyncio.get_event_loop()
-
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        tasks = [loop.run_in_executor(executor, get_single_order_items, oid) for oid in order_ids]
-        results = await asyncio.gather(*tasks)
-
-    return dict(zip(order_ids, results))
-
-
-# -------------------------------------------------------------------
-# Fee Estimation (always enabled)
-# -------------------------------------------------------------------
 
 def estimate_fees_for_item(sku, asin, price, counters):
     counters["sp_calls"] += 1
@@ -150,13 +85,11 @@ def estimate_fees_for_item(sku, asin, price, counters):
     def _fetch():
         fees_rate_limiter.acquire()
         return get_fees_estimate(sku, asin, price)
-
     return retry_api_call(_fetch)
 
 
 async def estimate_fees_batch_async(items, counters):
     loop = asyncio.get_event_loop()
-
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         tasks = [
             loop.run_in_executor(executor, estimate_fees_for_item, s, a, p, counters)
@@ -164,239 +97,287 @@ async def estimate_fees_batch_async(items, counters):
         ]
         return await asyncio.gather(*tasks)
 
-
 # -------------------------------------------------------------------
-# Main Orders Logic
+# Main orders logic using REPORTS API
 # -------------------------------------------------------------------
 
 async def get_orders_async(params):
     start_time = time.time()
+    # 1. Compute report window
+    last_updated_after = params.get("LastUpdatedAfter")
+    created_after = params.get("CreatedAfter")
+    created_before = params.get("CreatedBefore")
+    max_results_per_page = params.get("MaxResultsPerPage", 100)
 
-    logger.info("Fetching orders...")
-    orders = retrieve_orders_list("GET", "/orders/v0/orders", params)
-    if not orders:
-        logger.info("SUMMARY\nOrders: 0")
+    # Compute window for last X days
+    if last_updated_after:
+        end_dt = datetime.now(timezone.utc)
+        try:
+            start_dt = datetime.fromisoformat(last_updated_after.replace("Z", "+00:00"))
+        except Exception:
+            start_dt = end_dt - timedelta(hours=10)
+    elif created_after and created_before:
+        start_dt = datetime.fromisoformat(created_after.replace("Z", "+00:00"))
+        end_dt = datetime.fromisoformat(created_before.replace("Z", "+00:00"))
+    else:
+        # fallback to last 10 hours
+        end_dt = datetime.now(timezone.utc)
+        start_dt = end_dt - timedelta(hours=10)
+
+    report_type = "GET_FLAT_FILE_ALL_ORDERS_DATA_BY_LAST_UPDATE_GENERAL"
+
+    # 2. Request the all orders report
+    print(f"Requesting report for {start_dt.isoformat()} to {end_dt.isoformat()}")
+    create_resp = spapi_request(
+        method="POST",
+        path="/reports/2021-06-30/reports",
+        body={
+            "reportType": report_type,
+            "dataStartTime": start_dt.isoformat(),
+            "dataEndTime": end_dt.isoformat(),
+            "marketplaceIds": [MARKETPLACE_ID],
+        }
+    )
+    if not create_resp or "reportId" not in create_resp:
+        print("Error: Failed to create report.", create_resp)
         return []
 
-    logger.info("Retrieved %d orders", len(orders))
-    logger.info("Fetching order items...")
-    logger.info("Estimated time: %.1f minutes", len(orders) / 0.5 / 60)
+    report_id = create_resp["reportId"]
 
-    order_ids = [o["AmazonOrderId"] for o in orders]
-    order_items_map = await get_order_items_batch_async(order_ids)
+    # 3. Wait for report to finish
+    max_attempts = 60
+    for attempt in range(max_attempts):
+        status_resp = spapi_request(
+            method="GET",
+            path=f"/reports/2021-06-30/reports/{report_id}",
+        )
+        if not status_resp:
+            await asyncio.sleep(3)
+            continue
+        processing_status = status_resp.get("processingStatus")
+        if processing_status == "DONE":
+            break
+        elif processing_status in ("CANCELLED", "FATAL"):
+            print(f"Error: Report processing failed: {processing_status}")
+            return []
+        await asyncio.sleep(5)
+    else:
+        print("Timeout waiting for report to be DONE.")
+        return []
 
-    # -------------------------------------------------------------------
-    # SHORT-LIVED DB CONNECTION (mapping + details only)
-    # -------------------------------------------------------------------
+    document_id = status_resp.get("reportDocumentId")
+    if not document_id:
+        print("Error: No reportDocumentId found.")
+        return []
+
+    doc_resp = spapi_request(
+        method="GET",
+        path=f"/reports/2021-06-30/documents/{document_id}"
+    )
+    if not doc_resp or "url" not in doc_resp:
+        print("Error: Failed to get download URL", doc_resp)
+        return []
+
+    # 4. Download the document
+    import requests
+    url = doc_resp["url"]
+    raw = requests.get(url).content
+    compression = doc_resp.get("compressionAlgorithm")
+    if compression == "GZIP":
+        import gzip
+        decoded = gzip.decompress(raw).decode("utf-8")
+    else:
+        decoded = raw.decode("utf-8")
+
+    reader = csv.DictReader(io.StringIO(decoded), delimiter="\t")
+    rows = list(reader)
+    if not rows:
+        print("No rows in report.")
+        return []
+
+    # 5. Gather all SKUs and ASINs for DB details
+    all_skus = [r.get("sku") or r.get("SKU") for r in rows if (r.get("sku") or r.get("SKU"))]
+    all_skus = list(set(all_skus))
+    asin_list = [r.get("asin") or r.get("ASIN") for r in rows if (r.get("asin") or r.get("ASIN"))]
+    asin_list = list(set([a for a in asin_list if a]))
+
     conn = connect_database()
     cursor = conn.cursor()
     try:
-        all_skus = {
-            item["SellerSKU"]
-            for items in order_items_map.values()
-            for item in items
-            if "SellerSKU" in item
-        }
-
-        mapping = get_product_mapping(cursor, list(all_skus))
-        asin_list = [m["asin"] for m in mapping.values() if m.get("asin")]
-        details = get_product_details_by_asin(cursor, asin_list)
-
+        product_mapping = get_product_mapping(cursor, all_skus) if all_skus else {}
+        product_details = get_product_details_by_asin(cursor, asin_list) if asin_list else {}
     finally:
         cursor.close()
         conn.close()
-    # -------------------------------------------------------------------
 
-    # -------------------------------------------------------------------
-    # Build metadata
-    # -------------------------------------------------------------------
-    metadata = []
+    # 6. Prepare items for fee estimation
     items_to_est = []
+    report_items = []
+    for r in rows:
+        order_id = r.get("amazon-order-id") or r.get("AmazonOrderId")
+        sku = r.get("sku") or r.get("SKU")
+        asin = r.get("asin") or r.get("ASIN")
+        qty_str = r.get("quantity") or r.get("Qty") or "1"
+        try:
+            qty = int(qty_str)
+        except Exception:
+            qty = 1
 
-    for order in orders:
-        oid = order["AmazonOrderId"]
-        order_status = order.get("OrderStatus")
-        order_date = order.get("PurchaseDate") or order.get("OrderDate") or ""
-        last_update_date = order.get("LastUpdateDate") or order.get("LastUpdatedDate") or ""
+        # item-price in this report is the LINE TOTAL, not unit price
+        line_total_str = r.get("item-price") or r.get("ItemPrice") or r.get("unit-price") or r.get("UnitPrice")
 
-        for item in order_items_map.get(oid, []):
-            sku = item.get("SellerSKU")
-            m = mapping.get(sku)
-            if not sku or not m or not m.get("asin"):
-                continue
+        try:
+            line_total = float(line_total_str) if line_total_str not in (None, "", "Not Available") else None
+        except Exception:
+            line_total = None
 
-            asin = m["asin"]
+        unit_price = None
+        if line_total is not None and qty not in (None, 0):
+            unit_price = line_total / qty
 
-            # Quantity
-            qty_raw = item.get("QuantityOrdered", 1)
-            try:
-                qty = int(qty_raw) if qty_raw is not None else 1
-            except Exception:
-                qty = 1
+        if sku and asin and unit_price is not None and unit_price > 0 and qty > 0:
+            items_to_est.append((sku, asin, round(unit_price, 2)))
 
-            # ----- UNIT PRICE FIX -----
-            unit_price = None
+        report_items.append({
+            "raw_row": r,
+            "order_id": order_id,
+            "sku": sku,
+            "asin": asin,
+            "qty": qty,
+            "unit_price": unit_price,
+            "line_total": line_total,
+            "row_index": len(report_items)
+        })
 
-            # Prefer SubTotal if present
-            subtotal_field = None
-            if isinstance(item.get("SubTotal"), dict):
-                subtotal_field = item["SubTotal"].get("Amount")
-            elif item.get("SubTotal") is not None:
-                subtotal_field = item.get("SubTotal")
-
-            if subtotal_field is not None:
-                try:
-                    unit_price = float(subtotal_field) / max(qty, 1)
-                except Exception:
-                    unit_price = None
-            else:
-                # Fallback: ItemPrice.Amount is TOTAL for the line
-                item_price_total = None
-                if isinstance(item.get("ItemPrice"), dict):
-                    item_price_total = item["ItemPrice"].get("Amount")
-
-                if item_price_total is not None:
-                    try:
-                        unit_price = float(item_price_total) / max(qty, 1)
-                    except Exception:
-                        unit_price = None
-
-            # Only estimate fees when price is valid
-            if unit_price is not None and unit_price > 0:
-                items_to_est.append((sku, asin, round(unit_price, 2)))
-
-
-            metadata.append(
-                {
-                    "oid": oid,
-                    "order_item_id": item.get("OrderItemId", ""),
-                    "order_status": order_status,
-                    "order_date": order_date,
-                    "last_update_date": last_update_date,
-                    "qty": qty,
-                    "sku": sku,
-                    "asin": asin,
-                    "m": m,
-                    "unit_price": unit_price,
-                    "item": item,
-                }
-            )
-
-    # -------------------------------------------------------------------
-    # Fee estimation
-    # -------------------------------------------------------------------
+    # 7. Deduplicate and run async fee estimation
     unique_items = list(set(items_to_est))
-    logger.info("Estimating fees for %d unique items", len(unique_items))
-
+    print("Estimating fees for {} unique items...".format(len(unique_items)))
     counters = {"sp_calls": 0}
     estimates = await estimate_fees_batch_async(unique_items, counters)
     fees_by_key = dict(zip(unique_items, estimates))
 
-    # -------------------------------------------------------------------
-    # Build final rows (totals)
-    # -------------------------------------------------------------------
-    out = []
+    # 8. Build output rows — NO OrderItemKey!
+    output = []
+    for item in report_items:
+        r = item["raw_row"]
+        order_id = item["order_id"]
+        sku = item["sku"]
+        asin = item["asin"]
+        qty = item["qty"]
+        unit_price = item["unit_price"]
 
-    for meta in metadata:
-        sku = meta["sku"]
-        asin = meta["asin"]
-        unit_price = meta["unit_price"]
-        qty = meta["qty"]
-        subtotal = unit_price * qty if unit_price is not None else 0.0
+        mapping = product_mapping.get(sku, {})
+        prod_details = product_details.get(asin, {})
 
-        # Fix for None unit_price: never round None
-        if unit_price is not None:
-            price_key = round(unit_price, 2)
-        else:
-            price_key = None
+        ssku = mapping.get("ssku") if mapping else sku
+        brand = prod_details.get("brand") if prod_details else None
+        category = prod_details.get("category") if prod_details else None
+        title = prod_details.get("item_name") or prod_details.get("title") or r.get("product-name") or r.get("ProductName") or r.get("Title")
 
-        f = fees_by_key.get((sku, asin, price_key))
+        line_total = item["line_total"]
+        subtotal = line_total
 
-        # Fix: Safe fee extraction
-        f_net = f.get("net") if isinstance(f, dict) else None
-        referral_per_unit = float(f_net.get("ReferralFees", 0.0)) if f_net and f_net.get("ReferralFees") is not None else 0.0
-        fba_per_unit = float(f_net.get("FBAFees", 0.0)) if f_net and f_net.get("FBAFees") is not None else 0.0
+        # Fee estimation pipeline
+        fee_incl = None
+        fee_pct = None
+        fba_fees_incl = None
+        total_fee = None
+        rvat = None
+        vat = None
+        cog = None
+        profit = None
 
-        # Fix: always numbers for total calculations
-        referral_per_unit = referral_per_unit or 0.0
-        fba_per_unit = fba_per_unit or 0.0
+        if sku and asin and unit_price is not None and unit_price > 0 and qty > 0:
+            fees = fees_by_key.get((sku, asin, round(unit_price, 2)))
+            f_net = fees.get("net") if isinstance(fees, dict) else None
+            referral_per_unit = float(f_net.get("ReferralFees", 0.0)) if f_net else 0.0
+            fba_per_unit = float(f_net.get("FBAFees", 0.0)) if f_net else 0.0
 
-        # Totals (fix math with None)
-        ref_total = referral_per_unit * AMAZON_VAT_MULTIPLIER * qty if unit_price is not None else None
-        fba_total = fba_per_unit * AMAZON_VAT_MULTIPLIER * qty if unit_price is not None else None
-        total_fee = (ref_total or 0.0) + (fba_total or 0.0) if unit_price is not None else None
+            ref_total = referral_per_unit * AMAZON_VAT_MULTIPLIER * qty
+            fba_total = fba_per_unit * AMAZON_VAT_MULTIPLIER * qty
+            total_fee_val = ref_total + fba_total
 
-        vat_total = subtotal * GOVT_VAT_RATE if subtotal is not None else None
-        rvat_total = ((referral_per_unit + fba_per_unit) * (AMAZON_VAT_MULTIPLIER - 1.0)) * qty if unit_price is not None else None
+            fee_incl = -ref_total if ref_total else None
+            fba_fees_incl = -fba_total if fba_total else None
+            total_fee = -total_fee_val if total_fee_val else None
 
-        cost_per_unit = parse_cost(details.get(asin, {}).get("cost")) if asin else None
-        cog_total = cost_per_unit * qty if cost_per_unit is not None else None
+            if unit_price:
+                try:
+                    fee_pct = (referral_per_unit / unit_price) * 100
+                except Exception:
+                    fee_pct = None
 
-        # Fix: Safe fee percent calculation (no zero or None)
-        if unit_price not in (None, 0):
-            fee_pct = (referral_per_unit / unit_price) * 100
-        else:
-            fee_pct = None
+            subtotal_val = unit_price * qty
+            vat_total = subtotal_val * GOVT_VAT_RATE if (subtotal_val is not None) else None
+            rvat_total = ((referral_per_unit + fba_per_unit) * (AMAZON_VAT_MULTIPLIER - 1.0)) * qty if AMAZON_VAT_MULTIPLIER > 1.0 else 0.0
 
-        # Fix: Safe profit calculation (all prereqs must be valid, never None, never zero)
-        if (
-            unit_price not in (None, 0)
-            and cost_per_unit is not None
-            and total_fee is not None
-            and vat_total is not None
-            and rvat_total is not None
-            and cog_total is not None
-        ):
-            profit_value = subtotal - total_fee - vat_total + rvat_total - cog_total
-        else:
-            profit_value = None
+            vat = -vat_total if vat_total else None
+            rvat = rvat_total if rvat_total else None
 
-        t = {
-            "OrderItemKey": "{}:{}:{}:{}".format(
-                meta["oid"],
-                meta["order_item_id"],
-                sku,
-                asin,
-            ),
-            "AmazonOrderId": meta["oid"],
-            "OrderItemId": meta["order_item_id"],
-            "OrderDate": meta["order_date"],
+            cost = parse_cost(prod_details.get("cost")) if prod_details else None
+            cog_total = cost * qty if (cost is not None and qty is not None) else None
+            cog = -cog_total if cog_total is not None else None
+
+            profit = None
+            if (
+                subtotal_val is not None and
+                total_fee_val is not None and
+                vat_total is not None and
+                rvat_total is not None and
+                cog_total is not None
+            ):
+                profit = subtotal_val - total_fee_val - vat_total + rvat_total - cog_total
+            else:
+                profit = None
+
+        currency = r.get("currency") or BASE_CURRENCY_CODE
+
+        # 🚩 NO OrderItemKey!
+        output.append({
+            "AmazonOrderId": order_id,
+            "OrderDate": (r.get("purchase-date") or r.get("OrderDate")),
             "SKU": sku,
             "ASIN": asin,
-            "SSKU": meta["m"].get("ssku", "Not Available"),
-            "Brand": details.get(asin, {}).get("brand", "Not Available"),
-            "Category": details.get(asin, {}).get("category", "Not Available"),
-            "Title": details.get(asin, {}).get("item_name", "Not Available"),
+            "SSKU": ssku,
+            "Brand": brand,
+            "Category": category,
+            "Title": title,
             "Qty": qty,
             "UnitPrice": unit_price,
             "Subtotal": subtotal,
-            "Currency": meta["item"].get("ItemPrice", {}).get("CurrencyCode", BASE_CURRENCY_CODE),
-            "OrderStatus": meta["order_status"],
-            "LastUpdateDate": meta["last_update_date"],
-        }
+            "Currency": currency,
+            "FeeIncl": fee_incl,
+            "FeePct": fee_pct,
+            "FBAFeesIncl": fba_fees_incl,
+            "TotalFee": total_fee,
+            "RVAT": rvat,
+            "VAT": vat,
+            "COG": cog,
+            "Profit": profit,
+            "Refund": None,
+            "RefundDate": None,
+            "ReturnDate": None,
+            "ReturnDisposition": None,
+            "ReturnReason": None,
+            "LicensePlateNumber": None,
+            "Reimbursed": None,
+            "ReimbDate": None,
+            "RemovalDate": None,
+            "RemovalId": None,
+            "RemovalTracking": None,
+            "RemovalDelivery": None,
+            "OrderStatus": r.get("order-status") or r.get("OrderStatus"),
+            "LastUpdateDate": r.get("last-updated-date") or r.get("LastUpdateDate"),
+            "FirstSeenAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            "LastSeenAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        })
 
-        t.update(
-            {
-                "FeeIncl": -ref_total if ref_total is not None else None,
-                "FBAFeesIncl": -fba_total if fba_total is not None else None,
-                "TotalFee": -total_fee if total_fee is not None else None,
-                "VAT": -vat_total if vat_total is not None else None,
-                "RVAT": rvat_total if rvat_total is not None else None,
-                "FeePct": fee_pct,
-                "COG": -cog_total if cog_total is not None else None,
-                "Profit": profit_value,
-            }
+    print(
+        "SUMMARY\nOrderItems rows: {}\nTime: {:.1f}m".format(
+            len(output), (time.time() - start_time) / 60
         )
-
-        out.append(t)
-
-    logger.info(
-        "SUMMARY\nOrders: %d\nOrderItems rows: %d\nTime: %.1fm",
-        len(orders), len(out), (time.time() - start_time) / 60
     )
-
-    return out
-
+    return output
 
 async def get_orders(params):
     return await get_orders_async(params)
