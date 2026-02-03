@@ -9,7 +9,6 @@ from dotenv import load_dotenv
 from app.orders import get_orders
 from app.database import connect_database, replace_order_items_for_order
 
-
 # -------------------------------------------------------------------
 # Helpers
 # -------------------------------------------------------------------
@@ -17,14 +16,10 @@ from app.database import connect_database, replace_order_items_for_order
 def get_last_sync(cursor) -> dt.datetime:
     cursor.execute("SELECT LastSuccessfulSyncUtc FROM spapi_app_user.SyncState WHERE Id = 1")
     row = cursor.fetchone()
-
     default = dt.datetime(2025, 1, 1, tzinfo=dt.timezone.utc)
-
     if not row or not row[0]:
         return default
-
     val = row[0]
-
     # If DB returned a string
     if isinstance(val, str):
         cleaned = val.strip().replace("\u200b", "").replace("\ufeff", "")
@@ -35,24 +30,19 @@ def get_last_sync(cursor) -> dt.datetime:
             return parsed.astimezone(dt.timezone.utc)
         except:
             return default
-
     # If DB returned a datetime
     if isinstance(val, dt.datetime):
         if val.tzinfo is None:
             val = val.replace(tzinfo=dt.timezone.utc)
         return val.astimezone(dt.timezone.utc)
-
     return default
-
 
 def update_last_sync_at(ts: dt.datetime):
     if ts.tzinfo is None:
         ts_aware = ts.replace(tzinfo=dt.timezone.utc)
     else:
         ts_aware = ts.astimezone(dt.timezone.utc)
-
     ts_naive = ts_aware.replace(tzinfo=None)
-
     conn = connect_database()
     cur = conn.cursor()
     try:
@@ -74,7 +64,6 @@ def update_last_sync_at(ts: dt.datetime):
         cur.close()
         conn.close()
 
-
 # -------------------------------------------------------------------
 # Main Sync Logic
 # -------------------------------------------------------------------
@@ -95,13 +84,21 @@ async def fetch_and_upsert():
     effective_from = (last_sync - dt.timedelta(hours=overlap_hours)).replace(microsecond=0)
     last_updated_after = effective_from.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    params = {"LastUpdatedAfter": last_updated_after}
-    report_end_dt = dt.datetime.now(dt.timezone.utc)
+    # Use a fixed window size for the sync (default 24 hours, configurable)
+    window_hours = int(os.getenv("SYNC_WINDOW_HOURS", "24"))
+    end_dt = effective_from + dt.timedelta(hours=window_hours)
+    last_updated_before = end_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    params = {
+        "LastUpdatedAfter": last_updated_after,
+        "LastUpdatedBefore": last_updated_before,
+    }
 
     print("------------------------------------------------------------")
     print("Starting LIVE sync")
     print(f"LastSuccessfulSyncUtc: {last_sync.isoformat()}")
     print(f"EffectiveFrom (UTC):   {last_updated_after}")
+    print(f"EffectiveTo (UTC):     {last_updated_before}")
     print("------------------------------------------------------------")
 
     # Fetch orders
@@ -111,7 +108,7 @@ async def fetch_and_upsert():
 
     if not items:
         print("No items returned. Updating sync state and exiting.")
-        update_last_sync_at(report_end_dt)
+        update_last_sync_at(end_dt)  # <-- FIX: use actual window end, not now()
         return 0
 
     # Group rows by order
@@ -122,7 +119,7 @@ async def fetch_and_upsert():
 
     print(f"Upserting {len(grouped)} orders...")
 
-    # DB upsert
+    # DB insert/replace
     conn = connect_database()
     conn.autocommit = False
     cur = conn.cursor()
@@ -140,16 +137,14 @@ async def fetch_and_upsert():
         conn.close()
 
     # Update sync state
-    update_last_sync_at(report_end_dt)
+    update_last_sync_at(end_dt)  # <-- FIX: use actual window end, not now()
     print("Sync completed successfully.")
     print("------------------------------------------------------------")
 
     return len(items)
 
-
 def main():
     asyncio.run(fetch_and_upsert())
-
 
 if __name__ == "__main__":
     main()
