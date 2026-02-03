@@ -1,1 +1,1 @@
-SELECT * FROM OrderItems
+SELECT * FROM SyncState

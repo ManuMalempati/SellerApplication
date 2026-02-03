@@ -320,11 +320,12 @@ def insert_order_item(cursor, row):
             ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?,
-            ?, ?
+            ?, ?, ?, ?, ?, ?,   -- 6 placeholders here
+            ?, ?,               -- 2 placeholders here
+            ?, ?                -- FirstSeenAt, LastSeenAt
         )
     """
+
     params = (
         row["AmazonOrderId"],
         row["OrderDate"],
@@ -363,6 +364,7 @@ def insert_order_item(cursor, row):
         row["FirstSeenAt"],
         row["LastSeenAt"],
     )
+
     cursor.execute(sql, params)
 
 def replace_order_items_for_order(cursor, amazon_order_id, rows):
