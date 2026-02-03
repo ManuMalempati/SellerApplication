@@ -35,7 +35,7 @@ async def orders(days: int = 0, hours: int = 10, minutes: int = 0):
 
 @router.get("/order-items")
 async def get_order():
-    orderId = "408-7212017-2853114"
+    orderId = "S02-5467961-5941268"
     return spapi_request("GET", f"/orders/v0/orders/{orderId}/orderItems")
 
 @router.get("/test-pricing")
@@ -57,7 +57,7 @@ async def test_get_pricing(item_type: str = "Asin"):
 
 @router.get("/test-fees")
 async def test_get_fees():
-    asin = "B07HHD7C7T"
+    asin = "B0842P5GBQ"
     marketplace_id = os.getenv("MARKETPLACE_ID")
     currency_code = os.getenv("BASE_CURRENCY_CODE", "AED")
 
@@ -68,7 +68,7 @@ async def test_get_fees():
             "PriceToEstimateFees": {
                 "ListingPrice": {
                     "CurrencyCode": currency_code,
-                    "Amount": 58.68
+                    "Amount": 69
                 }
             },
             "Identifier": f"{asin}-estimate",
