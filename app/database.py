@@ -322,7 +322,7 @@ def insert_order_item(cursor, row):
             ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?,
-            ?, ?, ?, ?
+            ?, ?
         )
     """
     params = (
