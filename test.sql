@@ -1,2 +1,3 @@
-SELECT * FROM OrderItems
-WHERE AmazonOrderId = '405-9534685-0457117'
+UPDATE spapi_app_user.SyncState
+SET LastSuccessfulSyncUtc = '2026-01-28T00:00:00'
+WHERE Id = 1;

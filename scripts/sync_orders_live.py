@@ -4,60 +4,45 @@ import os
 import asyncio
 import datetime as dt
 import time
+
 from dotenv import load_dotenv
-import logging
-from logging.handlers import RotatingFileHandler
-
 from app.orders import get_orders
-from app.database import connect_database, replace_order_items_for_order  # <-- now use replace fn!
+from app.database import connect_database, replace_order_items_for_order
+
 
 # -------------------------------------------------------------------
-# Logging setup (unchanged)
+# Helpers
 # -------------------------------------------------------------------
-
-LOG_DIR = os.path.join(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")), "logs")
-os.makedirs(LOG_DIR, exist_ok=True)
-LOG_PATH = os.path.join(LOG_DIR, "sync_orders_live.log")
-
-logger = logging.getLogger("sync_orders_live")
-logger.setLevel(logging.INFO)
-
-file_handler = RotatingFileHandler(
-    LOG_PATH, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
-)
-formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
-file_handler.setFormatter(formatter)
-logger.addHandler(file_handler)
-
-console = logging.StreamHandler()
-console.setFormatter(formatter)
-logger.addHandler(console)
-
-def flush_logs():
-    for h in logger.handlers:
-        try:
-            h.flush()
-        except Exception:
-            pass
-
-
-def format_dt_z(d: dt.datetime) -> str:
-    if d is None:
-        return None
-    if d.tzinfo is None:
-        return d.strftime("%Y-%m-%dT%H:%M:%SZ")
-    return d.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
 
 def get_last_sync(cursor) -> dt.datetime:
     cursor.execute("SELECT LastSuccessfulSyncUtc FROM spapi_app_user.SyncState WHERE Id = 1")
     row = cursor.fetchone()
-    if row and row[0]:
-        val = row[0]
+
+    default = dt.datetime(2025, 1, 1, tzinfo=dt.timezone.utc)
+
+    if not row or not row[0]:
+        return default
+
+    val = row[0]
+
+    # If DB returned a string
+    if isinstance(val, str):
+        cleaned = val.strip().replace("\u200b", "").replace("\ufeff", "")
+        try:
+            parsed = dt.datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=dt.timezone.utc)
+            return parsed.astimezone(dt.timezone.utc)
+        except:
+            return default
+
+    # If DB returned a datetime
+    if isinstance(val, dt.datetime):
         if val.tzinfo is None:
-            return val.replace(tzinfo=dt.timezone.utc)
+            val = val.replace(tzinfo=dt.timezone.utc)
         return val.astimezone(dt.timezone.utc)
-    return dt.datetime(2025, 1, 1, tzinfo=dt.timezone.utc)
+
+    return default
 
 
 def update_last_sync_at(ts: dt.datetime):
@@ -81,16 +66,21 @@ def update_last_sync_at(ts: dt.datetime):
                 (ts_naive,),
             )
         conn.commit()
-    except Exception:
+    except Exception as exc:
+        print("ERROR updating SyncState:", exc)
         conn.rollback()
-        logger.exception("ERROR updating SyncState")
         raise
     finally:
         cur.close()
         conn.close()
 
 
+# -------------------------------------------------------------------
+# Main Sync Logic
+# -------------------------------------------------------------------
+
 async def fetch_and_upsert():
+    # Load last sync
     conn = connect_database()
     cur = conn.cursor()
     try:
@@ -99,26 +89,40 @@ async def fetch_and_upsert():
         cur.close()
         conn.close()
 
-    effective_from = (last_sync - dt.timedelta(hours=2)).replace(microsecond=0)
-    last_updated_after = format_dt_z(effective_from)
+    # Overlap hours from env
+    overlap_hours = int(os.getenv("SYNC_OVERLAP_HOURS", "2"))
+
+    effective_from = (last_sync - dt.timedelta(hours=overlap_hours)).replace(microsecond=0)
+    last_updated_after = effective_from.strftime("%Y-%m-%dT%H:%M:%SZ")
+
     params = {"LastUpdatedAfter": last_updated_after}
-    report_end_dt = dt.datetime.now(dt.timezone.utc)  # fallback
+    report_end_dt = dt.datetime.now(dt.timezone.utc)
 
-    logger.info("Starting sync. LastSuccessfulSyncUtc=%s EffectiveFrom=%s", last_sync.isoformat(), last_updated_after)
-    flush_logs()
+    print("------------------------------------------------------------")
+    print("Starting LIVE sync")
+    print(f"LastSuccessfulSyncUtc: {last_sync.isoformat()}")
+    print(f"EffectiveFrom (UTC):   {last_updated_after}")
+    print("------------------------------------------------------------")
 
+    # Fetch orders
+    print("Calling get_orders...")
     items = await get_orders(params=params)
+    print(f"get_orders returned {len(items) if items else 0} rows")
+
     if not items:
+        print("No items returned. Updating sync state and exiting.")
         update_last_sync_at(report_end_dt)
-        flush_logs()
         return 0
 
-    # === GROUP-BY-ORDER DELETE-AND-REPLACE LOGIC STARTS HERE ===
+    # Group rows by order
     grouped = {}
     for row in items:
         oid = row["AmazonOrderId"]
         grouped.setdefault(oid, []).append(row)
 
+    print(f"Upserting {len(grouped)} orders...")
+
+    # DB upsert
     conn = connect_database()
     conn.autocommit = False
     cur = conn.cursor()
@@ -126,25 +130,26 @@ async def fetch_and_upsert():
         for oid, rows in grouped.items():
             replace_order_items_for_order(cur, oid, rows)
         conn.commit()
-        logger.info("Finished upserting %d orders (atomic replace by order)", len(grouped))
-        flush_logs()
-    except Exception:
+        print(f"Finished upserting {len(grouped)} orders.")
+    except Exception as exc:
         conn.rollback()
-        logger.exception("ERROR during UPSERT")
-        flush_logs()
+        print("ERROR during UPSERT:", exc)
         raise
     finally:
         cur.close()
         conn.close()
 
-    # Update sync time at end
+    # Update sync state
     update_last_sync_at(report_end_dt)
-    logger.info("Sync completed")
-    flush_logs()
+    print("Sync completed successfully.")
+    print("------------------------------------------------------------")
+
     return len(items)
+
 
 def main():
     asyncio.run(fetch_and_upsert())
+
 
 if __name__ == "__main__":
     main()
