@@ -37,6 +37,21 @@ MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 INITIAL_RETRY_DELAY = float(os.getenv("INITIAL_RETRY_DELAY", "5.0"))
 
 # -------------------------------------------------------------------
+# We show time values in GMT+4
+# -------------------------------------------------------------------
+
+GST = timezone(timedelta(hours=4))
+
+def to_gst(dt_str):
+    if not dt_str:
+        return None
+    try:
+        dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+        return dt.astimezone(GST).replace(tzinfo=None)  # store naive GST
+    except:
+        return None
+
+# -------------------------------------------------------------------
 # Rate Limiter
 # -------------------------------------------------------------------
 
@@ -388,7 +403,7 @@ async def get_orders_async(params):
 
         output.append({
             "AmazonOrderId": order_id,
-            "OrderDate": r.get("purchase-date") or r.get("OrderDate"),
+            "OrderDate": to_gst(r.get("purchase-date") or r.get("OrderDate")),
             "SKU": sku,
             "ASIN": asin,
             "SSKU": ssku,
@@ -420,7 +435,7 @@ async def get_orders_async(params):
             "RemovalTracking": None,
             "RemovalDelivery": None,
             "OrderStatus": r.get("order-status") or r.get("OrderStatus"),
-            "LastUpdateDate": r.get("last-updated-date") or r.get("LastUpdateDate"),
+            "LastUpdateDate": to_gst(r.get("last-updated-date") or r.get("LastUpdateDate")),
             "FirstSeenAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
             "LastSeenAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         })

@@ -1,3 +1,4 @@
-SELECT *
-FROM OrderItems
-WHERE AmazonOrderId = '402-9695759-6320320'
+UPDATE OrderItems
+SET 
+    OrderDate = DATEADD(hour, 4, OrderDate),
+    LastUpdateDate = DATEADD(hour, 4, LastUpdateDate);
