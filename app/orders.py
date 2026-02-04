@@ -115,6 +115,57 @@ def estimate_fees_for_item(sku, asin, price, counters):
     return retry_api_call(_fetch)
 
 # -------------------------------------------------------------------
+# PATCH: Updated wait_for_report
+# -------------------------------------------------------------------
+
+def request_report(report_type, params=None):
+    """Request a report and return the reportId."""
+    time.sleep(0.5)
+    body = {
+        "reportType": report_type,
+        "marketplaceIds": [MARKETPLACE_ID]
+    }
+    if params:
+        body.update(params)
+    resp = spapi_request(
+        "POST",
+        "/reports/2021-06-30/reports",
+        body=body
+    )
+    report_id = resp.get("reportId")
+    if not report_id:
+        raise Exception(f"Failed to request report: {resp}")
+    return report_id
+
+def wait_for_report(report_id, timeout=300):
+    """Poll until report is DONE. Retry if FATAL or CANCELLED."""
+    start = time.time()
+    while True:
+        time.sleep(0.5)
+        resp = spapi_request(
+            method="GET",
+            path=f"/reports/2021-06-30/reports/{report_id}"
+        )
+        status = resp.get("processingStatus")
+
+        if status == "DONE":
+            return resp.get("reportDocumentId")
+
+        if status in ("CANCELLED", "FATAL"):
+            print(f"Report returned {status}. Retrying with a new report...")
+
+            # request a new report
+            new_report_id = request_report("GET_FLAT_FILE_ALL_ORDERS_DATA_BY_LAST_UPDATE_GENERAL")
+
+            # restart the wait loop with the new report
+            return wait_for_report(new_report_id, timeout)
+
+        if time.time() - start > timeout:
+            raise TimeoutError("Report generation timed out")
+
+        time.sleep(5)
+
+# -------------------------------------------------------------------
 # Async batch fee estimation
 # -------------------------------------------------------------------
 
@@ -183,26 +234,7 @@ async def get_orders_async(params):
     # ---------------------------------------------------------------
     # 3. Wait for report to finish
     # ---------------------------------------------------------------
-    for _ in range(60):
-        status_resp = spapi_request(
-            method="GET",
-            path=f"/reports/2021-06-30/reports/{report_id}",
-        )
-
-        if status_resp:
-            status = status_resp.get("processingStatus")
-            if status == "DONE":
-                break
-            if status in ("CANCELLED", "FATAL"):
-                print(f"Error: Report processing failed: {status}")
-                return []
-
-        await asyncio.sleep(5)
-    else:
-        print("Timeout waiting for report to be DONE.")
-        return []
-
-    document_id = status_resp.get("reportDocumentId")
+    document_id = wait_for_report(report_id)
     if not document_id:
         print("Error: No reportDocumentId found.")
         return []
