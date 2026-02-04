@@ -31,7 +31,6 @@ SKUS_TO_RECALCULATE = [
     "STKL2000404",
 ]
 
-
 def recalculate_order_items_for_skus(sku_list: list):
     """
     Recalculate ONLY:
