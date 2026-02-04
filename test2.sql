@@ -1,1 +1,2 @@
-CREATE INDEX IX_OrderItems_AmazonOrderId ON OrderItems(AmazonOrderId);
+SELECT * FROM InventoryReport
+WHERE PartNumber = 'STKL2000404'

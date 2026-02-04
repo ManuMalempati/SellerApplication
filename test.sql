@@ -1,1 +1,2 @@
-SELECT * FROM SyncState
+SELECT * FROM ProductMapping
+WHERE sku = 'STKL2000404'
