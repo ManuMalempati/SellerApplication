@@ -79,7 +79,7 @@ def get_product_details_by_asin(cursor, asin_list):
             ir.Category,
             ir.ItemName
         FROM ProductMapping pm
-        LEFT JOIN InventoryReport ir ON pm.ssku = ir.PartNumber
+        LEFT JOIN CurrentInventory ir ON pm.ssku = ir.PartNumber
         WHERE pm.asin IN ({placeholders})
     """
     cursor.execute(query, unique_asins)

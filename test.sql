@@ -1,2 +1,0 @@
-SELECT * FROM OrderItems
-WHERE sku = 'STKL2000404'

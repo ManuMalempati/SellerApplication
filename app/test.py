@@ -35,7 +35,7 @@ async def orders(days: int = 0, hours: int = 10, minutes: int = 0):
 
 @router.get("/order-items")
 async def get_order():
-    orderId = "S02-5467961-5941268"
+    orderId = "406-3986866-3793910"
     return spapi_request("GET", f"/orders/v0/orders/{orderId}/orderItems")
 
 @router.get("/test-pricing")
@@ -90,101 +90,42 @@ async def test_get_fees():
 #     result = spapi_request(method="GET", path=f"/products/pricing/v0/listings/{sku}/offers", params=params)
 #     return result
 
-@router.get("/test-raw-report")
-async def test_raw_report(hours: int = 200):
+@router.get("/test-pricing-raw")
+async def test_pricing_raw(
+    sku: str = None,
+    asin: str = None,
+    item_type: str = "Sku"
+):
     """
-    Fetch raw rows from GET_FLAT_FILE_ALL_ORDERS_DATA_BY_LAST_UPDATE_GENERAL
-    and return ONLY orders that appear multiple times with different statuses.
+    Test endpoint to fetch RAW pricing output exactly like buyboxes() does.
+    Example:
+      /test-pricing-raw?sku=BL.9BWWA.559
+      /test-pricing-raw?asin=B0CMCFGWK6&item_type=Asin
     """
 
-    # 1. Compute window
-    end_dt = datetime.now(timezone.utc)
-    start_dt = end_dt - timedelta(hours=hours)
+    sku = '5SD1N53083'
+    asin = 'B0CMCFGWK6'
+    if not sku and not asin:
+        return {"error": "Provide either sku= or asin="}
 
-    print(f"Requesting report for {start_dt.isoformat()} to {end_dt.isoformat()}")
-
-    # 2. Create report
-    create_resp = spapi_request(
-        method="POST",
-        path="/reports/2021-06-30/reports",
-        body={
-            "reportType": "GET_FLAT_FILE_ALL_ORDERS_DATA_BY_LAST_UPDATE_GENERAL",
-            "dataStartTime": start_dt.isoformat(),
-            "dataEndTime": end_dt.isoformat(),
-            "marketplaceIds": [MARKETPLACE_ID],
-        }
-    )
-
-    if not create_resp or "reportId" not in create_resp:
-        return {"error": "Failed to create report", "response": create_resp}
-
-    report_id = create_resp["reportId"]
-
-    # 3. Poll until DONE
-    for _ in range(60):
-        status_resp = spapi_request(
-            method="GET",
-            path=f"/reports/2021-06-30/reports/{report_id}",
-        )
-        if status_resp and status_resp.get("processingStatus") == "DONE":
-            break
-        await asyncio.sleep(5)
-    else:
-        return {"error": "Timeout waiting for report"}
-
-    document_id = status_resp.get("reportDocumentId")
-    if not document_id:
-        return {"error": "No reportDocumentId", "response": status_resp}
-
-    # 4. Get download URL
-    doc_resp = spapi_request(
-        method="GET",
-        path=f"/reports/2021-06-30/documents/{document_id}"
-    )
-    if not doc_resp or "url" not in doc_resp:
-        return {"error": "Failed to get document URL", "response": doc_resp}
-
-    url = doc_resp["url"]
-
-    # 5. Download the file
-    raw = requests.get(url).content
-    compression = doc_resp.get("compressionAlgorithm")
-
-    if compression == "GZIP":
-        decoded = gzip.decompress(raw).decode("utf-8")
-    else:
-        decoded = raw.decode("utf-8")
-
-    # 6. Parse TSV → JSON
-    reader = csv.DictReader(io.StringIO(decoded), delimiter="\t")
-    rows = list(reader)
-
-    # ---------------------------------------------------------
-    # 7. Detect orders with multiple statuses inside the report
-    # ---------------------------------------------------------
-    status_map = {}  # orderId -> set(statuses)
-    row_map = {}     # orderId -> list(rows)
-
-    for r in rows:
-        oid = r.get("amazon-order-id")
-        status = r.get("order-status")
-
-        if not oid:
-            continue
-
-        status_map.setdefault(oid, set()).add(status)
-        row_map.setdefault(oid, []).append(r)
-
-    # Orders where the same orderId has >1 distinct statuses
-    changed_orders = {
-        oid: row_map[oid]
-        for oid, statuses in status_map.items()
-        if len(statuses) > 1
+    params = {
+        "MarketplaceId": MARKETPLACE_ID,
+        "ItemType": item_type,
     }
 
+    if item_type.lower() == "sku":
+        params["Skus"] = sku
+    else:
+        params["Asins"] = asin
+
+    # Call SP‑API exactly like buyboxes() does
+    resp = spapi_request(
+        "GET",
+        "/products/pricing/v0/price",
+        params=params
+    )
+
     return {
-        "count": len(changed_orders),
-        "start": start_dt.isoformat(),
-        "end": end_dt.isoformat(),
-        "changed_orders": changed_orders,
+        "input": {"sku": sku, "asin": asin, "item_type": item_type},
+        "raw_response": resp
     }

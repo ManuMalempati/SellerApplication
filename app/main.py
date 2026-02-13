@@ -46,7 +46,7 @@ async def orders(days: int = 0, hours: int = 5, minutes: int = 0):
 
 @app.get("/buybox")
 async def buybox():
-    return buyboxes()
+    return await buyboxes()
 
 
 if __name__ == "__main__":
