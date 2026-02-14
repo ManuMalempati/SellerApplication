@@ -340,13 +340,16 @@ async def buyboxes():
         sku = line.get("seller-sku")
         asin = line.get("asin")
         qty = line.get("Quantity Available")
+        fnsku = line.get("fulfillment-channel-sku")
 
         if not sku:
             continue
 
         qty_int = int(qty) if qty and qty.isdigit() else 0
-        if qty_int <= 0:
-            continue
+
+        # Client has told to ignore this filter for now.
+        # if qty_int <= 0:
+        #     continue
 
         ssku = (product_mappings.get(sku) or {}).get("ssku")
         rows.append(
@@ -354,6 +357,7 @@ async def buyboxes():
                 "SKU": sku,
                 "ASIN": asin,
                 "SSKU": ssku,
+                "FNSKU": fnsku,
                 "FBA-Stock": qty_int,
             }
         )
@@ -431,6 +435,7 @@ async def buyboxes():
     print(f"Total time: {elapsed:.1f}s")
     print("=" * 60)
 
+    # return rows
     return {
         "total_items": len(rows),
         "items_with_price": len([r for r in rows if r["Sale-Price"]]),

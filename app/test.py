@@ -103,7 +103,7 @@ async def test_pricing_raw(
       /test-pricing-raw?asin=B0CMCFGWK6&item_type=Asin
     """
 
-    sku = '5SD1N53083'
+    sku = 'CB16GS4800'
     asin = 'B0CMCFGWK6'
     if not sku and not asin:
         return {"error": "Provide either sku= or asin="}
@@ -128,4 +128,121 @@ async def test_pricing_raw(
     return {
         "input": {"sku": sku, "asin": asin, "item_type": item_type},
         "raw_response": resp
+    }
+
+def throttle():
+    time.sleep(0.5)
+
+@router.get("/test-sales-traffic-filtered")
+def test_sales_traffic_filtered():
+
+    # -----------------------------
+    # 1. Build L-30 date range
+    # -----------------------------
+    end = datetime.utcnow()
+    start = end - timedelta(days=30)
+
+    dataStartTime = start.strftime("%Y-%m-%dT00:00:00Z")
+    dataEndTime = end.strftime("%Y-%m-%dT00:00:00Z")
+
+    print(f"📅 Requesting L-30 days: {dataStartTime} → {dataEndTime}")
+
+    # -----------------------------
+    # 2. Request the report
+    # -----------------------------
+    throttle()
+    body = {
+        "reportType": "GET_SALES_AND_TRAFFIC_REPORT",
+        "dataStartTime": dataStartTime,
+        "dataEndTime": dataEndTime,
+        "reportOptions": {
+            "dateGranularity": "DAY",
+            "asinGranularity": "CHILD"
+        },
+        "marketplaceIds": [MARKETPLACE_ID]
+    }
+
+    resp = spapi_request(
+        "POST",
+        "/reports/2021-06-30/reports",
+        body=body
+    ) or {}
+
+    report_id = resp.get("reportId")
+    if not report_id:
+        return {"error": "No reportId returned", "response": resp}
+
+    print(f"📦 Report requested: {report_id}")
+
+    # -----------------------------
+    # 3. Poll until DONE
+    # -----------------------------
+    while True:
+        throttle()
+        status_resp = spapi_request(
+            "GET",
+            f"/reports/2021-06-30/reports/{report_id}"
+        ) or {}
+
+        status = status_resp.get("processingStatus")
+        print(f"⏳ Status: {status}")
+
+        if status == "DONE":
+            document_id = status_resp.get("reportDocumentId")
+            break
+
+        time.sleep(2)
+
+    print(f"📄 Report ready: {document_id}")
+
+    # -----------------------------
+    # 4. Download the JSON
+    # -----------------------------
+    throttle()
+    doc = spapi_request(
+        "GET",
+        f"/reports/2021-06-30/documents/{document_id}"
+    ) or {}
+
+    url = doc.get("url")
+    raw = requests.get(url).content
+
+    if doc.get("compressionAlgorithm") == "GZIP":
+        import gzip
+        raw = gzip.decompress(raw)
+
+    report_json = raw.decode("utf-8")
+    import json
+    data = json.loads(report_json)
+
+    # -----------------------------
+    # 5. Extract L-30 totals per ASIN
+    # -----------------------------
+    asin_rows = data.get("salesAndTrafficByAsin", [])
+
+    dedup = {}  # ⭐ dict keyed by ASIN
+
+    for row in asin_rows:
+        asin = row.get("parentAsin") or row.get("childAsin")
+        if not asin:
+            continue
+
+        sales = row.get("salesByAsin", {})
+        traffic = row.get("trafficByAsin", {})
+
+        dedup[asin] = {
+            "ASIN": asin,
+            "TotalOrderItems_L30": sales.get("totalOrderItems", 0),
+            "OrderedProductSales_L30": sales.get("orderedProductSales", 0),
+            "UnitsRefunded_L30": sales.get("unitsRefunded", 0),
+            "BuyBoxPercentage_L30": traffic.get("buyBoxPercentage", 0)
+        }
+
+    results = list(dedup.values())
+
+    print(f"✅ Extracted {len(results)} ASIN rows (after ASIN + dedupe filter)")
+
+    return {
+        "count": len(results),
+        "items": results
     }

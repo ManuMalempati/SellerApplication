@@ -66,36 +66,47 @@ def get_all_product_mapping(cursor):
     return mapping
 
 def get_product_details_by_asin(cursor, asin_list):
-    product_details = {}
-    if not asin_list:
-        return product_details
-    unique_asins = list(set(asin_list))
-    placeholders = ",".join("?" * len(unique_asins))
-    query = f"""
-        SELECT
-            pm.asin,
-            ir.Cost,
-            ir.Brand,
-            ir.Category,
-            ir.ItemName
-        FROM ProductMapping pm
-        LEFT JOIN CurrentInventory ir ON pm.ssku = ir.PartNumber
-        WHERE pm.asin IN ({placeholders})
     """
-    cursor.execute(query, unique_asins)
-    for row in cursor.fetchall():
-        asin = row[0]
-        cost = row[1]
-        brand = row[2]
-        category = row[3]
-        item_name = row[4]
-        product_details[asin] = {
-            "cost": cost,
-            "brand": brand,
-            "category": category,
-            "item_name": item_name,
-        }
-    return product_details
+    Get product details for a list of ASINs.
+    Batches queries to avoid SQL Server parameter limits.
+    """
+    if not asin_list:
+        return {}
+    
+    unique_asins = list(set(asin_list))
+    results = {}
+    
+    # SQL Server limit is ~2100 parameters, use 1000 to be safe
+    BATCH_SIZE = 1000
+    
+    for i in range(0, len(unique_asins), BATCH_SIZE):
+        batch = unique_asins[i:i + BATCH_SIZE]
+        placeholders = ",".join("?" * len(batch))
+        
+        query = f"""
+            SELECT 
+                pm.asin,
+                ir.Cost,
+                ir.Brand,
+                ir.Category,
+                ir.ItemName
+            FROM ProductMapping pm
+            LEFT JOIN InventoryReport ir ON pm.ssku = ir.PartNumber
+            WHERE pm.asin IN ({placeholders})
+        """
+        
+        cursor.execute(query, batch)
+        
+        for row in cursor.fetchall():
+            asin = row[0]
+            results[asin] = {
+                "cost": row[1],
+                "brand": row[2],
+                "category": row[3],
+                "item_name": row[4],
+            }
+    
+    return results
 
 def parse_cost(cost_value):
     if cost_value is None:

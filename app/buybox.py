@@ -112,7 +112,8 @@ def buyboxes():
     for summary in all_summaries:
         total_qty = summary.get("totalQuantity", 0)
 
-        if total_qty > 0:
+        # For now keep >= 0
+        if total_qty >= 0:
             sku = summary.get("sellerSku")
             mapping = product_mappings.get(sku) or {}
 
