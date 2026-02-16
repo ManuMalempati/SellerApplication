@@ -254,244 +254,118 @@ def replace_order_items_for_order(cursor, amazon_order_id, rows):
     # 3. Bulk insert
     cursor.executemany(sql, params)
 
-def upsert_fba_data(cursor, fba_row):
-    """
-    Upsert FBA data into ProductMapping table.
-    Uses SKU as the unique identifier.
-    SQL Server syntax.
-    """
-    sku = fba_row.get("SKU")
-    asin = fba_row.get("ASIN")
-    fnsku = fba_row.get("FNSKU")
-    
-    if not sku:
-        print(f"[upsert_fba_data] Skipping row with no SKU")
-        return False
-    
-    # Check if SKU exists
-    cursor.execute("SELECT sku FROM ProductMapping WHERE sku = ?", (sku,))
-    exists = cursor.fetchone()
-    
-    if exists:
-        # UPDATE existing row
-        cursor.execute("""
-            UPDATE ProductMapping SET
-                asin = ?,
-                [FNSKU] = ?,
-                [FBA-Stock] = ?,
-                [Sellable-Qty] = ?,
-                [Unsellable-Qty] = ?,
-                [Condition-Type] = ?,
-                [Warehouse-Condition] = ?,
-                Title = ?,
-                COG = ?,
-                Brand = ?,
-                Category = ?,
-                TotalOrderItems_L30 = ?,
-                OrderedProductSales_L30 = ?,
-                UnitsRefunded_L30 = ?,
-                BuyBoxPercentage_L30 = ?,
-                [Sale-Price] = ?,
-                [Est-Fee] = ?,
-                [Est-FBA Fee] = ?,
-                [Est-VAT] = ?,
-                [Est-Net] = ?,
-                fba_updated_at = GETDATE()
-            WHERE sku = ?
-        """, (
-            asin,
-            fnsku,
-            fba_row.get("FBA-Stock"),
-            fba_row.get("Sellable-Qty"),
-            fba_row.get("Unsellable-Qty"),
-            fba_row.get("Condition-Type"),
-            fba_row.get("Warehouse-Condition"),
-            fba_row.get("Title"),
-            fba_row.get("COG"),
-            fba_row.get("Brand"),
-            fba_row.get("Category"),
-            fba_row.get("TotalOrderItems_L30"),
-            fba_row.get("OrderedProductSales_L30"),
-            fba_row.get("UnitsRefunded_L30"),
-            fba_row.get("BuyBoxPercentage_L30"),
-            fba_row.get("Sale-Price"),
-            fba_row.get("Est-Fee"),
-            fba_row.get("Est-FBA Fee"),
-            fba_row.get("Est-VAT"),
-            fba_row.get("Est-Net"),
-            sku
-        ))
-    else:
-        # INSERT new row (SSKU will be NULL for new FBA items not in ProductMapping)
-        cursor.execute("""
-            INSERT INTO ProductMapping (
-                sku, ssku, asin, [FNSKU], [FBA-Stock], [Sellable-Qty], [Unsellable-Qty],
-                [Condition-Type], [Warehouse-Condition], Title, COG, Brand, Category,
-                TotalOrderItems_L30, OrderedProductSales_L30, UnitsRefunded_L30,
-                BuyBoxPercentage_L30, [Sale-Price], [Est-Fee], [Est-FBA Fee], [Est-VAT],
-                [Est-Net], fba_updated_at
-            ) VALUES (
-                ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE()
-            )
-        """, (
-            sku,
-            asin,
-            fnsku,
-            fba_row.get("FBA-Stock"),
-            fba_row.get("Sellable-Qty"),
-            fba_row.get("Unsellable-Qty"),
-            fba_row.get("Condition-Type"),
-            fba_row.get("Warehouse-Condition"),
-            fba_row.get("Title"),
-            fba_row.get("COG"),
-            fba_row.get("Brand"),
-            fba_row.get("Category"),
-            fba_row.get("TotalOrderItems_L30"),
-            fba_row.get("OrderedProductSales_L30"),
-            fba_row.get("UnitsRefunded_L30"),
-            fba_row.get("BuyBoxPercentage_L30"),
-            fba_row.get("Sale-Price"),
-            fba_row.get("Est-Fee"),
-            fba_row.get("Est-FBA Fee"),
-            fba_row.get("Est-VAT"),
-            fba_row.get("Est-Net")
-        ))
-    
-    return True
-
-
 def bulk_upsert_fba_data(cursor, fba_rows):
     """
-    Optimized bulk upsert using executemany().
-    Same logic as before, but 10–20x faster.
-    Includes progress + timing diagnostics.
+    Optimized bulk upsert with batching.
+    Processes in chunks of 500 rows to avoid timeouts.
     """
     start = time.time()
     total = len(fba_rows)
     print(f"[bulk_upsert_fba_data] Starting upsert of {total} rows...")
 
-    # Prepare UPDATE and INSERT batches
-    update_params = []
-    insert_params = []
-
     # Pre-check: which SKUs already exist?
     cursor.execute("SELECT sku FROM ProductMapping")
     existing_skus = {row[0] for row in cursor.fetchall()}
+    print(f"[bulk_upsert_fba_data] Found {len(existing_skus)} existing SKUs in database")
 
     # Split rows into UPDATE vs INSERT
-    for i, row in enumerate(fba_rows):
+    update_params = []
+    insert_params = []
+
+    for row in fba_rows:
         sku = row.get("SKU")
         if not sku:
-            print(f"[bulk_upsert_fba_data] Skipping row with no SKU")
             continue
 
-        if i % 200 == 0:
-            print(f"[bulk_upsert_fba_data] Processing row {i}/{total}")
+        params = (
+            row.get("ASIN"),
+            row.get("FNSKU"),
+            row.get("FBA-Stock"),
+            row.get("Sellable-Qty"),
+            row.get("Unsellable-Qty"),
+            row.get("Condition-Type"),
+            row.get("Warehouse-Condition"),
+            row.get("Title"),
+            row.get("COG"),
+            row.get("Brand"),
+            row.get("Category"),
+            row.get("TotalOrderItems_L30"),
+            row.get("OrderedProductSales_L30"),
+            row.get("UnitsRefunded_L30"),
+            row.get("BuyBoxPercentage_L30"),
+            row.get("Sale-Price"),
+            row.get("Est-Fee"),
+            row.get("Est-FBA Fee"),
+            row.get("Est-VAT"),  # Using Est-VAT
+            row.get("Est-Net"),
+            sku,
+        )
 
         if sku in existing_skus:
-            # UPDATE
-            update_params.append((
-                row.get("ASIN"),
-                row.get("FNSKU"),
-                row.get("FBA-Stock"),
-                row.get("Sellable-Qty"),
-                row.get("Unsellable-Qty"),
-                row.get("Condition-Type"),
-                row.get("Warehouse-Condition"),
-                row.get("Title"),
-                row.get("COG"),
-                row.get("Brand"),
-                row.get("Category"),
-                row.get("TotalOrderItems_L30"),
-                row.get("OrderedProductSales_L30"),
-                row.get("UnitsRefunded_L30"),
-                row.get("BuyBoxPercentage_L30"),
-                row.get("Sale-Price"),
-                row.get("Est-Fee"),
-                row.get("Est-FBA Fee"),
-                row.get("Est-VAT"),
-                row.get("Est-Net"),
-                sku
-            ))
+            update_params.append(params)
         else:
-            # INSERT
-            insert_params.append((
-                sku,
-                row.get("ASIN"),
-                row.get("FNSKU"),
-                row.get("FBA-Stock"),
-                row.get("Sellable-Qty"),
-                row.get("Unsellable-Qty"),
-                row.get("Condition-Type"),
-                row.get("Warehouse-Condition"),
-                row.get("Title"),
-                row.get("COG"),
-                row.get("Brand"),
-                row.get("Category"),
-                row.get("TotalOrderItems_L30"),
-                row.get("OrderedProductSales_L30"),
-                row.get("UnitsRefunded_L30"),
-                row.get("BuyBoxPercentage_L30"),
-                row.get("Sale-Price"),
-                row.get("Est-Fee"),
-                row.get("Est-FBA Fee"),
-                row.get("Est-VAT"),
-                row.get("Est-Net")
-            ))
+            insert_params.append((sku,) + params[:-1])
 
-    # ------------------------------
-    # EXECUTE UPDATE BATCH
-    # ------------------------------
+    # UPDATE SQL
+    update_sql = """
+        UPDATE ProductMapping SET
+            asin = ?,
+            [FNSKU] = ?,
+            [FBA-Stock] = ?,
+            [Sellable-Qty] = ?,
+            [Unsellable-Qty] = ?,
+            [Condition-Type] = ?,
+            [Warehouse-Condition] = ?,
+            Title = ?,
+            COG = ?,
+            Brand = ?,
+            Category = ?,
+            TotalOrderItems_L30 = ?,
+            OrderedProductSales_L30 = ?,
+            UnitsRefunded_L30 = ?,
+            BuyBoxPercentage_L30 = ?,
+            [Sale-Price] = ?,
+            [Est-Fee] = ?,
+            [Est-FBA Fee] = ?,
+            [Est-VAT] = ?,
+            [Est-Net] = ?,
+            fba_updated_at = GETDATE()
+        WHERE sku = ?
+    """
+
+    # INSERT SQL
+    insert_sql = """
+        INSERT INTO ProductMapping (
+            sku, asin, [FNSKU], [FBA-Stock], [Sellable-Qty], [Unsellable-Qty],
+            [Condition-Type], [Warehouse-Condition], Title, COG, Brand, Category,
+            TotalOrderItems_L30, OrderedProductSales_L30, UnitsRefunded_L30,
+            BuyBoxPercentage_L30, [Sale-Price], [Est-Fee], [Est-FBA Fee], [Est-VAT],
+            [Est-Net], fba_updated_at
+        ) VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE()
+        )
+    """
+
+    BATCH_SIZE = 500
+
+    # Execute UPDATE in batches
     if update_params:
-        print(f"[bulk_upsert_fba_data] Running UPDATE batch for {len(update_params)} rows...")
-        update_sql = """
-            UPDATE ProductMapping SET
-                asin = ?,
-                [FNSKU] = ?,
-                [FBA-Stock] = ?,
-                [Sellable-Qty] = ?,
-                [Unsellable-Qty] = ?,
-                [Condition-Type] = ?,
-                [Warehouse-Condition] = ?,
-                Title = ?,
-                COG = ?,
-                Brand = ?,
-                Category = ?,
-                TotalOrderItems_L30 = ?,
-                OrderedProductSales_L30 = ?,
-                UnitsRefunded_L30 = ?,
-                BuyBoxPercentage_L30 = ?,
-                [Sale-Price] = ?,
-                [Est-Fee] = ?,
-                [Est-FBA Fee] = ?,
-                [Est-VAT] = ?,
-                [Est-Net] = ?,
-                fba_updated_at = GETDATE()
-            WHERE sku = ?
-        """
-        cursor.executemany(update_sql, update_params)
+        print(f"[bulk_upsert_fba_data] Running UPDATE for {len(update_params)} rows...")
+        for i in range(0, len(update_params), BATCH_SIZE):
+            batch = update_params[i:i + BATCH_SIZE]
+            cursor.executemany(update_sql, batch)
+            print(f"[bulk_upsert_fba_data] Updated batch {i // BATCH_SIZE + 1}: {len(batch)} rows")
 
-    # ------------------------------
-    # EXECUTE INSERT BATCH
-    # ------------------------------
+    # Execute INSERT in batches
     if insert_params:
-        print(f"[bulk_upsert_fba_data] Running INSERT batch for {len(insert_params)} rows...")
-        insert_sql = """
-            INSERT INTO ProductMapping (
-                sku, asin, [FNSKU], [FBA-Stock], [Sellable-Qty], [Unsellable-Qty],
-                [Condition-Type], [Warehouse-Condition], Title, COG, Brand, Category,
-                TotalOrderItems_L30, OrderedProductSales_L30, UnitsRefunded_L30,
-                BuyBoxPercentage_L30, [Sale-Price], [Est-Fee], [Est-FBA Fee], [Est-VAT],
-                [Est-Net], fba_updated_at
-            ) VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE()
-            )
-        """
-        cursor.executemany(insert_sql, insert_params)
+        print(f"[bulk_upsert_fba_data] Running INSERT for {len(insert_params)} rows...")
+        for i in range(0, len(insert_params), BATCH_SIZE):
+            batch = insert_params[i:i + BATCH_SIZE]
+            cursor.executemany(insert_sql, batch)
+            print(f"[bulk_upsert_fba_data] Inserted batch {i // BATCH_SIZE + 1}: {len(batch)} rows")
 
     elapsed = time.time() - start
-    print(f"[bulk_upsert_fba_data] Completed upsert in {elapsed:.2f}s")
+    print(f"[bulk_upsert_fba_data] Completed in {elapsed:.2f}s")
     print(f"[bulk_upsert_fba_data] Updated: {len(update_params)}, Inserted: {len(insert_params)}")
 
     return len(update_params) + len(insert_params)
-
