@@ -67,6 +67,7 @@ def fetch_pricing_batch(sku_list):
 async def run_pricing_batch(skus):
     pricing_progress["done"] = 0
     pricing_progress["total"] = len(skus)
+    last_printed_pct = -1
 
     print(f"Fetching prices for {len(skus)} SKUs...")
 
@@ -82,7 +83,11 @@ async def run_pricing_batch(skus):
                 pricing_progress["done"] += len(batch)
                 done = pricing_progress["done"]
                 total = pricing_progress["total"]
-                print(f"Pricing progress: {done}/{total} ({100 * done // total}%)")
+                current_pct = 100 * done // total
+                
+                if current_pct // 25 > last_printed_pct // 25:
+                    print(f"Pricing progress: {done}/{total} ({current_pct}%)")
+                    last_printed_pct = current_pct
 
             time.sleep(2)
 
