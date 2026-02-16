@@ -4,6 +4,7 @@ import os
 
 MARKETPLACE_ID = os.getenv("MARKETPLACE_ID")
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", "4"))
+SELLER_ID = os.getenv("SELLER_ID")  # <-- new, required for Listings API calls
 
 _divisor_raw = os.getenv("GOVT_VAT_RATE_DIVISOR")
 if _divisor_raw:

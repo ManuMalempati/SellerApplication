@@ -76,6 +76,7 @@ BEGIN
         Category       NVARCHAR(120) NULL,
         ItemName       NVARCHAR(400) NULL,
         Quantity       INT NULL,
+        TotalStock     INT NULL,
         IsFulfillable  BIT NULL,
         Source         NVARCHAR(64) NULL,
         SnapshotAt     DATETIME2(0) NOT NULL
@@ -96,16 +97,17 @@ WHEN MATCHED THEN
         Category = src.Category,
         ItemName = COALESCE(src.ItemName, target.ItemName),
         Quantity = src.Quantity,
+        TotalStock = src.TotalStock,
         IsFulfillable = src.IsFulfillable,
         Source = src.Source,
         LastSeenAt = src.SnapshotAt
 WHEN NOT MATCHED BY TARGET THEN
-    INSERT (PartNumber, Cost, Brand, Category, ItemName, Quantity, IsFulfillable, Source, LastSeenAt)
-    VALUES (src.PartNumber, src.Cost, src.Brand, src.Category, src.ItemName, src.Quantity, src.IsFulfillable, src.Source, src.SnapshotAt)
+    INSERT (PartNumber, Cost, Brand, Category, ItemName, Quantity, TotalStock, IsFulfillable, Source, LastSeenAt)
+    VALUES (src.PartNumber, src.Cost, src.Brand, src.Category, src.ItemName, src.Quantity, src.TotalStock, src.IsFulfillable, src.Source, src.SnapshotAt)
 ;
 """
 
-# Select includes ItemName if present in source table (works if InventoryReport has that column)
+# Select includes ItemName and TotalStock if present in source table
 SELECT_SQL = f"""
 SELECT
     LTRIM(RTRIM(PartNumber)) AS PartNumber,
@@ -113,7 +115,8 @@ SELECT
     Brand AS Brand,
     Category AS Category,
     TotalStock AS Quantity,
-    ItemName AS ItemName
+    ItemName AS ItemName,
+    TotalStock AS TotalStock
 FROM {SRC_SCHEMA_TABLE}
 """
 
@@ -182,7 +185,7 @@ def build_insert_tuples(rows: Iterable[Tuple]) -> List[Tuple]:
     now = datetime.now(timezone.utc).replace(microsecond=0).replace(tzinfo=None)
     out = []
     for r in rows:
-        # SELECT_SQL returns: PartNumber, Cost, Brand, Category, Quantity, ItemName
+        # SELECT_SQL returns: PartNumber, Cost, Brand, Category, Quantity, ItemName, TotalStock
         partnum = normalize_partnumber(r[0])
         if partnum is None:
             continue
@@ -192,18 +195,20 @@ def build_insert_tuples(rows: Iterable[Tuple]) -> List[Tuple]:
         qty = normalize_quantity(r[4])
         # ItemName is optional in source; index 5 per SELECT_SQL
         item_name = normalize_text(r[5]) if len(r) > 5 else None
+        # TotalStock is index 6
+        total_stock = normalize_quantity(r[6]) if len(r) > 6 else None
         is_ful = None
         source = "InventoryReport"
         snapshot_at = now
         # Match CREATE_STAGING_SQL column order:
-        # PartNumber, Cost, Brand, Category, ItemName, Quantity, IsFulfillable, Source, SnapshotAt
-        out.append((partnum, cost, brand, category, item_name, qty, is_ful, source, snapshot_at))
+        # PartNumber, Cost, Brand, Category, ItemName, Quantity, TotalStock, IsFulfillable, Source, SnapshotAt
+        out.append((partnum, cost, brand, category, item_name, qty, total_stock, is_ful, source, snapshot_at))
     return out
 
 def insert_into_staging(write_cursor, tuples: List[Tuple]):
     insert_sql = f"""
-    INSERT INTO {STAGING_TABLE} (PartNumber, Cost, Brand, Category, ItemName, Quantity, IsFulfillable, Source, SnapshotAt)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO {STAGING_TABLE} (PartNumber, Cost, Brand, Category, ItemName, Quantity, TotalStock, IsFulfillable, Source, SnapshotAt)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
     try:
         write_cursor.fast_executemany = True

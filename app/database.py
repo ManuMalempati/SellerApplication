@@ -70,6 +70,7 @@ def get_product_details_by_asin(cursor, asin_list):
     """
     Get product details for a list of ASINs.
     Batches queries to avoid SQL Server parameter limits.
+    Uses ProductMapping table for lookups.
     """
     if not asin_list:
         return {}
@@ -106,6 +107,39 @@ def get_product_details_by_asin(cursor, asin_list):
                 "category": row[3],
                 "item_name": row[4],
             }
+    
+    return results
+
+def get_reserved_inventory_by_ssku(cursor, ssku_list):
+    """
+    Get TotalStock (Reserved Inventory) from CurrentInventory for a list of SSKUs.
+    """
+    if not ssku_list:
+        return {}
+    
+    unique_sskus = [s for s in set(ssku_list) if s]
+    if not unique_sskus:
+        return {}
+    
+    results = {}
+    BATCH_SIZE = 1000
+    
+    for i in range(0, len(unique_sskus), BATCH_SIZE):
+        batch = unique_sskus[i:i + BATCH_SIZE]
+        placeholders = ",".join("?" * len(batch))
+        
+        query = f"""
+            SELECT PartNumber, TotalStock
+            FROM spapi_app_user.CurrentInventory
+            WHERE PartNumber IN ({placeholders})
+        """
+        
+        cursor.execute(query, batch)
+        
+        for row in cursor.fetchall():
+            part_number = row[0]
+            total_stock = row[1]
+            results[part_number] = total_stock
     
     return results
 
@@ -256,35 +290,53 @@ def replace_order_items_for_order(cursor, amazon_order_id, rows):
 
 def bulk_upsert_fba_data(cursor, fba_rows):
     """
-    Optimized bulk upsert with batching.
+    Optimized bulk upsert with batching to ProductMappingTest.
+    Uses FNSKU as unique key (primary identifier from AFN report).
+    Same SKU can have multiple FNSKUs.
     Processes in chunks of 500 rows to avoid timeouts.
     """
     start = time.time()
     total = len(fba_rows)
     print(f"[bulk_upsert_fba_data] Starting upsert of {total} rows...")
 
-    # Pre-check: which SKUs already exist?
-    cursor.execute("SELECT sku FROM ProductMapping")
-    existing_skus = {row[0] for row in cursor.fetchall()}
-    print(f"[bulk_upsert_fba_data] Found {len(existing_skus)} existing SKUs in database")
+    # Deduplicate by FNSKU - keep first occurrence (shouldn't happen after aggregation, but safety check)
+    seen_fnskus = set()
+    deduplicated_rows = []
+    duplicate_count = 0
+    
+    for row in fba_rows:
+        fnsku = row.get("FNSKU")
+        if not fnsku:
+            continue
+        if fnsku in seen_fnskus:
+            duplicate_count += 1
+            continue
+        seen_fnskus.add(fnsku)
+        deduplicated_rows.append(row)
+    
+    if duplicate_count > 0:
+        print(f"[bulk_upsert_fba_data] Removed {duplicate_count} duplicate FNSKU rows")
+
+    # Pre-check: which FNSKUs already exist?
+    cursor.execute("SELECT [FNSKU] FROM ProductMappingTest WHERE [FNSKU] IS NOT NULL")
+    existing_fnskus = {row[0] for row in cursor.fetchall()}
+    print(f"[bulk_upsert_fba_data] Found {len(existing_fnskus)} existing FNSKUs in database")
 
     # Split rows into UPDATE vs INSERT
     update_params = []
     insert_params = []
 
-    for row in fba_rows:
-        sku = row.get("SKU")
-        if not sku:
-            continue
+    for row in deduplicated_rows:
+        fnsku = row.get("FNSKU")
 
         params = (
+            row.get("SKU"),
             row.get("ASIN"),
-            row.get("FNSKU"),
+            row.get("SSKU"),
             row.get("FBA-Stock"),
             row.get("Sellable-Qty"),
             row.get("Unsellable-Qty"),
-            row.get("Condition-Type"),
-            row.get("Warehouse-Condition"),
+            row.get("Reserved-Inventory"),
             row.get("Title"),
             row.get("COG"),
             row.get("Brand"),
@@ -296,26 +348,26 @@ def bulk_upsert_fba_data(cursor, fba_rows):
             row.get("Sale-Price"),
             row.get("Est-Fee"),
             row.get("Est-FBA Fee"),
-            row.get("Est-VAT"),  # Using Est-VAT
+            row.get("Est-VAT"),
             row.get("Est-Net"),
-            sku,
+            fnsku,
         )
 
-        if sku in existing_skus:
+        if fnsku in existing_fnskus:
             update_params.append(params)
         else:
-            insert_params.append((sku,) + params[:-1])
+            insert_params.append((fnsku,) + params[:-1])
 
-    # UPDATE SQL
+    # UPDATE SQL - FNSKU is the key
     update_sql = """
-        UPDATE ProductMapping SET
+        UPDATE ProductMappingTest SET
+            sku = ?,
             asin = ?,
-            [FNSKU] = ?,
+            ssku = ?,
             [FBA-Stock] = ?,
             [Sellable-Qty] = ?,
             [Unsellable-Qty] = ?,
-            [Condition-Type] = ?,
-            [Warehouse-Condition] = ?,
+            [Reserved-Inventory] = ?,
             Title = ?,
             COG = ?,
             Brand = ?,
@@ -330,14 +382,14 @@ def bulk_upsert_fba_data(cursor, fba_rows):
             [Est-VAT] = ?,
             [Est-Net] = ?,
             fba_updated_at = GETDATE()
-        WHERE sku = ?
+        WHERE [FNSKU] = ?
     """
 
-    # INSERT SQL
+    # INSERT SQL - FNSKU is the key
     insert_sql = """
-        INSERT INTO ProductMapping (
-            sku, asin, [FNSKU], [FBA-Stock], [Sellable-Qty], [Unsellable-Qty],
-            [Condition-Type], [Warehouse-Condition], Title, COG, Brand, Category,
+        INSERT INTO ProductMappingTest (
+            [FNSKU], sku, asin, ssku, [FBA-Stock], [Sellable-Qty], [Unsellable-Qty],
+            [Reserved-Inventory], Title, COG, Brand, Category,
             TotalOrderItems_L30, OrderedProductSales_L30, UnitsRefunded_L30,
             BuyBoxPercentage_L30, [Sale-Price], [Est-Fee], [Est-FBA Fee], [Est-VAT],
             [Est-Net], fba_updated_at

@@ -4,7 +4,8 @@ import requests
 import gzip
 
 from ..auth import spapi_request
-from .config import MARKETPLACE_ID, MAX_RETRIES, INITIAL_RETRY_DELAY
+from .config import MARKETPLACE_ID, MAX_RETRIES, INITIAL_RETRY_DELAY, SELLER_ID, MAX_WORKERS
+from .rate_limiter import listings_limiter
 
 progress_lock = threading.Lock()
 pricing_progress = {"done": 0, "total": 0}
@@ -103,3 +104,68 @@ def download_report(document_id, is_json=False):
         return json.loads(raw.decode("utf-8"))
     
     return raw.decode("utf-8")
+
+
+# ---------------- listings (GET /listings/2021-08-01/items/{sellerId}/{sku}) helpers ----------------
+
+def _get_listing_api(sku):
+    """
+    Low-level call to Listings API for a single SKU. Acquires listings rate limiter.
+    Returns raw response (dict) or {}.
+    """
+    if not SELLER_ID:
+        # No seller id configured
+        return {}
+    listings_limiter.acquire()
+    params = {"marketplaceIds": [MARKETPLACE_ID]} if MARKETPLACE_ID else {}
+    return spapi_request("GET", f"/listings/2021-08-01/items/{SELLER_ID}/{sku}", params=params) or {}
+
+
+def fetch_listing_title(sku):
+    """
+    Call the listings API (with retry) and extract itemName from summaries[0].itemName.
+    Returns itemName string or None.
+    """
+    if not sku:
+        return None
+    if not SELLER_ID:
+        return None
+
+    resp = retry_api_call(_get_listing_api, sku)
+    if not isinstance(resp, dict):
+        return None
+
+    summaries = resp.get("summaries") or []
+    if summaries and isinstance(summaries, list):
+        item_name = summaries[0].get("itemName")
+        return item_name
+    return None
+
+
+def get_listings_titles(skus):
+    """
+    Concurrent fetch of itemName for a list of SKUs.
+    Returns dict: {sku: itemName_or_None}
+    """
+    if not skus:
+        return {}
+    if not SELLER_ID:
+        print("[listings] SELLER_ID not set; skipping listings fetch")
+        return {}
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    out = {}
+    max_workers = min(MAX_WORKERS or 4, 10)
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = {ex.submit(fetch_listing_title, sku): sku for sku in skus}
+        for fut in as_completed(futures):
+            sku = futures[fut]
+            try:
+                title = fut.result()
+            except Exception as e:
+                print(f"[listings] Error fetching title for {sku}: {e}")
+                title = None
+            out[sku] = title
+
+    return out
