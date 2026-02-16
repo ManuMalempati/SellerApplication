@@ -65,7 +65,7 @@ def wait_for_report(report_id, timeout=300):
         throttle()
         resp = spapi_request("GET", f"/reports/2021-06-30/reports/{report_id}") or {}
         status = resp.get("processingStatus") or "UNKNOWN"
-        print(f"   → Status: {status}")
+        print(f"   -> Status: {status}")
 
         if status == "DONE":
             print("Report is DONE")

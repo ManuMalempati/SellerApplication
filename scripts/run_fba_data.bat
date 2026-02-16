@@ -1,6 +1,5 @@
 @echo off
 REM FBA Data Update Script
-REM This script updates the ProductMapping table with FBA inventory data
 REM Schedule this to run every 1 hour using Windows Task Scheduler
 
 REM Activate Python virtual environment (update path if changed)
