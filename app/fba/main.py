@@ -7,6 +7,7 @@ from ..database import (
     get_all_product_mapping,
     get_product_details_by_asin,
     parse_cost,
+    bulk_upsert_fba_data,
 )
 from .config import GOVT_VAT_RATE
 from .helpers import request_report, wait_for_report, download_report
@@ -15,7 +16,7 @@ from .fees import run_fees_batch
 from .sales_traffic import fetch_l30_sales_traffic
 
 
-async def buyboxes():
+async def fba_report(save_to_db=True):
     start_time = time.time()
 
     # ---------------------------------------------------------
@@ -43,38 +44,70 @@ async def buyboxes():
     raw_text = download_report(document_id)
 
     # ---------------------------------------------------------
-    # 3. Parse inventory report
+    # 3. Parse inventory report and aggregate by SKU + FNSKU
     # ---------------------------------------------------------
-    rows = []
+    # First pass: collect all rows and aggregate SELLABLE/UNSELLABLE quantities
+    sku_fnsku_data = {}  # {(sku, fnsku): {base_data, sellable_qty, unsellable_qty}}
     reader = csv.DictReader(StringIO(raw_text), delimiter="\t")
     total_raw_rows = 0
+    
     for line in reader:
         total_raw_rows += 1
         sku = line.get("seller-sku")
         asin = line.get("asin")
         qty = line.get("Quantity Available")
         fnsku = line.get("fulfillment-channel-sku")
+        condition_type = line.get("condition-type")
+        warehouse_condition = line.get("Warehouse-Condition-code")
 
-        if not sku:
-            continue
-
-        # FILTER: Only include SKUs that exist in ProductMapping
-        if sku not in product_mappings:
+        if not sku or not fnsku:
             continue
 
         qty_int = int(qty) if qty and qty.isdigit() else 0
-
+        # Get SSKU from ProductMapping if exists, otherwise None
         ssku = (product_mappings.get(sku) or {}).get("ssku")
-        rows.append({
-            "SKU": sku,
-            "ASIN": asin,
-            "SSKU": ssku,
-            "FNSKU": fnsku,
-            "FBA-Stock": qty_int,
-        })
+
+        key = (sku, fnsku)
+        if key not in sku_fnsku_data:
+            sku_fnsku_data[key] = {
+                "SKU": sku,
+                "ASIN": asin,
+                "SSKU": ssku,
+                "FNSKU": fnsku,
+                "Condition-Type": condition_type,
+                "Warehouse-Condition": warehouse_condition,
+                "Sellable-Qty": 0,
+                "Unsellable-Qty": 0,
+            }
+
+        # Aggregate quantities based on warehouse condition
+        if warehouse_condition == "SELLABLE":
+            sku_fnsku_data[key]["Sellable-Qty"] += qty_int
+        else:
+            sku_fnsku_data[key]["Unsellable-Qty"] += qty_int
+
+    # Calculate total FBA stock and convert to list
+    rows = []
+    for key, data in sku_fnsku_data.items():
+        data["FBA-Stock"] = data["Sellable-Qty"] + data["Unsellable-Qty"]
+        rows.append(data)
 
     print(f"Raw AFN report rows (unfiltered): {total_raw_rows}")
-    print(f"Parsed {len(rows)} items (filtered to ProductMapping)")
+    print(f"Parsed {len(rows)} unique SKU+FNSKU combinations")
+
+    # Track duplicate ASINs in the filtered rows
+    asin_counts = {}
+    for r in rows:
+        asin = r["ASIN"]
+        if asin:
+            asin_counts[asin] = asin_counts.get(asin, 0) + 1
+
+    duplicate_asins = {asin for asin, count in asin_counts.items() if count > 1}
+    print(f"Duplicate ASINs in filtered rows: {len(duplicate_asins)}")
+
+    # Mark duplicate ASINs in the filtered rows
+    for r in rows:
+        r["Duplicate"] = "Yes" if r["ASIN"] in duplicate_asins else "No"
 
     # ---------------------------------------------------------
     # 4. Load product details
@@ -142,21 +175,40 @@ async def buyboxes():
 
             r["Est-Fee"] = -ref if ref else None
             r["Est-FBA Fee"] = -fba if fba else None
-            r["Est.VAT"] = -vat
+            r["Est-VAT"] = -vat
             r["Est-Net"] = price - ref - fba - vat - cog
         else:
             r["Est-Fee"] = None
             r["Est-FBA Fee"] = None
-            r["Est.VAT"] = None
+            r["Est-VAT"] = None
             r["Est-Net"] = None
 
     # ---------------------------------------------------------
-    # 8. Summary
+    # 8. Save to database (if requested)
+    # ---------------------------------------------------------
+    if save_to_db:
+        print("Saving FBA data to ProductMapping table...")
+        conn = connect_database()
+        cursor = conn.cursor()
+        try:
+            success_count = bulk_upsert_fba_data(cursor, rows)
+            conn.commit()
+            print(f"Successfully saved {success_count}/{len(rows)} rows to database")
+        except Exception as e:
+            conn.rollback()
+            print(f"Error saving to database: {e}")
+            raise
+        finally:
+            cursor.close()
+            conn.close()
+
+    # ---------------------------------------------------------
+    # 9. Summary
     # ---------------------------------------------------------
     elapsed = time.time() - start_time
 
     print("=" * 60)
-    print("BUYBOX REPORT - SUMMARY")
+    print("FBA REPORT - SUMMARY")
     print("=" * 60)
     print(f"Total items: {len(rows)}")
     print(f"Items with price: {len([r for r in rows if r['Sale-Price']])}")

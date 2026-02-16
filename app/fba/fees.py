@@ -23,7 +23,7 @@ def estimate_fees_worker(sku, asin, price):
         done = fees_progress["done"]
         total = fees_progress["total"]
         if total and (done % 20 == 0 or done == total):
-            print(f"📊 Fees progress: {done}/{total} ({100 * done // total}%)")
+            print(f"Fees progress: {done}/{total} ({100 * done // total}%)")
     return result
 
 
@@ -31,10 +31,10 @@ async def run_fees_batch(items):
     fees_progress["done"] = 0
     fees_progress["total"] = len(items)
 
-    print(f"📊 Estimating fees for {len(items)} items...")
+    print(f"Estimating fees for {len(items)} items...")
 
     if not items:
-        print("📊 No items to estimate fees for.")
+        print("No items to estimate fees for.")
         return {}
 
     loop = asyncio.get_event_loop()
@@ -51,5 +51,5 @@ async def run_fees_batch(items):
         key, val = d
         results[key] = val
 
-    print("📊 Fee batch complete.")
+    print("Fee batch complete.")
     return results

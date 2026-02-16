@@ -103,7 +103,7 @@ async def test_pricing_raw(
       /test-pricing-raw?asin=B0CMCFGWK6&item_type=Asin
     """
 
-    sku = 'CB16GS4800'
+    sku = 'KS63NMUSBL00'
     asin = 'B0CMCFGWK6'
     if not sku and not asin:
         return {"error": "Provide either sku= or asin="}
@@ -145,7 +145,7 @@ def test_sales_traffic_filtered():
     dataStartTime = start.strftime("%Y-%m-%dT00:00:00Z")
     dataEndTime = end.strftime("%Y-%m-%dT00:00:00Z")
 
-    print(f"📅 Requesting L-30 days: {dataStartTime} → {dataEndTime}")
+    print(f"Requesting L-30 days: {dataStartTime} -> {dataEndTime}")
 
     # -----------------------------
     # 2. Request the report
@@ -172,7 +172,7 @@ def test_sales_traffic_filtered():
     if not report_id:
         return {"error": "No reportId returned", "response": resp}
 
-    print(f"📦 Report requested: {report_id}")
+    print(f"Report requested: {report_id}")
 
     # -----------------------------
     # 3. Poll until DONE
@@ -185,7 +185,7 @@ def test_sales_traffic_filtered():
         ) or {}
 
         status = status_resp.get("processingStatus")
-        print(f"⏳ Status: {status}")
+        print(f"Status: {status}")
 
         if status == "DONE":
             document_id = status_resp.get("reportDocumentId")
@@ -193,7 +193,7 @@ def test_sales_traffic_filtered():
 
         time.sleep(2)
 
-    print(f"📄 Report ready: {document_id}")
+    print(f"Report ready: {document_id}")
 
     # -----------------------------
     # 4. Download the JSON
@@ -240,7 +240,7 @@ def test_sales_traffic_filtered():
 
     results = list(dedup.values())
 
-    print(f"✅ Extracted {len(results)} ASIN rows (after ASIN + dedupe filter)")
+    print(f"Extracted {len(results)} ASIN rows (after ASIN + dedupe filter)")
 
     return {
         "count": len(results),

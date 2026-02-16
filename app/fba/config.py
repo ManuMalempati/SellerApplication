@@ -1,3 +1,5 @@
+# File moved to fba folder
+
 import os
 
 MARKETPLACE_ID = os.getenv("MARKETPLACE_ID")

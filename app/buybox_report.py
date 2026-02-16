@@ -345,6 +345,10 @@ async def buyboxes():
         if not sku:
             continue
 
+        # FILTER: Only include SKUs that exist in ProductMapping
+        if sku not in product_mappings:
+            continue
+
         qty_int = int(qty) if qty and qty.isdigit() else 0
 
         # Client has told to ignore this filter for now.
@@ -362,7 +366,7 @@ async def buyboxes():
             }
         )
 
-    print(f"📦 Parsed {len(rows)} items with stock > 0")
+    print(f"📦 Parsed {len(rows)} items (filtered to ProductMapping)")
 
     asins = list({r["ASIN"] for r in rows if r["ASIN"]})
     print(f"🔍 Loading product details for {len(asins)} ASINs...")

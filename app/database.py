@@ -252,3 +252,123 @@ def replace_order_items_for_order(cursor, amazon_order_id, rows):
 
     # 3. Bulk insert
     cursor.executemany(sql, params)
+
+def upsert_fba_data(cursor, fba_row):
+    """
+    Upsert FBA data into ProductMapping table.
+    Uses SKU as the unique identifier.
+    SQL Server syntax.
+    """
+    sku = fba_row.get("SKU")
+    asin = fba_row.get("ASIN")
+    fnsku = fba_row.get("FNSKU")
+    
+    if not sku:
+        print(f"[upsert_fba_data] Skipping row with no SKU")
+        return False
+    
+    # Check if SKU exists
+    cursor.execute("SELECT sku FROM ProductMapping WHERE sku = ?", (sku,))
+    exists = cursor.fetchone()
+    
+    if exists:
+        # UPDATE existing row
+        cursor.execute("""
+            UPDATE ProductMapping SET
+                asin = ?,
+                [FNSKU] = ?,
+                [FBA-Stock] = ?,
+                [Sellable-Qty] = ?,
+                [Unsellable-Qty] = ?,
+                [Condition-Type] = ?,
+                [Warehouse-Condition] = ?,
+                Title = ?,
+                COG = ?,
+                Brand = ?,
+                Category = ?,
+                TotalOrderItems_L30 = ?,
+                OrderedProductSales_L30 = ?,
+                UnitsRefunded_L30 = ?,
+                BuyBoxPercentage_L30 = ?,
+                [Sale-Price] = ?,
+                [Est-Fee] = ?,
+                [Est-FBA Fee] = ?,
+                [Est-VAT] = ?,
+                [Est-Net] = ?,
+                fba_updated_at = GETDATE()
+            WHERE sku = ?
+        """, (
+            asin,
+            fnsku,
+            fba_row.get("FBA-Stock"),
+            fba_row.get("Sellable-Qty"),
+            fba_row.get("Unsellable-Qty"),
+            fba_row.get("Condition-Type"),
+            fba_row.get("Warehouse-Condition"),
+            fba_row.get("Title"),
+            fba_row.get("COG"),
+            fba_row.get("Brand"),
+            fba_row.get("Category"),
+            fba_row.get("TotalOrderItems_L30"),
+            fba_row.get("OrderedProductSales_L30"),
+            fba_row.get("UnitsRefunded_L30"),
+            fba_row.get("BuyBoxPercentage_L30"),
+            fba_row.get("Sale-Price"),
+            fba_row.get("Est-Fee"),
+            fba_row.get("Est-FBA Fee"),
+            fba_row.get("Est-VAT"),
+            fba_row.get("Est-Net"),
+            sku
+        ))
+    else:
+        # INSERT new row (SSKU will be NULL for new FBA items not in ProductMapping)
+        cursor.execute("""
+            INSERT INTO ProductMapping (
+                sku, ssku, asin, [FNSKU], [FBA-Stock], [Sellable-Qty], [Unsellable-Qty],
+                [Condition-Type], [Warehouse-Condition], Title, COG, Brand, Category,
+                TotalOrderItems_L30, OrderedProductSales_L30, UnitsRefunded_L30,
+                BuyBoxPercentage_L30, [Sale-Price], [Est-Fee], [Est-FBA Fee], [Est-VAT],
+                [Est-Net], fba_updated_at
+            ) VALUES (
+                ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE()
+            )
+        """, (
+            sku,
+            asin,
+            fnsku,
+            fba_row.get("FBA-Stock"),
+            fba_row.get("Sellable-Qty"),
+            fba_row.get("Unsellable-Qty"),
+            fba_row.get("Condition-Type"),
+            fba_row.get("Warehouse-Condition"),
+            fba_row.get("Title"),
+            fba_row.get("COG"),
+            fba_row.get("Brand"),
+            fba_row.get("Category"),
+            fba_row.get("TotalOrderItems_L30"),
+            fba_row.get("OrderedProductSales_L30"),
+            fba_row.get("UnitsRefunded_L30"),
+            fba_row.get("BuyBoxPercentage_L30"),
+            fba_row.get("Sale-Price"),
+            fba_row.get("Est-Fee"),
+            fba_row.get("Est-FBA Fee"),
+            fba_row.get("Est-VAT"),
+            fba_row.get("Est-Net")
+        ))
+    
+    return True
+
+
+def bulk_upsert_fba_data(cursor, fba_rows):
+    """
+    Bulk upsert FBA data into ProductMapping table.
+    Returns count of successful upserts.
+    """
+    success_count = 0
+    for row in fba_rows:
+        try:
+            if upsert_fba_data(cursor, row):
+                success_count += 1
+        except Exception as e:
+            print(f"[bulk_upsert_fba_data] Error upserting SKU {row.get('SKU')}: {e}")
+    return success_count

@@ -39,17 +39,17 @@ def retry_api_call(func, *args, max_retries=MAX_RETRIES, initial_delay=INITIAL_R
 
 def request_report(report_type, params=None):
     throttle()
-    print(f"📦 Requesting report: {report_type}")
+    print(f"Requesting report: {report_type}")
     body = {"reportType": report_type, "marketplaceIds": [MARKETPLACE_ID]}
     if params:
         body.update(params)
 
     resp = spapi_request("POST", "/reports/2021-06-30/reports", body=body) or {}
-    print("📦 Report request response:", resp)
+    print("Report request response:", resp)
 
     report_id = resp.get("reportId")
     if not report_id:
-        print("❌ No reportId in response, aborting.")
+        print("No reportId in response, aborting.")
         return None
     return report_id
 
@@ -58,7 +58,7 @@ def wait_for_report(report_id, timeout=300):
     if not report_id:
         raise ValueError("wait_for_report called with empty report_id")
 
-    print(f"⏳ Waiting for report {report_id}...")
+    print(f"Waiting for report {report_id}...")
     start = time.time()
 
     while True:
@@ -68,7 +68,7 @@ def wait_for_report(report_id, timeout=300):
         print(f"   → Status: {status}")
 
         if status == "DONE":
-            print("📄 Report is DONE")
+            print("Report is DONE")
             doc_id = resp.get("reportDocumentId")
             if not doc_id:
                 raise ValueError("Report DONE but no reportDocumentId in response")
@@ -84,7 +84,7 @@ def download_report(document_id, is_json=False):
     if not document_id:
         raise ValueError("download_report called with empty document_id")
 
-    print(f"⬇️ Downloading report document {document_id}...")
+    print(f"Downloading report document {document_id}...")
     throttle()
 
     doc = spapi_request("GET", f"/reports/2021-06-30/documents/{document_id}") or {}
@@ -96,7 +96,7 @@ def download_report(document_id, is_json=False):
     if doc.get("compressionAlgorithm") == "GZIP":
         raw = gzip.decompress(raw)
 
-    print("📄 Report downloaded.")
+    print("Report downloaded.")
     
     if is_json:
         import json

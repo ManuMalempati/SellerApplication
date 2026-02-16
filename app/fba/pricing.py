@@ -3,9 +3,9 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
 from ..auth import spapi_request
-from .config import MARKETPLACE_ID
-from .rate_limiter import pricing_limiter
-from .helpers import retry_api_call, chunk, progress_lock, pricing_progress
+from ..fba.config import MARKETPLACE_ID
+from ..fba.rate_limiter import pricing_limiter
+from ..fba.helpers import retry_api_call, chunk, progress_lock, pricing_progress
 
 
 def _pricing_call_batch(sku_list):
@@ -68,7 +68,7 @@ async def run_pricing_batch(skus):
     pricing_progress["done"] = 0
     pricing_progress["total"] = len(skus)
 
-    print(f"💰 Fetching prices for {len(skus)} SKUs...")
+    print(f"Fetching prices for {len(skus)} SKUs...")
 
     loop = asyncio.get_event_loop()
     results = {}
@@ -82,9 +82,9 @@ async def run_pricing_batch(skus):
                 pricing_progress["done"] += len(batch)
                 done = pricing_progress["done"]
                 total = pricing_progress["total"]
-                print(f"💰 Pricing progress: {done}/{total} ({100 * done // total}%)")
+                print(f"Pricing progress: {done}/{total} ({100 * done // total}%)")
 
             time.sleep(2)
 
-    print("💰 Pricing batch complete.")
+    print("Pricing batch complete.")
     return results

@@ -5,7 +5,7 @@ from .database import connect_database
 from .estimates import get_fees_estimate
 from datetime import datetime, timedelta, timezone
 from .orders import get_orders
-from .buybox import buyboxes  # Changed: import from new package
+from .fba import fba_report  # Changed: import from new package
 from .test import router as test_router
 import os
 
@@ -46,7 +46,7 @@ async def orders(days: int = 0, hours: int = 5, minutes: int = 0):
 
 @app.get("/buybox")
 async def buybox():
-    return await buyboxes()
+    return await fba_report()
 
 
 if __name__ == "__main__":
