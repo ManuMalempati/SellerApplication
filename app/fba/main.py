@@ -130,6 +130,16 @@ async def fba_report(save_to_db=True):
 
     for r in rows:
         ssku = r.get("SSKU")
+        # extra debugging: log details for problematic lookups (specific SSKU or general samples)
+        if ssku == "0B47062":
+            # targeted debug for known SSKU
+            print(f"[DEBUG][SSKU=0B47062] SKU={r.get('SKU')} FNSKU={r.get('FNSKU')} reserved_value={reserved_inventory.get(ssku)!r} type={type(reserved_inventory.get(ssku))}")
+        else:
+            # occasional lightweight debugging for other SSKUs (avoid too noisy output)
+            if not reserved_inventory.get(ssku) and ssku:
+                print(f"[DEBUG][missing] SKU={r.get('SKU')} FNSKU={r.get('FNSKU')} SSKU={ssku} not found in reserved_inventory (len={len(reserved_inventory)})")
+
+        # Always set the Reserved-Inventory as before
         r["Reserved-Inventory"] = reserved_inventory.get(ssku) if ssku else None
 
     # ---------------------------------------------------------
