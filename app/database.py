@@ -255,21 +255,14 @@ def replace_order_items_for_order(cursor, amazon_order_id, rows):
     cursor.executemany(sql, params)
 
 def bulk_upsert_fba_data(cursor, fba_rows):
-    """
-    Optimized bulk upsert using a staging temp table and a single MERGE.
-    Uses fast_executemany + temp table + MERGE for maximum performance.
-    Returns count of rows processed (updated + inserted).
-    """
     start = time.time()
     total = len(fba_rows)
     print(f"[bulk_upsert_fba_data] Starting upsert of {total} rows...")
 
-    # Enable fast_executemany if supported
     try:
         cursor.fast_executemany = True
-        print("[bulk_upsert_fba_data] Enabled cursor.fast_executemany")
-    except Exception:
-        print("[bulk_upsert_fba_data] fast_executemany not available")
+    except:
+        pass
 
     # Build staging rows
     staging_rows = []
@@ -301,11 +294,11 @@ def bulk_upsert_fba_data(cursor, fba_rows):
         ))
 
     if not staging_rows:
-        print("[bulk_upsert_fba_data] No valid rows to upsert")
         return 0
 
     # Create temp table
     cursor.execute("""
+        SET NOCOUNT ON;
         IF OBJECT_ID('tempdb..#TempFBA') IS NOT NULL DROP TABLE #TempFBA;
         CREATE TABLE #TempFBA (
             SKU NVARCHAR(200),
@@ -331,73 +324,65 @@ def bulk_upsert_fba_data(cursor, fba_rows):
         );
     """)
 
-    # Bulk insert into temp table
+    # Bulk insert
     cursor.executemany("""
-        INSERT INTO #TempFBA (
-            SKU, ASIN, FNSKU, SSKU, FBA_Stock, Sellable_Qty, Unsellable_Qty,
-            Title, COG, Brand, Category,
-            TotalOrderItems_L30, OrderedProductSales_L30, UnitsRefunded_L30, BuyBoxPercentage_L30,
-            Sale_Price, Est_Fee, Est_FBA_Fee, Est_VAT, Est_Net
-        ) VALUES (
+        INSERT INTO #TempFBA VALUES (
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         );
     """, staging_rows)
 
     print(f"[bulk_upsert_fba_data] Bulk inserted {len(staging_rows)} rows into #TempFBA")
 
-    # MERGE (IMPORTANT: DROP TABLE BEFORE SELECT)
+    # MERGE with direct OUTPUT (NO table variable)
     merge_sql = """
-    DECLARE @mergeOutput TABLE (action NVARCHAR(10));
+        SET NOCOUNT ON;
 
-    MERGE INTO spapi_app_user.ProductMappingTest AS target
-    USING #TempFBA AS src
-      ON (target.[FNSKU] = src.FNSKU)
-    WHEN MATCHED THEN
-      UPDATE SET
-        target.sku = src.SKU,
-        target.asin = src.ASIN,
-        target.ssku = src.SSKU,
-        target.[FBA-Stock] = src.FBA_Stock,
-        target.[Sellable-Qty] = src.Sellable_Qty,
-        target.[Unsellable-Qty] = src.Unsellable_Qty,
-        target.Title = src.Title,
-        target.COG = src.COG,
-        target.Brand = src.Brand,
-        target.Category = src.Category,
-        target.TotalOrderItems_L30 = src.TotalOrderItems_L30,
-        target.OrderedProductSales_L30 = src.OrderedProductSales_L30,
-        target.UnitsRefunded_L30 = src.UnitsRefunded_L30,
-        target.BuyBoxPercentage_L30 = src.BuyBoxPercentage_L30,
-        target.[Sale-Price] = src.Sale_Price,
-        target.[Est-Fee] = src.Est_Fee,
-        target.[Est-FBA Fee] = src.Est_FBA_Fee,
-        target.[Est-VAT] = src.Est_VAT,
-        target.[Est-Net] = src.Est_Net,
-        target.fba_updated_at = GETDATE()
-    WHEN NOT MATCHED BY TARGET THEN
-      INSERT (sku, asin, ssku, [FNSKU], [FBA-Stock], [Sellable-Qty], [Unsellable-Qty],
-              Title, COG, Brand, Category,
-              TotalOrderItems_L30, OrderedProductSales_L30, UnitsRefunded_L30, BuyBoxPercentage_L30,
-              [Sale-Price], [Est-Fee], [Est-FBA Fee], [Est-VAT], [Est-Net], fba_updated_at)
-      VALUES (src.SKU, src.ASIN, src.SSKU, src.FNSKU, src.FBA_Stock, src.Sellable_Qty, src.Unsellable_Qty,
-              src.Title, src.COG, src.Brand, src.Category,
-              src.TotalOrderItems_L30, src.OrderedProductSales_L30, src.UnitsRefunded_L30, src.BuyBoxPercentage_L30,
-              src.Sale_Price, src.Est_Fee, src.Est_FBA_Fee, src.Est_VAT, src.Est_Net, GETDATE())
-    OUTPUT $action INTO @mergeOutput;
+        MERGE INTO spapi_app_user.ProductMappingTest AS target
+        USING #TempFBA AS src
+          ON target.FNSKU = src.FNSKU
+        WHEN MATCHED THEN
+            UPDATE SET
+                target.sku = src.SKU,
+                target.asin = src.ASIN,
+                target.ssku = src.SSKU,
+                target.[FBA-Stock] = src.FBA_Stock,
+                target.[Sellable-Qty] = src.Sellable_Qty,
+                target.[Unsellable-Qty] = src.Unsellable_Qty,
+                target.Title = src.Title,
+                target.COG = src.COG,
+                target.Brand = src.Brand,
+                target.Category = src.Category,
+                target.TotalOrderItems_L30 = src.TotalOrderItems_L30,
+                target.OrderedProductSales_L30 = src.OrderedProductSales_L30,
+                target.UnitsRefunded_L30 = src.UnitsRefunded_L30,
+                target.BuyBoxPercentage_L30 = src.BuyBoxPercentage_L30,
+                target.[Sale-Price] = src.Sale_Price,
+                target.[Est-Fee] = src.Est_Fee,
+                target.[Est-FBA Fee] = src.Est_FBA_Fee,
+                target.[Est-VAT] = src.Est_VAT,
+                target.[Est-Net] = src.Est_Net,
+                target.fba_updated_at = GETDATE()
+        WHEN NOT MATCHED BY TARGET THEN
+            INSERT (sku, asin, ssku, FNSKU, [FBA-Stock], [Sellable-Qty], [Unsellable-Qty],
+                    Title, COG, Brand, Category,
+                    TotalOrderItems_L30, OrderedProductSales_L30, UnitsRefunded_L30, BuyBoxPercentage_L30,
+                    [Sale-Price], [Est-Fee], [Est-FBA Fee], [Est-VAT], [Est-Net], fba_updated_at)
+            VALUES (src.SKU, src.ASIN, src.SSKU, src.FNSKU, src.FBA_Stock, src.Sellable_Qty, src.Unsellable_Qty,
+                    src.Title, src.COG, src.Brand, src.Category,
+                    src.TotalOrderItems_L30, src.OrderedProductSales_L30, src.UnitsRefunded_L30, src.BuyBoxPercentage_L30,
+                    src.Sale_Price, src.Est_Fee, src.Est_FBA_Fee, src.Est_VAT, src.Est_Net, GETDATE())
+        OUTPUT $action;
 
-    DROP TABLE #TempFBA;
-
-    SELECT action, COUNT(*) AS cnt FROM @mergeOutput GROUP BY action;
+        DROP TABLE #TempFBA;
     """
 
     cursor.execute(merge_sql)
-    merge_results = cursor.fetchall()
+    actions = cursor.fetchall()  # NOW SAFE
 
-    action_counts = {row[0]: row[1] for row in merge_results} if merge_results else {}
-    updated = action_counts.get("UPDATE", 0)
-    inserted = action_counts.get("INSERT", 0)
+    # Count UPDATE/INSERT
+    updated = sum(1 for a in actions if a[0] == "UPDATE")
+    inserted = sum(1 for a in actions if a[0] == "INSERT")
 
-    elapsed = time.time() - start
-    print(f"[bulk_upsert_fba_data] Completed in {elapsed:.2f}s (Updated: {updated}, Inserted: {inserted})")
+    print(f"[bulk_upsert_fba_data] Completed (Updated: {updated}, Inserted: {inserted})")
 
     return updated + inserted
