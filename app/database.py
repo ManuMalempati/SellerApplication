@@ -254,6 +254,7 @@ def replace_order_items_for_order(cursor, amazon_order_id, rows):
     # 3. Bulk insert
     cursor.executemany(sql, params)
 
+# fastest way
 def bulk_upsert_fba_data(cursor, fba_rows):
     start = time.time()
     total = len(fba_rows)
