@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import pyodbc
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import os
 from dotenv import load_dotenv
 import json
@@ -277,14 +277,13 @@ def bulk_upsert_fba_data(cursor, fba_rows):
         if not sku:
             continue
 
+        # Removed Condition-Type and Warehouse-Condition from params
         params = (
             row.get("ASIN"),
             row.get("FNSKU"),
             row.get("FBA-Stock"),
             row.get("Sellable-Qty"),
             row.get("Unsellable-Qty"),
-            row.get("Condition-Type"),
-            row.get("Warehouse-Condition"),
             row.get("Title"),
             row.get("COG"),
             row.get("Brand"),
@@ -304,9 +303,10 @@ def bulk_upsert_fba_data(cursor, fba_rows):
         if sku in existing_skus:
             update_params.append(params)
         else:
+            # insert expects (sku, asin, fnsku, fba-stock, sellable, unsellable, title, cog, brand, category, totals..., est-net)
             insert_params.append((sku,) + params[:-1])
 
-    # UPDATE SQL
+    # UPDATE SQL - removed Condition-Type and Warehouse-Condition
     update_sql = """
         UPDATE ProductMappingTest SET
             asin = ?,
@@ -314,8 +314,6 @@ def bulk_upsert_fba_data(cursor, fba_rows):
             [FBA-Stock] = ?,
             [Sellable-Qty] = ?,
             [Unsellable-Qty] = ?,
-            [Condition-Type] = ?,
-            [Warehouse-Condition] = ?,
             Title = ?,
             COG = ?,
             Brand = ?,
@@ -333,16 +331,16 @@ def bulk_upsert_fba_data(cursor, fba_rows):
         WHERE sku = ?
     """
 
-    # INSERT SQL
+    # INSERT SQL - removed Condition-Type and Warehouse-Condition
     insert_sql = """
         INSERT INTO ProductMappingTest (
             sku, asin, [FNSKU], [FBA-Stock], [Sellable-Qty], [Unsellable-Qty],
-            [Condition-Type], [Warehouse-Condition], Title, COG, Brand, Category,
+            Title, COG, Brand, Category,
             TotalOrderItems_L30, OrderedProductSales_L30, UnitsRefunded_L30,
             BuyBoxPercentage_L30, [Sale-Price], [Est-Fee], [Est-FBA Fee], [Est-VAT],
             [Est-Net], fba_updated_at
         ) VALUES (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE()
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE()
         )
     """
 
@@ -367,5 +365,9 @@ def bulk_upsert_fba_data(cursor, fba_rows):
     elapsed = time.time() - start
     print(f"[bulk_upsert_fba_data] Completed in {elapsed:.2f}s")
     print(f"[bulk_upsert_fba_data] Updated: {len(update_params)}, Inserted: {len(insert_params)}")
+
+    # Print fba_updated_at in GMT+4 for logs (approximate time when GETDATE() ran)
+    now_gmt4 = (datetime.utcnow() + timedelta(hours=4)).isoformat()
+    print(f"[bulk_upsert_fba_data] fba_updated_at (GMT+4): {now_gmt4}")
 
     return len(update_params) + len(insert_params)

@@ -249,14 +249,48 @@ def test_sales_traffic_filtered():
 
 
 from .fba.sales_traffic import fetch_l30_sales_traffic
+from .database import connect_database
 @router.get("/test-l30")
 def test_l30(asin: str = None):
     """
     Test endpoint to inspect L-30 Sales & Traffic data.
-    - Returns total ASIN count from Amazon
-    - Shows sample ASINs
-    - If ?asin=XYZ is provided, returns only that ASIN's data
+    Also checks how many ASINs from ProductMappingTest
+    appear in the L30 report.
     """
-    data = fetch_l30_sales_traffic()
+    # 1. Fetch L30 data from Amazon
+    l30_data = fetch_l30_sales_traffic()
+    l30_asins = set(l30_data.keys())
 
-    return data
+    # 2. Load ASINs from ProductMappingTest
+    conn = connect_database()
+    cursor = conn.cursor()
+    cursor.execute("SELECT DISTINCT asin FROM ProductMappingTest WHERE asin IS NOT NULL")
+    pm_asins = {row[0] for row in cursor.fetchall()}
+    cursor.close()
+    conn.close()
+
+    # 3. Compute intersection
+    overlap = l30_asins.intersection(pm_asins)
+
+    # 4. If user requested a specific ASIN
+    if asin:
+        asin = asin.strip()
+        return {
+            "requested_asin": asin,
+            "exists_in_l30": asin in l30_asins,
+            "exists_in_product_mapping": asin in pm_asins,
+            "l30_value": l30_data.get(asin),
+            "total_l30_asins": len(l30_asins),
+            "total_pm_asins": len(pm_asins),
+            "overlap_count": len(overlap),
+        }
+
+    # 5. Default summary response
+    return {
+        "total_l30_asins": len(l30_asins),
+        "total_pm_asins": len(pm_asins),
+        "overlap_count": len(overlap),
+        "sample_overlap": list(overlap)[:20],
+        "l30_sample": {k: l30_data[k] for k in list(l30_asins)[:10]},
+    }
+
