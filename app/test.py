@@ -247,50 +247,16 @@ def test_sales_traffic_filtered():
         "items": results
     }
 
-@router.get("/test-reserved")
-def test_reserved_inventory(ssku: str):
+
+from .fba.sales_traffic import fetch_l30_sales_traffic
+@router.get("/test-l30")
+def test_l30(asin: str = None):
     """
-    Test endpoint to verify get_reserved_inventory_by_ssku().
-    Compares:
-      1) Function output
-      2) Direct SQL query result
+    Test endpoint to inspect L-30 Sales & Traffic data.
+    - Returns total ASIN count from Amazon
+    - Shows sample ASINs
+    - If ?asin=XYZ is provided, returns only that ASIN's data
     """
-    from .database import connect_database, get_reserved_inventory_by_ssku
+    data = fetch_l30_sales_traffic()
 
-    print(f"\n=== TEST: Reserved Inventory Lookup for SSKU = {ssku} ===")
-
-    conn = connect_database()
-    cursor = conn.cursor()
-
-    try:
-        # 1) Test the function
-        func_result = get_reserved_inventory_by_ssku(cursor, [ssku])
-        print("Function returned:", func_result)
-
-        # 2) Direct SQL query
-        cursor.execute("""
-            SELECT PartNumber, TotalStock
-            FROM spapi_app_user.CurrentInventory
-            WHERE PartNumber = ?
-        """, (ssku,))
-        row = cursor.fetchone()
-
-        if row:
-            direct_result = {"PartNumber": row[0], "TotalStock": row[1]}
-        else:
-            direct_result = None
-
-        print("Direct SQL result:", direct_result)
-
-        return {
-            "ssku": ssku,
-            "function_result": func_result,
-            "direct_sql_result": direct_result
-        }
-
-    except Exception as e:
-        return {"error": str(e)}
-
-    finally:
-        cursor.close()
-        conn.close()
+    return data

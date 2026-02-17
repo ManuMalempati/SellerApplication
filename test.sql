@@ -1,1 +1,11 @@
-SELECT * FROM ProductMappingTest
+SELECT *
+FROM OrderItems
+WHERE ASIN IN (
+    SELECT ASIN
+    FROM OrderItems
+    WHERE LastSeenAt >= DATEADD(HOUR, -24, GETDATE())
+    GROUP BY ASIN
+    HAVING COUNT(*) > 1
+)
+AND LastSeenAt >= DATEADD(HOUR, -24, GETDATE())
+ORDER BY ASIN, LastSeenAt DESC;

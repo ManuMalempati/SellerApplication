@@ -263,10 +263,10 @@ def bulk_upsert_fba_data(cursor, fba_rows):
     total = len(fba_rows)
     print(f"[bulk_upsert_fba_data] Starting upsert of {total} rows...")
 
-    # Pre-check: which SKUs already exist?
-    cursor.execute("SELECT sku FROM ProductMapping")
+    # Pre-check: which SKUs already exist? (use ProductMappingTest)
+    cursor.execute("SELECT sku FROM ProductMappingTest")
     existing_skus = {row[0] for row in cursor.fetchall()}
-    print(f"[bulk_upsert_fba_data] Found {len(existing_skus)} existing SKUs in database")
+    print(f"[bulk_upsert_fba_data] Found {len(existing_skus)} existing SKUs in ProductMappingTest")
 
     # Split rows into UPDATE vs INSERT
     update_params = []
@@ -308,7 +308,7 @@ def bulk_upsert_fba_data(cursor, fba_rows):
 
     # UPDATE SQL
     update_sql = """
-        UPDATE ProductMapping SET
+        UPDATE ProductMappingTest SET
             asin = ?,
             [FNSKU] = ?,
             [FBA-Stock] = ?,
@@ -335,7 +335,7 @@ def bulk_upsert_fba_data(cursor, fba_rows):
 
     # INSERT SQL
     insert_sql = """
-        INSERT INTO ProductMapping (
+        INSERT INTO ProductMappingTest (
             sku, asin, [FNSKU], [FBA-Stock], [Sellable-Qty], [Unsellable-Qty],
             [Condition-Type], [Warehouse-Condition], Title, COG, Brand, Category,
             TotalOrderItems_L30, OrderedProductSales_L30, UnitsRefunded_L30,

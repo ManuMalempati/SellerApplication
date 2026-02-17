@@ -1,3 +1,3 @@
-SELECT sku, asin, ssku
-FROM ProductMapping
-WHERE ssku = '0B47062'
+SELECT COUNT(DISTINCT ASIN)
+FROM ProductMappingTest
+WHERE [FBA-Stock] > 0;
