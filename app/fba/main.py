@@ -47,25 +47,27 @@ async def fba_report(save_to_db=True):
     # ---------------------------------------------------------
     # 3. Parse inventory report and aggregate by FNSKU
     # ---------------------------------------------------------
-    # Aggregate by FNSKU (unique identifier) - same SKU can have multiple FNSKUs
     fnsku_data = {}  # {fnsku: {base_data, sellable_qty, unsellable_qty}}
     reader = csv.DictReader(StringIO(raw_text), delimiter="\t")
     total_raw_rows = 0
-    
+
     for line in reader:
         total_raw_rows += 1
-        sku = line.get("seller-sku")
-        asin = line.get("asin")
-        qty = line.get("Quantity Available")
-        fnsku = line.get("fulfillment-channel-sku")
-        warehouse_condition = line.get("Warehouse-Condition-code")
+        sku = (line.get("seller-sku") or "").strip()
+        asin = (line.get("asin") or "").strip()
+        qty = (line.get("Quantity Available") or "").strip()
+        fnsku = (line.get("fulfillment-channel-sku") or "").strip()
+        warehouse_condition = (line.get("Warehouse-Condition-code") or "").strip()
 
         if not fnsku:
             continue
 
         qty_int = int(qty) if qty and qty.isdigit() else 0
+
         # Get SSKU from ProductMapping if exists, otherwise None
         ssku = (product_mappings.get(sku) or {}).get("ssku")
+        if ssku is not None:
+            ssku = str(ssku).strip()
 
         if fnsku not in fnsku_data:
             fnsku_data[fnsku] = {
@@ -77,13 +79,11 @@ async def fba_report(save_to_db=True):
                 "Unsellable-Qty": 0,
             }
 
-        # Aggregate quantities based on warehouse condition
         if warehouse_condition == "SELLABLE":
             fnsku_data[fnsku]["Sellable-Qty"] += qty_int
         else:
             fnsku_data[fnsku]["Unsellable-Qty"] += qty_int
 
-    # Calculate total FBA stock and convert to list
     rows = []
     for fnsku, data in fnsku_data.items():
         data["FBA-Stock"] = data["Sellable-Qty"] + data["Unsellable-Qty"]
@@ -114,7 +114,12 @@ async def fba_report(save_to_db=True):
     # ---------------------------------------------------------
     # 5. Load Reserved Inventory from CurrentInventory
     # ---------------------------------------------------------
-    sskus = list({r["SSKU"] for r in rows if r["SSKU"]})
+    # Normalize SSKUs before lookup
+    for r in rows:
+        if r.get("SSKU"):
+            r["SSKU"] = str(r["SSKU"]).strip()
+
+    sskus = list({r["SSKU"] for r in rows if r.get("SSKU")})
     print(f"Loading reserved inventory for {len(sskus)} SSKUs...")
 
     conn = connect_database()
@@ -124,12 +129,12 @@ async def fba_report(save_to_db=True):
     conn.close()
 
     for r in rows:
-        if r.get("SSKU") == "0B47062" or r.get("SKU") == "0B47062":
-            print("DEBUG BEFORE MERGE:", r)
         ssku = r.get("SSKU")
         r["Reserved-Inventory"] = reserved_inventory.get(ssku) if ssku else None
 
-    # After reserved inventory load, fetch titles from Listings API and override Title when present
+    # ---------------------------------------------------------
+    # 6. Fetch titles from Listings API and override when present
+    # ---------------------------------------------------------
     skus_for_titles = [r["SKU"] for r in rows if r.get("SKU")]
     print(f"Fetching titles from Listings API for {len(skus_for_titles)} SKUs...")
     import asyncio as _asyncio
@@ -149,7 +154,7 @@ async def fba_report(save_to_db=True):
     print(f"Listings API titles applied: {overrides}/{len(skus_for_titles)} (kept DB title when missing)")
 
     # ---------------------------------------------------------
-    # 6. Fetch L30 sales & traffic data
+    # 7. Fetch L30 sales & traffic data
     # ---------------------------------------------------------
     l30_data = fetch_l30_sales_traffic()
 
@@ -162,7 +167,7 @@ async def fba_report(save_to_db=True):
         r["BuyBoxPercentage_L30"] = l30.get("BuyBoxPercentage_L30")
 
     # ---------------------------------------------------------
-    # 7. Fetch pricing
+    # 8. Fetch pricing
     # ---------------------------------------------------------
     skus = [r["SKU"] for r in rows]
     pricing = await run_pricing_batch(skus)
@@ -175,7 +180,7 @@ async def fba_report(save_to_db=True):
             fee_items.append((r["SKU"], r["ASIN"], price))
 
     # ---------------------------------------------------------
-    # 8. Estimate fees
+    # 9. Estimate fees
     # ---------------------------------------------------------
     fees = await run_fees_batch(fee_items)
 
@@ -204,7 +209,7 @@ async def fba_report(save_to_db=True):
             r["Est-Net"] = None
 
     # ---------------------------------------------------------
-    # 9. Save to database (if requested)
+    # 10. Save to database (if requested)
     # ---------------------------------------------------------
     if save_to_db:
         print("Saving FBA data to ProductMapping table...")
@@ -223,7 +228,7 @@ async def fba_report(save_to_db=True):
             conn.close()
 
     # ---------------------------------------------------------
-    # 10. Summary
+    # 11. Summary
     # ---------------------------------------------------------
     elapsed = time.time() - start_time
 

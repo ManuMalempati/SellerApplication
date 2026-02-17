@@ -1,1 +1,1 @@
-SELECT * FROM CurrentInventory
+SELECT * FROM ProductMappingTest
