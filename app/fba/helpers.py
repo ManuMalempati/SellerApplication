@@ -155,67 +155,28 @@ def fetch_listing_title(sku):
 
 def get_listings_titles(skus):
     """
-    Concurrent, batched fetch of itemName for a list of SKUs.
-    Strategy:
-      - Process SKUs in batches to avoid bursting the API.
-      - Use a small ThreadPoolExecutor per batch with max_workers limited by MAX_WORKERS.
-      - If quota errors are observed in a batch, apply a growing backoff before the next batch.
-    Returns dict: {sku: itemName_or_None}
+    Safe, serial, rate-limited title fetcher.
+    Never hangs. Never explodes. Never gets stuck.
     """
-    if not skus:
-        return {}
-    if not SELLER_ID:
-        print("[listings] SELLER_ID not set; skipping listings fetch")
-        return {}
-
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
     out = {}
-    max_workers = max(1, min(int(MAX_WORKERS or 4), 10))
-    # batch size: small multiple of workers to reduce bursts
-    batch_size = max(10, max_workers * 5)
-    backoff_seconds = 0
 
-    for batch_idx, batch in enumerate(chunk(skus, batch_size)):
-        # apply backoff before starting the batch if needed
-        if backoff_seconds:
-            sleep_for = min(backoff_seconds, 60)
-            print(f"[listings] Backing off for {sleep_for}s before batch {batch_idx+1}")
-            time.sleep(sleep_for)
+    for i, sku in enumerate(skus, start=1):
+        listings_limiter.acquire()  # respects 5 RPS / burst 10
 
-        quota_count = 0
-        with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            futures = {ex.submit(fetch_listing_title, sku): sku for sku in batch}
-            for fut in as_completed(futures):
-                sku = futures[fut]
-                try:
-                    res = fut.result()
-                except Exception as e:
-                    print(f"[listings] Error fetching title for {sku}: {e}")
-                    res = None
+        resp = _get_listing_api(sku)
 
-                # handle quota sentinel
-                if isinstance(res, dict) and res.get("_quota"):
-                    quota_count += 1
-                    out[sku] = None
-                else:
-                    out[sku] = res
-
-        # If we saw quota errors, increase backoff (exponential-ish)
-        if quota_count:
-            # base backoff 2s per quota hit, but cap and scale down by batch size
-            backoff_seconds = max(2, min(30, 2 * (quota_count // max(1, max_workers))))
-            # small additional sleep to let tokens refill
-            time.sleep(0.5)
+        if isinstance(resp, dict) and "summaries" in resp:
+            summaries = resp.get("summaries") or []
+            if summaries:
+                out[sku] = summaries[0].get("itemName")
+            else:
+                out[sku] = None
         else:
-            # no quota errors => decay any previous backoff
-            backoff_seconds = max(0, backoff_seconds // 2)
-            # gentle pause between batches to avoid spikes
-            time.sleep(0.1)
-
-    # Ensure every requested SKU has an entry
-    for sku in skus:
-        if sku not in out:
             out[sku] = None
+
+        if i % 20 == 0:
+            print(f"[titles] Processed {i}/{len(skus)}")
+
+        time.sleep(0.25)  # gentle throttle
 
     return out

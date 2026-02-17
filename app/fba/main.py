@@ -6,12 +6,11 @@ from ..database import (
     connect_database,
     get_all_product_mapping,
     get_product_details_by_asin,
-    get_reserved_inventory_by_ssku,
     parse_cost,
     bulk_upsert_fba_data,
 )
 from .config import GOVT_VAT_RATE
-from .helpers import request_report, wait_for_report, download_report, get_listings_titles
+from .helpers import request_report, wait_for_report, download_report
 from .pricing import run_pricing_batch
 from .fees import run_fees_batch
 from .sales_traffic import fetch_l30_sales_traffic
@@ -114,54 +113,12 @@ async def fba_report(save_to_db=True):
     # ---------------------------------------------------------
     # 5. Load Reserved Inventory from CurrentInventory
     # ---------------------------------------------------------
-    # Normalize SSKUs before lookup
-    for r in rows:
-        if r.get("SSKU"):
-            r["SSKU"] = str(r["SSKU"]).strip()
-
-    sskus = list({r["SSKU"] for r in rows if r.get("SSKU")})
-    print(f"Loading reserved inventory for {len(sskus)} SSKUs...")
-
-    conn = connect_database()
-    cursor = conn.cursor()
-    reserved_inventory = get_reserved_inventory_by_ssku(cursor, sskus) or {}
-    cursor.close()
-    conn.close()
-
-    for r in rows:
-        ssku = r.get("SSKU")
-        # extra debugging: log details for problematic lookups (specific SSKU or general samples)
-        if ssku == "0B47062":
-            # targeted debug for known SSKU
-            print(f"[DEBUG][SSKU=0B47062] SKU={r.get('SKU')} FNSKU={r.get('FNSKU')} reserved_value={reserved_inventory.get(ssku)!r} type={type(reserved_inventory.get(ssku))}")
-        else:
-            # occasional lightweight debugging for other SSKUs (avoid too noisy output)
-            if not reserved_inventory.get(ssku) and ssku:
-                print(f"[DEBUG][missing] SKU={r.get('SKU')} FNSKU={r.get('FNSKU')} SSKU={ssku} not found in reserved_inventory (len={len(reserved_inventory)})")
-
-        # Always set the Reserved-Inventory as before
-        r["Reserved-Inventory"] = reserved_inventory.get(ssku) if ssku else None
+    # ...reserved inventory logic removed...
 
     # ---------------------------------------------------------
-    # 6. Fetch titles from Listings API and override when present
+    # 6. Fetch titles from Listings API (disabled)
     # ---------------------------------------------------------
-    skus_for_titles = [r["SKU"] for r in rows if r.get("SKU")]
-    print(f"Fetching titles from Listings API for {len(skus_for_titles)} SKUs...")
-    import asyncio as _asyncio
-    loop = _asyncio.get_event_loop()
-    listing_titles = await loop.run_in_executor(None, get_listings_titles, skus_for_titles)
-
-    overrides = 0
-    for r in rows:
-        sku = r.get("SKU")
-        if not sku:
-            continue
-        title = listing_titles.get(sku)
-        if title:
-            r["Title"] = title
-            overrides += 1
-
-    print(f"Listings API titles applied: {overrides}/{len(skus_for_titles)} (kept DB title when missing)")
+    print("Skipping Listings API title fetching (disabled). Titles from DB/Inventory remain unchanged.")
 
     # ---------------------------------------------------------
     # 7. Fetch L30 sales & traffic data
@@ -249,7 +206,6 @@ async def fba_report(save_to_db=True):
     print(f"Items with price: {len([r for r in rows if r['Sale-Price']])}")
     print(f"Items with fees: {len([r for r in rows if r['Est-Fee'] is not None])}")
     print(f"Items with L30 data: {len([r for r in rows if r.get('TotalOrderItems_L30') is not None])}")
-    print(f"Items with reserved inventory: {len([r for r in rows if r.get('Reserved-Inventory') is not None])}")
     print(f"Total time: {elapsed:.1f}s")
     print("=" * 60)
 
