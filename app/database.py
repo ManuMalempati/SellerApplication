@@ -256,34 +256,35 @@ def replace_order_items_for_order(cursor, amazon_order_id, rows):
 
 def bulk_upsert_fba_data(cursor, fba_rows):
     """
-    Optimized bulk upsert with batching.
-    Processes in chunks of 500 rows to avoid timeouts.
+    Optimized bulk upsert using a staging temp table and a single MERGE.
+    Enables cursor.fast_executemany if available for faster bulk inserts.
+    Returns count of rows processed (updated + inserted).
     """
     start = time.time()
     total = len(fba_rows)
     print(f"[bulk_upsert_fba_data] Starting upsert of {total} rows...")
 
-    # Pre-check: which SKUs already exist? (use ProductMappingTest)
-    cursor.execute("SELECT sku FROM ProductMappingTest")
-    existing_skus = {row[0] for row in cursor.fetchall()}
-    print(f"[bulk_upsert_fba_data] Found {len(existing_skus)} existing SKUs in ProductMappingTest")
+    # enable fast_executemany where supported
+    try:
+        cursor.fast_executemany = True
+        print("[bulk_upsert_fba_data] Enabled cursor.fast_executemany")
+    except Exception:
+        print("[bulk_upsert_fba_data] cursor.fast_executemany not available")
 
-    # Split rows into UPDATE vs INSERT
-    update_params = []
-    insert_params = []
-
+    # Prepare staging rows
+    staging_rows = []
     for row in fba_rows:
         sku = row.get("SKU")
         if not sku:
             continue
-
-        # Removed Condition-Type and Warehouse-Condition from params
-        params = (
+        staging_rows.append((
+            sku,
             row.get("ASIN"),
             row.get("FNSKU"),
-            row.get("FBA-Stock"),
-            row.get("Sellable-Qty"),
-            row.get("Unsellable-Qty"),
+            row.get("SSKU"),
+            row.get("FBA-Stock") or 0,
+            row.get("Sellable-Qty") or 0,
+            row.get("Unsellable-Qty") or 0,
             row.get("Title"),
             row.get("COG"),
             row.get("Brand"),
@@ -295,79 +296,107 @@ def bulk_upsert_fba_data(cursor, fba_rows):
             row.get("Sale-Price"),
             row.get("Est-Fee"),
             row.get("Est-FBA Fee"),
-            row.get("Est-VAT"),  # Using Est-VAT
+            row.get("Est-VAT"),
             row.get("Est-Net"),
-            sku,
-        )
+        ))
 
-        if sku in existing_skus:
-            update_params.append(params)
-        else:
-            # insert expects (sku, asin, fnsku, fba-stock, sellable, unsellable, title, cog, brand, category, totals..., est-net)
-            insert_params.append((sku,) + params[:-1])
+    if not staging_rows:
+        print("[bulk_upsert_fba_data] No valid rows to upsert")
+        return 0
 
-    # UPDATE SQL - removed Condition-Type and Warehouse-Condition
-    update_sql = """
-        UPDATE ProductMappingTest SET
-            asin = ?,
-            [FNSKU] = ?,
-            [FBA-Stock] = ?,
-            [Sellable-Qty] = ?,
-            [Unsellable-Qty] = ?,
-            Title = ?,
-            COG = ?,
-            Brand = ?,
-            Category = ?,
-            TotalOrderItems_L30 = ?,
-            OrderedProductSales_L30 = ?,
-            UnitsRefunded_L30 = ?,
-            BuyBoxPercentage_L30 = ?,
-            [Sale-Price] = ?,
-            [Est-Fee] = ?,
-            [Est-FBA Fee] = ?,
-            [Est-VAT] = ?,
-            [Est-Net] = ?,
-            fba_updated_at = GETDATE()
-        WHERE sku = ?
+    # Create temp staging table
+    create_tmp_sql = """
+    IF OBJECT_ID('tempdb..#TempFBA') IS NOT NULL DROP TABLE #TempFBA;
+    CREATE TABLE #TempFBA (
+        SKU NVARCHAR(200),
+        ASIN NVARCHAR(50),
+        FNSKU NVARCHAR(100),
+        SSKU NVARCHAR(100),
+        FBA_Stock INT,
+        Sellable_Qty INT,
+        Unsellable_Qty INT,
+        Title NVARCHAR(1000),
+        COG FLOAT,
+        Brand NVARCHAR(200),
+        Category NVARCHAR(200),
+        TotalOrderItems_L30 INT,
+        OrderedProductSales_L30 FLOAT,
+        UnitsRefunded_L30 INT,
+        BuyBoxPercentage_L30 FLOAT,
+        Sale_Price FLOAT,
+        Est_Fee FLOAT,
+        Est_FBA_Fee FLOAT,
+        Est_VAT FLOAT,
+        Est_Net FLOAT
+    );
     """
+    cursor.execute(create_tmp_sql)
 
-    # INSERT SQL - removed Condition-Type and Warehouse-Condition
-    insert_sql = """
-        INSERT INTO ProductMappingTest (
-            sku, asin, [FNSKU], [FBA-Stock], [Sellable-Qty], [Unsellable-Qty],
-            Title, COG, Brand, Category,
-            TotalOrderItems_L30, OrderedProductSales_L30, UnitsRefunded_L30,
-            BuyBoxPercentage_L30, [Sale-Price], [Est-Fee], [Est-FBA Fee], [Est-VAT],
-            [Est-Net], fba_updated_at
-        ) VALUES (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE()
-        )
+    # Bulk insert into staging
+    insert_tmp_sql = """
+    INSERT INTO #TempFBA (
+        SKU, ASIN, FNSKU, SSKU, FBA_Stock, Sellable_Qty, Unsellable_Qty,
+        Title, COG, Brand, Category,
+        TotalOrderItems_L30, OrderedProductSales_L30, UnitsRefunded_L30, BuyBoxPercentage_L30,
+        Sale_Price, Est_Fee, Est_FBA_Fee, Est_VAT, Est_Net
+    ) VALUES (
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    );
     """
+    cursor.executemany(insert_tmp_sql, staging_rows)
+    print(f"[bulk_upsert_fba_data] Bulk inserted {len(staging_rows)} rows into #TempFBA")
 
-    BATCH_SIZE = 500
+    # MERGE staging into target spapi_app_user.ProductMappingTest (update when FNSKU matches, otherwise insert)
+    merge_sql = """
+    DECLARE @mergeOutput TABLE (action NVARCHAR(10));
 
-    # Execute UPDATE in batches
-    if update_params:
-        print(f"[bulk_upsert_fba_data] Running UPDATE for {len(update_params)} rows...")
-        for i in range(0, len(update_params), BATCH_SIZE):
-            batch = update_params[i:i + BATCH_SIZE]
-            cursor.executemany(update_sql, batch)
-            print(f"[bulk_upsert_fba_data] Updated batch {i // BATCH_SIZE + 1}: {len(batch)} rows")
+    MERGE INTO spapi_app_user.ProductMappingTest AS target
+    USING #TempFBA AS src
+      ON (target.[FNSKU] = src.FNSKU)
+    WHEN MATCHED THEN
+      UPDATE SET
+        target.sku = src.SKU,
+        target.asin = src.ASIN,
+        target.ssku = src.SSKU,
+        target.[FBA-Stock] = src.FBA_Stock,
+        target.[Sellable-Qty] = src.Sellable_Qty,
+        target.[Unsellable-Qty] = src.Unsellable_Qty,
+        target.Title = src.Title,
+        target.COG = src.COG,
+        target.Brand = src.Brand,
+        target.Category = src.Category,
+        target.TotalOrderItems_L30 = src.TotalOrderItems_L30,
+        target.OrderedProductSales_L30 = src.OrderedProductSales_L30,
+        target.UnitsRefunded_L30 = src.UnitsRefunded_L30,
+        target.BuyBoxPercentage_L30 = src.BuyBoxPercentage_L30,
+        target.[Sale-Price] = src.Sale_Price,
+        target.[Est-Fee] = src.Est_Fee,
+        target.[Est-FBA Fee] = src.Est_FBA_Fee,
+        target.[Est-VAT] = src.Est_VAT,
+        target.[Est-Net] = src.Est_Net,
+        target.fba_updated_at = GETDATE()
+    WHEN NOT MATCHED BY TARGET THEN
+      INSERT (sku, asin, ssku, [FNSKU], [FBA-Stock], [Sellable-Qty], [Unsellable-Qty],
+              Title, COG, Brand, Category,
+              TotalOrderItems_L30, OrderedProductSales_L30, UnitsRefunded_L30, BuyBoxPercentage_L30,
+              [Sale-Price], [Est-Fee], [Est-FBA Fee], [Est-VAT], [Est-Net], fba_updated_at)
+      VALUES (src.SKU, src.ASIN, src.SSKU, src.FNSKU, src.FBA_Stock, src.Sellable_Qty, src.Unsellable_Qty,
+              src.Title, src.COG, src.Brand, src.Category,
+              src.TotalOrderItems_L30, src.OrderedProductSales_L30, src.UnitsRefunded_L30, src.BuyBoxPercentage_L30,
+              src.Sale_Price, src.Est_Fee, src.Est_FBA_Fee, src.Est_VAT, src.Est_Net, GETDATE())
+    OUTPUT $action INTO @mergeOutput;
 
-    # Execute INSERT in batches
-    if insert_params:
-        print(f"[bulk_upsert_fba_data] Running INSERT for {len(insert_params)} rows...")
-        for i in range(0, len(insert_params), BATCH_SIZE):
-            batch = insert_params[i:i + BATCH_SIZE]
-            cursor.executemany(insert_sql, batch)
-            print(f"[bulk_upsert_fba_data] Inserted batch {i // BATCH_SIZE + 1}: {len(batch)} rows")
+    SELECT action, COUNT(*) AS cnt FROM @mergeOutput GROUP BY action;
+    DROP TABLE #TempFBA;
+    """
+    cursor.execute(merge_sql)
+    merge_results = cursor.fetchall()
+    action_counts = {row[0]: row[1] for row in merge_results} if merge_results else {}
+    updated = action_counts.get('UPDATE', 0)
+    inserted = action_counts.get('INSERT', 0)
+    total_processed = updated + inserted
 
     elapsed = time.time() - start
-    print(f"[bulk_upsert_fba_data] Completed in {elapsed:.2f}s")
-    print(f"[bulk_upsert_fba_data] Updated: {len(update_params)}, Inserted: {len(insert_params)}")
+    print(f"[bulk_upsert_fba_data] Completed in {elapsed:.2f}s (Updated: {updated}, Inserted: {inserted})")
 
-    # Print fba_updated_at in GMT+4 for logs (approximate time when GETDATE() ran)
-    now_gmt4 = (datetime.utcnow() + timedelta(hours=4)).isoformat()
-    print(f"[bulk_upsert_fba_data] fba_updated_at (GMT+4): {now_gmt4}")
-
-    return len(update_params) + len(insert_params)
+    return total_processed

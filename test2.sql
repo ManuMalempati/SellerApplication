@@ -1,3 +1,1 @@
-SELECT COUNT(DISTINCT ASIN)
-FROM ProductMappingTest
-WHERE [FBA-Stock] > 0;
+SELECT * FROM spapi_app_user.ProductMappingTest
