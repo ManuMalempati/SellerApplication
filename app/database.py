@@ -257,21 +257,21 @@ def replace_order_items_for_order(cursor, amazon_order_id, rows):
 def bulk_upsert_fba_data(cursor, fba_rows):
     """
     Optimized bulk upsert using a staging temp table and a single MERGE.
-    Enables cursor.fast_executemany if available for faster bulk inserts.
+    Uses fast_executemany + temp table + MERGE for maximum performance.
     Returns count of rows processed (updated + inserted).
     """
     start = time.time()
     total = len(fba_rows)
     print(f"[bulk_upsert_fba_data] Starting upsert of {total} rows...")
 
-    # enable fast_executemany where supported
+    # Enable fast_executemany if supported
     try:
         cursor.fast_executemany = True
         print("[bulk_upsert_fba_data] Enabled cursor.fast_executemany")
     except Exception:
-        print("[bulk_upsert_fba_data] cursor.fast_executemany not available")
+        print("[bulk_upsert_fba_data] fast_executemany not available")
 
-    # Prepare staging rows
+    # Build staging rows
     staging_rows = []
     for row in fba_rows:
         sku = row.get("SKU")
@@ -304,49 +304,48 @@ def bulk_upsert_fba_data(cursor, fba_rows):
         print("[bulk_upsert_fba_data] No valid rows to upsert")
         return 0
 
-    # Create temp staging table
-    create_tmp_sql = """
-    IF OBJECT_ID('tempdb..#TempFBA') IS NOT NULL DROP TABLE #TempFBA;
-    CREATE TABLE #TempFBA (
-        SKU NVARCHAR(200),
-        ASIN NVARCHAR(50),
-        FNSKU NVARCHAR(100),
-        SSKU NVARCHAR(100),
-        FBA_Stock INT,
-        Sellable_Qty INT,
-        Unsellable_Qty INT,
-        Title NVARCHAR(1000),
-        COG FLOAT,
-        Brand NVARCHAR(200),
-        Category NVARCHAR(200),
-        TotalOrderItems_L30 INT,
-        OrderedProductSales_L30 FLOAT,
-        UnitsRefunded_L30 INT,
-        BuyBoxPercentage_L30 FLOAT,
-        Sale_Price FLOAT,
-        Est_Fee FLOAT,
-        Est_FBA_Fee FLOAT,
-        Est_VAT FLOAT,
-        Est_Net FLOAT
-    );
-    """
-    cursor.execute(create_tmp_sql)
+    # Create temp table
+    cursor.execute("""
+        IF OBJECT_ID('tempdb..#TempFBA') IS NOT NULL DROP TABLE #TempFBA;
+        CREATE TABLE #TempFBA (
+            SKU NVARCHAR(200),
+            ASIN NVARCHAR(50),
+            FNSKU NVARCHAR(100),
+            SSKU NVARCHAR(100),
+            FBA_Stock INT,
+            Sellable_Qty INT,
+            Unsellable_Qty INT,
+            Title NVARCHAR(1000),
+            COG FLOAT,
+            Brand NVARCHAR(200),
+            Category NVARCHAR(200),
+            TotalOrderItems_L30 INT,
+            OrderedProductSales_L30 FLOAT,
+            UnitsRefunded_L30 INT,
+            BuyBoxPercentage_L30 FLOAT,
+            Sale_Price FLOAT,
+            Est_Fee FLOAT,
+            Est_FBA_Fee FLOAT,
+            Est_VAT FLOAT,
+            Est_Net FLOAT
+        );
+    """)
 
-    # Bulk insert into staging
-    insert_tmp_sql = """
-    INSERT INTO #TempFBA (
-        SKU, ASIN, FNSKU, SSKU, FBA_Stock, Sellable_Qty, Unsellable_Qty,
-        Title, COG, Brand, Category,
-        TotalOrderItems_L30, OrderedProductSales_L30, UnitsRefunded_L30, BuyBoxPercentage_L30,
-        Sale_Price, Est_Fee, Est_FBA_Fee, Est_VAT, Est_Net
-    ) VALUES (
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-    );
-    """
-    cursor.executemany(insert_tmp_sql, staging_rows)
+    # Bulk insert into temp table
+    cursor.executemany("""
+        INSERT INTO #TempFBA (
+            SKU, ASIN, FNSKU, SSKU, FBA_Stock, Sellable_Qty, Unsellable_Qty,
+            Title, COG, Brand, Category,
+            TotalOrderItems_L30, OrderedProductSales_L30, UnitsRefunded_L30, BuyBoxPercentage_L30,
+            Sale_Price, Est_Fee, Est_FBA_Fee, Est_VAT, Est_Net
+        ) VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        );
+    """, staging_rows)
+
     print(f"[bulk_upsert_fba_data] Bulk inserted {len(staging_rows)} rows into #TempFBA")
 
-    # MERGE staging into target spapi_app_user.ProductMappingTest (update when FNSKU matches, otherwise insert)
+    # MERGE (IMPORTANT: DROP TABLE BEFORE SELECT)
     merge_sql = """
     DECLARE @mergeOutput TABLE (action NVARCHAR(10));
 
@@ -386,17 +385,19 @@ def bulk_upsert_fba_data(cursor, fba_rows):
               src.Sale_Price, src.Est_Fee, src.Est_FBA_Fee, src.Est_VAT, src.Est_Net, GETDATE())
     OUTPUT $action INTO @mergeOutput;
 
-    SELECT action, COUNT(*) AS cnt FROM @mergeOutput GROUP BY action;
     DROP TABLE #TempFBA;
+
+    SELECT action, COUNT(*) AS cnt FROM @mergeOutput GROUP BY action;
     """
+
     cursor.execute(merge_sql)
     merge_results = cursor.fetchall()
+
     action_counts = {row[0]: row[1] for row in merge_results} if merge_results else {}
-    updated = action_counts.get('UPDATE', 0)
-    inserted = action_counts.get('INSERT', 0)
-    total_processed = updated + inserted
+    updated = action_counts.get("UPDATE", 0)
+    inserted = action_counts.get("INSERT", 0)
 
     elapsed = time.time() - start
     print(f"[bulk_upsert_fba_data] Completed in {elapsed:.2f}s (Updated: {updated}, Inserted: {inserted})")
 
-    return total_processed
+    return updated + inserted
