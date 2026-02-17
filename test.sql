@@ -1,1 +1,1 @@
-SELECT * FROM InventoryReport
+SELECT * FROM CurrentInventory

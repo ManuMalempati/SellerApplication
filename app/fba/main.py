@@ -124,6 +124,8 @@ async def fba_report(save_to_db=True):
     conn.close()
 
     for r in rows:
+        if r.get("SSKU") == "0B47062" or r.get("SKU") == "0B47062":
+            print("DEBUG BEFORE MERGE:", r)
         ssku = r.get("SSKU")
         r["Reserved-Inventory"] = reserved_inventory.get(ssku) if ssku else None
 
