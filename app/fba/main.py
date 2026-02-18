@@ -15,6 +15,21 @@ from .fees import run_fees_batch
 from .sales_traffic import fetch_l30_sales_traffic
 
 
+# ---------------------------------------------------------
+# SAFE DECODER FOR AMAZON REPORTS
+# ---------------------------------------------------------
+def safe_decode(raw: bytes) -> str:
+    """
+    Amazon reports are NOT guaranteed to be UTF-8.
+    They often contain CP1252 characters (–, —, “ ”, ™, etc.)
+    This decoder prevents crashes.
+    """
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode("cp1252", errors="replace")
+
+
 async def fba_report(save_to_db=True):
     start_time = time.time()
 
@@ -40,12 +55,13 @@ async def fba_report(save_to_db=True):
     document_id = wait_for_report(report_id)
     print(f"Report ready: {document_id}")
 
-    raw_text = download_report(document_id)
+    raw_bytes = download_report(document_id, return_bytes=True)
+    raw_text = safe_decode(raw_bytes)
 
     # ---------------------------------------------------------
     # 3. Parse inventory report and aggregate by FNSKU
     # ---------------------------------------------------------
-    fnsku_data = {}  # {fnsku: {base_data, sellable_qty, unsellable_qty}}
+    fnsku_data = {}
     reader = csv.DictReader(StringIO(raw_text), delimiter="\t")
     total_raw_rows = 0
 
@@ -62,7 +78,6 @@ async def fba_report(save_to_db=True):
 
         qty_int = int(qty) if qty and qty.isdigit() else 0
 
-        # Get SSKU from ProductMapping if exists, otherwise None
         ssku = (product_mappings.get(sku) or {}).get("ssku")
         if ssku is not None:
             ssku = str(ssku).strip()
@@ -110,13 +125,9 @@ async def fba_report(save_to_db=True):
         r["Category"] = d.get("category")
 
     # ---------------------------------------------------------
-    # 5. Load Reserved Inventory from CurrentInventory
+    # 5. Reserved Inventory (skipped)
     # ---------------------------------------------------------
-    # ...reserved inventory logic removed...
 
-    # ---------------------------------------------------------
-    # 6. Fetch titles from Listings API (disabled)
-    # ---------------------------------------------------------
     print("Skipping Listings API title fetching (disabled). Titles from DB/Inventory remain unchanged.")
 
     # ---------------------------------------------------------
@@ -133,8 +144,7 @@ async def fba_report(save_to_db=True):
         r["BuyBoxPercentage_L30"] = l30.get("BuyBoxPercentage_L30")
 
     # ---------------------------------------------------------
-    # 8. Enrich with Title & Price from Active Listings report (GET_MERCHANT_LISTINGS_DATA)
-    #    -- Price and Title will come from the report. Fees still come from the API below.
+    # 8. Enrich with Active Listings report
     # ---------------------------------------------------------
     print("Requesting Active Listings report to enrich price/title...")
     report_id = request_report("GET_MERCHANT_LISTINGS_DATA", params={
@@ -146,7 +156,9 @@ async def fba_report(save_to_db=True):
     doc_id = wait_for_report(report_id)
     print(f"Active Listings document ready: {doc_id}")
 
-    listings_text = download_report(doc_id)  # returns decoded TSV text
+    listings_bytes = download_report(doc_id, return_bytes=True)
+    listings_text = safe_decode(listings_bytes)
+
     reader = csv.DictReader(StringIO(listings_text), delimiter="\t")
 
     listings_map = {}
@@ -161,7 +173,6 @@ async def fba_report(save_to_db=True):
 
     print(f"Loaded {len(listings_map)} active listings for enrichment")
 
-    # Apply listings title/price to rows (fall back to DB values already set)
     for r in rows:
         sku = r["SKU"]
         listing = listings_map.get(sku)
@@ -210,7 +221,7 @@ async def fba_report(save_to_db=True):
             r["Est-Net"] = None
 
     # ---------------------------------------------------------
-    # 10. Save to database (if requested)
+    # 10. Save to database
     # ---------------------------------------------------------
     if save_to_db:
         print("Saving FBA data to ProductMapping table...")
