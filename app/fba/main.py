@@ -11,7 +11,6 @@ from ..database import (
 )
 from .config import GOVT_VAT_RATE
 from .helpers import request_report, wait_for_report, download_report
-from .pricing import run_pricing_batch
 from .fees import run_fees_batch
 from .sales_traffic import fetch_l30_sales_traffic
 
@@ -134,21 +133,56 @@ async def fba_report(save_to_db=True):
         r["BuyBoxPercentage_L30"] = l30.get("BuyBoxPercentage_L30")
 
     # ---------------------------------------------------------
-    # 8. Fetch pricing
+    # 8. Enrich with Title & Price from Active Listings report (GET_MERCHANT_LISTINGS_DATA)
+    #    -- Price and Title will come from the report. Fees still come from the API below.
     # ---------------------------------------------------------
-    skus = [r["SKU"] for r in rows]
-    pricing = await run_pricing_batch(skus)
+    print("Requesting Active Listings report to enrich price/title...")
+    report_id = request_report("GET_MERCHANT_LISTINGS_DATA", params={
+        "reportOptions": {"preferredReportDocumentLocale": "en_US"}
+    })
+    if not report_id:
+        raise RuntimeError("Failed to request Active Listings report")
 
-    fee_items = []
+    doc_id = wait_for_report(report_id)
+    print(f"Active Listings document ready: {doc_id}")
+
+    listings_text = download_report(doc_id)  # returns decoded TSV text
+    reader = csv.DictReader(StringIO(listings_text), delimiter="\t")
+
+    listings_map = {}
+    for lr in reader:
+        sku = (lr.get("seller-sku") or "").strip()
+        if not sku:
+            continue
+        title = lr.get("item-name") or None
+        raw_price = lr.get("price")
+        price = parse_cost(raw_price) if raw_price else None
+        listings_map[sku] = {"title": title, "price": price}
+
+    print(f"Loaded {len(listings_map)} active listings for enrichment")
+
+    # Apply listings title/price to rows (fall back to DB values already set)
     for r in rows:
-        price = pricing.get(r["SKU"])
-        r["Sale-Price"] = price
-        if price and r["ASIN"]:
-            fee_items.append((r["SKU"], r["ASIN"], price))
+        sku = r["SKU"]
+        listing = listings_map.get(sku)
+        if listing:
+            if listing.get("title"):
+                r["Title"] = listing.get("title")
+            r["Sale-Price"] = listing.get("price")
+        else:
+            r["Sale-Price"] = r.get("Sale-Price") if "Sale-Price" in r else None
 
     # ---------------------------------------------------------
     # 9. Estimate fees
     # ---------------------------------------------------------
+    fee_items = []
+    for r in rows:
+        price = r.get("Sale-Price")
+        asin = r.get("ASIN")
+        sku = r.get("SKU")
+        if price and asin:
+            fee_items.append((sku, asin, price))
+
     fees = await run_fees_batch(fee_items)
 
     for r in rows:
@@ -203,7 +237,7 @@ async def fba_report(save_to_db=True):
     print("FBA REPORT - SUMMARY")
     print("=" * 60)
     print(f"Total items: {len(rows)}")
-    print(f"Items with price: {len([r for r in rows if r['Sale-Price']])}")
+    print(f"Items with price: {len([r for r in rows if r.get('Sale-Price')])}")
     print(f"Items with fees: {len([r for r in rows if r['Est-Fee'] is not None])}")
     print(f"Items with L30 data: {len([r for r in rows if r.get('TotalOrderItems_L30') is not None])}")
     print(f"Total time: {elapsed:.1f}s")

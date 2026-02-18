@@ -294,3 +294,214 @@ def test_l30(asin: str = None):
         "l30_sample": {k: l30_data[k] for k in list(l30_asins)[:10]},
     }
 
+@router.get("/test-listings-item-raw")
+async def test_get_listings_item_raw(seller_id: str = None, sku: str = "SDSSDH3-2T00-G26"):
+    """
+    Fetch raw Listings API response for a single SKU.
+    Example:
+      /test-listings-item-raw?sku=MYSKU
+      /test-listings-item-raw?seller_id=ABCDE&sku=MYSKU
+    """
+    # Prefer explicit query param, otherwise fall back to env var
+    seller_id = seller_id or os.getenv("SELLER_ID")
+    if not seller_id:
+        return {"error": "seller_id not provided and SELLER_ID env var is not set"}
+
+    if not sku:
+        return {"error": "Provide sku query parameter"}
+
+    path = f"/listings/2021-08-01/items/{seller_id}/{sku}"
+
+    resp = spapi_request("GET", path, params={"marketplaceIds": [MARKETPLACE_ID], 
+                                              "includedData": ["fulfillmentAvailability"]})
+
+    return {
+        "input": {"seller_id": seller_id, "sku": sku, "path": path},
+        "raw_response": resp
+    }
+
+@router.get("/test-all-listings")
+def test_all_listings():
+    """
+    Test endpoint to request and download the All Listings Report:
+    GET_MERCHANT_LISTINGS_ALL_DATA
+
+    Returns all attributes from the tab-delimited flat file.
+    """
+
+    # -----------------------------
+    # 1. Request the report
+    # -----------------------------
+    body = {
+        "reportType": "GET_MERCHANT_LISTINGS_ALL_DATA",
+        "marketplaceIds": [MARKETPLACE_ID],
+        "reportOptions": {
+            "custom": "false",
+            "preferredReportDocumentLocale": "en_US"
+        }
+    }
+
+    print("[all-listings] Requesting report...")
+    resp = spapi_request(
+        "POST",
+        "/reports/2021-06-30/reports",
+        body=body
+    ) or {}
+
+    report_id = resp.get("reportId")
+    if not report_id:
+        return {"error": "No reportId returned", "response": resp}
+
+    print(f"[all-listings] Report requested: {report_id}")
+
+    # -----------------------------
+    # 2. Poll until DONE
+    # -----------------------------
+    while True:
+        time.sleep(1)
+        status_resp = spapi_request(
+            "GET",
+            f"/reports/2021-06-30/reports/{report_id}"
+        ) or {}
+
+        status = status_resp.get("processingStatus")
+        print(f"[all-listings] Status: {status}")
+
+        if status == "DONE":
+            document_id = status_resp.get("reportDocumentId")
+            break
+
+        if status in ("CANCELLED", "FATAL"):
+            return {"error": "Report failed", "status": status_resp}
+
+    print(f"[all-listings] Report ready: {document_id}")
+
+    # -----------------------------
+    # 3. Download the document
+    # -----------------------------
+    doc = spapi_request(
+        "GET",
+        f"/reports/2021-06-30/documents/{document_id}"
+    ) or {}
+
+    url = doc.get("url")
+    raw = requests.get(url).content
+
+    # decompress if needed
+    if doc.get("compressionAlgorithm") == "GZIP":
+        raw = gzip.decompress(raw)
+
+    # -----------------------------
+    # 4. Parse the tab-delimited file
+    # -----------------------------
+    text = raw.decode("utf-8", errors="replace")
+    reader = csv.DictReader(io.StringIO(text), delimiter="\t")
+
+    rows = list(reader)
+
+    print(f"[all-listings] Parsed {len(rows)} rows")
+
+    # -----------------------------
+    # 5. Return sample + full rows
+    # -----------------------------
+    return {
+        "count": len(rows),
+        "sample": rows[:5],   # first 5 rows for preview
+        "columns": reader.fieldnames,
+    }
+
+@router.get("/test-active-listings")
+def test_active_listings():
+    """
+    Requests the Active Listings Report (GET_MERCHANT_LISTINGS_DATA)
+    and returns ALL rows, filtered to the important attributes only.
+    """
+
+    # -----------------------------
+    # 1. Request the report
+    # -----------------------------
+    body = {
+        "reportType": "GET_MERCHANT_LISTINGS_DATA",
+        "marketplaceIds": [MARKETPLACE_ID],
+        "reportOptions": {
+            "preferredReportDocumentLocale": "en_US"
+        }
+    }
+
+    print("[active-listings] Requesting report...")
+    resp = spapi_request(
+        "POST",
+        "/reports/2021-06-30/reports",
+        body=body
+    ) or {}
+
+    report_id = resp.get("reportId")
+    if not report_id:
+        return {"error": "No reportId returned", "response": resp}
+
+    print(f"[active-listings] Report requested: {report_id}")
+
+    # -----------------------------
+    # 2. Poll until DONE
+    # -----------------------------
+    while True:
+        time.sleep(1)
+        status_resp = spapi_request(
+            "GET",
+            f"/reports/2021-06-30/reports/{report_id}"
+        ) or {}
+
+        status = status_resp.get("processingStatus")
+        print(f"[active-listings] Status: {status}")
+
+        if status == "DONE":
+            document_id = status_resp.get("reportDocumentId")
+            break
+
+        if status in ("CANCELLED", "FATAL"):
+            return {"error": "Report failed", "status": status_resp}
+
+    print(f"[active-listings] Report ready: {document_id}")
+
+    # -----------------------------
+    # 3. Download the document
+    # -----------------------------
+    doc = spapi_request(
+        "GET",
+        f"/reports/2021-06-30/documents/{document_id}"
+    ) or {}
+
+    url = doc.get("url")
+    raw = requests.get(url).content
+
+    if doc.get("compressionAlgorithm") == "GZIP":
+        raw = gzip.decompress(raw)
+
+    # -----------------------------
+    # 4. Parse the TSV
+    # -----------------------------
+    text = raw.decode("utf-8", errors="replace")
+    reader = csv.DictReader(io.StringIO(text), delimiter="\t")
+
+    rows = list(reader)
+    print(f"[active-listings] Parsed {len(rows)} rows")
+
+    # -----------------------------
+    # 5. Filter to important attributes ONLY
+    # -----------------------------
+    filtered = []
+    for r in rows:
+        filtered.append({
+            "item-name": r.get("item-name"),
+            "listing-id": r.get("listing-id"),
+            "seller-sku": r.get("seller-sku"),
+            "price": r.get("price"),
+            "quantity": r.get("quantity"),
+            "fulfillment-channel": r.get("fulfillment-channel"),
+            "item-condition": r.get("item-condition"),
+        })
+
+    # -----------------------------
+    # 6. Return ONE list only
+    # -----------------------------
+    return filtered

@@ -5,7 +5,6 @@ import gzip
 
 from ..auth import spapi_request
 from .config import MARKETPLACE_ID, MAX_RETRIES, INITIAL_RETRY_DELAY, SELLER_ID, MAX_WORKERS
-from .rate_limiter import listings_limiter
 
 progress_lock = threading.Lock()
 pricing_progress = {"done": 0, "total": 0}
@@ -104,79 +103,3 @@ def download_report(document_id, is_json=False):
         return json.loads(raw.decode("utf-8"))
     
     return raw.decode("utf-8")
-
-
-# ---------------- listings (GET /listings/2021-08-01/items/{sellerId}/{sku}) helpers ----------------
-
-def _get_listing_api(sku):
-    """
-    Low-level call to Listings API for a single SKU. Acquires listings rate limiter.
-    Returns raw response (dict) or {}.
-    """
-    if not SELLER_ID:
-        # No seller id configured
-        return {}
-    listings_limiter.acquire()
-    params = {"marketplaceIds": [MARKETPLACE_ID]} if MARKETPLACE_ID else {}
-    return spapi_request("GET", f"/listings/2021-08-01/items/{SELLER_ID}/{sku}", params=params) or {}
-
-
-def fetch_listing_title(sku):
-    """
-    Call the listings API (with retry) and extract itemName from summaries[0].itemName.
-    Returns:
-      - itemName string on success
-      - None when not available / parsing failed
-      - {"_quota": True} when response contained QuotaExceeded/RequestThrottled (so caller can back off)
-    """
-    if not sku:
-        return None
-    if not SELLER_ID:
-        return None
-
-    resp = retry_api_call(_get_listing_api, sku)
-    if not isinstance(resp, dict):
-        return None
-
-    # If the API returned errors, surface quota/throttle so caller can back off
-    if "errors" in resp:
-        codes = [e.get("code") for e in resp.get("errors", []) if isinstance(e, dict)]
-        if "QuotaExceeded" in codes or "RequestThrottled" in codes:
-            return {"_quota": True}
-        # non-quota errors -> treat as missing title
-        return None
-
-    summaries = resp.get("summaries") or []
-    if summaries and isinstance(summaries, list):
-        item_name = summaries[0].get("itemName")
-        return item_name
-    return None
-
-
-def get_listings_titles(skus):
-    """
-    Safe, serial, rate-limited title fetcher.
-    Never hangs. Never explodes. Never gets stuck.
-    """
-    out = {}
-
-    for i, sku in enumerate(skus, start=1):
-        listings_limiter.acquire()  # respects 5 RPS / burst 10
-
-        resp = _get_listing_api(sku)
-
-        if isinstance(resp, dict) and "summaries" in resp:
-            summaries = resp.get("summaries") or []
-            if summaries:
-                out[sku] = summaries[0].get("itemName")
-            else:
-                out[sku] = None
-        else:
-            out[sku] = None
-
-        if i % 20 == 0:
-            print(f"[titles] Processed {i}/{len(skus)}")
-
-        time.sleep(0.25)  # gentle throttle
-
-    return out

@@ -23,12 +23,6 @@ class TokenBucketRateLimiter:
                 wait = (1 - self.tokens) / self.rate
             time.sleep(wait)
 
-
-# getPricing limits: 0.5 RPS, burst 1 → 1 request every 2 seconds
-pricing_limiter = TokenBucketRateLimiter(rate=0.5, burst=1)
-
 # Fees API: 1 RPS, burst 2
 fees_limiter = TokenBucketRateLimiter(rate=1.0, burst=2)
 
-# Listings API: 5 RPS, burst 10 (GET /listings/2021-08-01/items/{sellerId}/{sku})
-listings_limiter = TokenBucketRateLimiter(rate=5.0, burst=10)
