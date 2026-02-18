@@ -45,7 +45,7 @@ async def fba_report(save_to_db=True):
     # ---------------------------------------------------------
     # 3. Parse inventory report and aggregate by FNSKU
     # ---------------------------------------------------------
-    fnsku_data = {}  # {fnsku: {base_data, sellable_qty, unsellable_qty}}
+    fnsku_data = {}
     reader = csv.DictReader(StringIO(raw_text), delimiter="\t")
     total_raw_rows = 0
 
@@ -62,7 +62,6 @@ async def fba_report(save_to_db=True):
 
         qty_int = int(qty) if qty and qty.isdigit() else 0
 
-        # Get SSKU from ProductMapping if exists, otherwise None
         ssku = (product_mappings.get(sku) or {}).get("ssku")
         if ssku is not None:
             ssku = str(ssku).strip()
@@ -110,13 +109,9 @@ async def fba_report(save_to_db=True):
         r["Category"] = d.get("category")
 
     # ---------------------------------------------------------
-    # 5. Load Reserved Inventory from CurrentInventory
+    # 5. Reserved Inventory (skipped)
     # ---------------------------------------------------------
-    # ...reserved inventory logic removed...
 
-    # ---------------------------------------------------------
-    # 6. Fetch titles from Listings API (disabled)
-    # ---------------------------------------------------------
     print("Skipping Listings API title fetching (disabled). Titles from DB/Inventory remain unchanged.")
 
     # ---------------------------------------------------------
@@ -133,8 +128,7 @@ async def fba_report(save_to_db=True):
         r["BuyBoxPercentage_L30"] = l30.get("BuyBoxPercentage_L30")
 
     # ---------------------------------------------------------
-    # 8. Enrich with Title & Price from Active Listings report (GET_MERCHANT_LISTINGS_DATA)
-    #    -- Price and Title will come from the report. Fees still come from the API below.
+    # 8. Enrich with Active Listings report
     # ---------------------------------------------------------
     print("Requesting Active Listings report to enrich price/title...")
     report_id = request_report("GET_MERCHANT_LISTINGS_DATA", params={
@@ -146,7 +140,7 @@ async def fba_report(save_to_db=True):
     doc_id = wait_for_report(report_id)
     print(f"Active Listings document ready: {doc_id}")
 
-    listings_text = download_report(doc_id)  # returns decoded TSV text
+    listings_text = download_report(doc_id)
     reader = csv.DictReader(StringIO(listings_text), delimiter="\t")
 
     listings_map = {}
@@ -161,7 +155,6 @@ async def fba_report(save_to_db=True):
 
     print(f"Loaded {len(listings_map)} active listings for enrichment")
 
-    # Apply listings title/price to rows (fall back to DB values already set)
     for r in rows:
         sku = r["SKU"]
         listing = listings_map.get(sku)
@@ -173,44 +166,51 @@ async def fba_report(save_to_db=True):
             r["Sale-Price"] = r.get("Sale-Price") if "Sale-Price" in r else None
 
     # ---------------------------------------------------------
-    # 9. Estimate fees
+    # 9. Estimate fees (SKIP invalid rows)
     # ---------------------------------------------------------
     fee_items = []
     for r in rows:
         price = r.get("Sale-Price")
         asin = r.get("ASIN")
         sku = r.get("SKU")
-        if price and asin:
-            fee_items.append((sku, asin, price))
+        cog = parse_cost(r.get("COG"))
 
-    fees = await run_fees_batch(fee_items)
-
-    for r in rows:
-        sku = r["SKU"]
-        asin = r["ASIN"]
-        price = r["Sale-Price"]
-
-        if price and asin:
-            f = fees.get((sku, asin, price)) or {}
-            net = f.get("net") or {}
-
-            ref = float(net.get("ReferralFees", 0) or 0)
-            fba = float(net.get("FBAFees", 0) or 0)
-            vat = price * GOVT_VAT_RATE
-            cog = parse_cost(r["COG"]) or 0
-
-            r["Est-Fee"] = -ref if ref else None
-            r["Est-FBA Fee"] = -fba if fba else None
-            r["Est-VAT"] = -vat
-            r["Est-Net"] = price - ref - fba - vat - cog
-        else:
+        # Skip if any required field is missing
+        if not price or not asin or not sku or cog is None:
             r["Est-Fee"] = None
             r["Est-FBA Fee"] = None
             r["Est-VAT"] = None
             r["Est-Net"] = None
+            continue
+
+        fee_items.append((sku, asin, price))
+
+    fees = await run_fees_batch(fee_items)
+
+    for r in rows:
+        price = r.get("Sale-Price")
+        asin = r.get("ASIN")
+        sku = r.get("SKU")
+        cog = parse_cost(r.get("COG"))
+
+        # Skip if missing required fields
+        if not price or not asin or not sku or cog is None:
+            continue
+
+        f = fees.get((sku, asin, price)) or {}
+        net = f.get("net") or {}
+
+        ref = float(net.get("ReferralFees", 0) or 0)
+        fba = float(net.get("FBAFees", 0) or 0)
+        vat = price * GOVT_VAT_RATE
+
+        r["Est-Fee"] = -ref if ref else None
+        r["Est-FBA Fee"] = -fba if fba else None
+        r["Est-VAT"] = -vat
+        r["Est-Net"] = price - ref - fba - vat - cog
 
     # ---------------------------------------------------------
-    # 10. Save to database (if requested)
+    # 10. Save to database
     # ---------------------------------------------------------
     if save_to_db:
         print("Saving FBA data to ProductMapping table...")
