@@ -97,9 +97,18 @@ def download_report(document_id, is_json=False):
         raw = gzip.decompress(raw)
 
     print("Report downloaded.")
-    
+
+    # -----------------------------
+    # SAFE DECODING FIX
+    # -----------------------------
+    def safe_decode(b: bytes) -> str:
+        try:
+            return b.decode("utf-8")
+        except UnicodeDecodeError:
+            return b.decode("cp1252", errors="replace")
+
     if is_json:
         import json
-        return json.loads(raw.decode("utf-8"))
-    
-    return raw.decode("utf-8")
+        return json.loads(safe_decode(raw))
+
+    return safe_decode(raw)
