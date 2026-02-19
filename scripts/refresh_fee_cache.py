@@ -255,9 +255,6 @@ async def fetch_active_listings_report():
 async def refresh_fee_cache():
     print("=== FeeEstimatesCache Refresh Started ===")
 
-    # ---------------------------------------------------------
-    # 1. Load Active Listings
-    # ---------------------------------------------------------
     listings_text = await fetch_active_listings_report()
 
     reader = csv.DictReader(StringIO(listings_text), delimiter="\t")
@@ -281,9 +278,6 @@ async def refresh_fee_cache():
         print("No active listings found — aborting.")
         return
 
-    # ---------------------------------------------------------
-    # 2. Load product details (COG)
-    # ---------------------------------------------------------
     print("Loading product details...")
     conn = connect_database()
     cursor = conn.cursor()
@@ -291,9 +285,6 @@ async def refresh_fee_cache():
     cursor.close()
     conn.close()
 
-    # ---------------------------------------------------------
-    # 3. Filter only items with valid COG
-    # ---------------------------------------------------------
     items_with_cog = []
     for sku, asin, price in active_items:
         d = product_details.get(asin) or {}
@@ -308,9 +299,6 @@ async def refresh_fee_cache():
         print("No SKUs with COG — aborting.")
         return
 
-    # ---------------------------------------------------------
-    # 4. Call SP-API fee estimate (ONE BY ONE)
-    # ---------------------------------------------------------
     print(f"Estimating fees for {len(items_with_cog)} SKUs...")
 
     fees = {}
@@ -327,9 +315,6 @@ async def refresh_fee_cache():
             print(f"[ERROR] Fee estimate failed for {sku}: {e}")
             fees[(sku, asin, price)] = {}
 
-    # ---------------------------------------------------------
-    # 5. Compute Charges, VAT, Net, Profit
-    # ---------------------------------------------------------
     print("Computing financials...")
     cache_rows = []
 
@@ -360,9 +345,6 @@ async def refresh_fee_cache():
 
     print(f"Prepared {len(cache_rows)} rows for DB")
 
-    # ---------------------------------------------------------
-    # 6. Upsert into FeeEstimatesCache
-    # ---------------------------------------------------------
     print("Saving to FeeEstimatesCache...")
     conn = connect_database()
     cursor = conn.cursor()
@@ -396,3 +378,7 @@ async def refresh_fee_cache():
     conn.close()
 
     print("=== FeeEstimatesCache Refresh Complete ===")
+
+
+if __name__ == "__main__":
+    asyncio.run(refresh_fee_cache())
