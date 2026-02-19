@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import time
 import csv
 from io import StringIO
@@ -90,7 +91,7 @@ async def fba_report(save_to_db=True):
     print(f"Parsed {len(rows)} unique FNSKUs")
 
     # ---------------------------------------------------------
-    # 4. Load product details (BUT DO NOT LOAD TITLE ANYMORE)
+    # 4. Load product details
     # ---------------------------------------------------------
     asins = list({r["ASIN"] for r in rows if r["ASIN"]})
     print(f"Loading product details for {len(asins)} ASINs...")
@@ -103,8 +104,6 @@ async def fba_report(save_to_db=True):
 
     for r in rows:
         d = product_details.get(r["ASIN"]) or {}
-        # REMOVE TITLE LOADING
-        # r["Title"] = d.get("item_name")
         r["COG"] = d.get("cost")
         r["Brand"] = d.get("brand")
         r["Category"] = d.get("category")
@@ -154,7 +153,7 @@ async def fba_report(save_to_db=True):
         sku = r["SKU"]
         listing = listings_map.get(sku)
         if listing:
-            r["Title"] = listing.get("title")  # ONLY SOURCE OF TITLE
+            r["Title"] = listing.get("title")
             r["Sale-Price"] = listing.get("price")
         else:
             r["Title"] = None
@@ -163,16 +162,12 @@ async def fba_report(save_to_db=True):
     # ---------------------------------------------------------
     # 8.5 FILTER: Keep only ACTIVE SKUs
     # ---------------------------------------------------------
-    active_rows = []
-    for r in rows:
-        if r["SKU"] in listings_map:
-            active_rows.append(r)
-
+    active_rows = [r for r in rows if r["SKU"] in listings_map]
     print(f"Filtered to {len(active_rows)} ACTIVE SKUs (from {len(rows)} total FNSKUs)")
     rows = active_rows
 
     # ---------------------------------------------------------
-    # 9. Estimate fees (using cache, NOT API)
+    # 9. Estimate fees (using cache)
     # ---------------------------------------------------------
     fee_items = []
     for r in rows:
@@ -189,13 +184,19 @@ async def fba_report(save_to_db=True):
 
         fee_items.append((sku, asin, price))
 
-    # Fetch cached fees
+    print(f"[DEBUG] Fetching cached fees for {len(fee_items)} items...")
+
     conn = connect_database()
     cursor = conn.cursor()
     cached_fees = get_cached_fees(cursor, fee_items)
     cursor.close()
     conn.close()
 
+    print("[DEBUG] Cached fee lookup complete.")
+
+    # ---------------------------------------------------------
+    # Apply cached fees
+    # ---------------------------------------------------------
     for r in rows:
         price = r.get("Sale-Price")
         asin = r.get("ASIN")
@@ -208,29 +209,24 @@ async def fba_report(save_to_db=True):
         f = cached_fees.get(key)
 
         if not f:
-            # No cached fees → cannot compute financials
             r["Charges"] = None
             r["Est-VAT"] = None
             r["Est-Net"] = None
             r["Profit"] = None
             continue
 
-        charges = f.get("Charges")
-        vat = price * GOVT_VAT_RATE
-        est_net = price - charges - vat
+        charges = round(f.get("Charges") or 0, 2)
+        vat = round(price * GOVT_VAT_RATE, 2)
+        est_net = round(price - charges - vat, 2)
 
         cog = parse_cost(r.get("COG"))
-
-        if cog is None or est_net is None:
-            profit = None
-        else:
-            profit = est_net - cog
+        profit = round(est_net - (cog or 0), 2) if cog is not None else None
 
         r["Charges"] = charges
         r["Est-VAT"] = vat
         r["Est-Net"] = est_net
         r["Profit"] = profit
-        
+
     # ---------------------------------------------------------
     # 10. Save to database
     # ---------------------------------------------------------

@@ -254,7 +254,6 @@ def replace_order_items_for_order(cursor, amazon_order_id, rows):
     # 3. Bulk insert
     cursor.executemany(sql, params)
 
-# fastest way
 def bulk_upsert_fba_data(cursor, fba_rows):
     start = time.time()
     total = len(fba_rows)
@@ -265,12 +264,12 @@ def bulk_upsert_fba_data(cursor, fba_rows):
     except:
         pass
 
-    # Build staging rows using the new schema: Charges, Est-VAT, Est-Net, Profit
     staging_rows = []
     for row in fba_rows:
         sku = row.get("SKU")
         if not sku:
             continue
+
         staging_rows.append((
             sku,
             row.get("ASIN"),
@@ -288,16 +287,15 @@ def bulk_upsert_fba_data(cursor, fba_rows):
             row.get("UnitsRefunded_L30"),
             row.get("BuyBoxPercentage_L30"),
             row.get("Sale-Price"),
-            row.get("Charges"),
-            row.get("Est-VAT"),
-            row.get("Est-Net"),
-            row.get("Profit"),
+            round(row.get("Charges") or 0, 2),
+            round(row.get("Est-VAT") or 0, 2),
+            round(row.get("Est-Net") or 0, 2),
+            round(row.get("Profit") or 0, 2),
         ))
 
     if not staging_rows:
         return 0
 
-    # Create temp table matching new staging columns
     cursor.execute("""
         SET NOCOUNT ON;
         IF OBJECT_ID('tempdb..#TempFBA') IS NOT NULL DROP TABLE #TempFBA;
@@ -325,7 +323,6 @@ def bulk_upsert_fba_data(cursor, fba_rows):
         );
     """)
 
-    # Bulk insert (20 placeholders)
     cursor.executemany("""
         INSERT INTO #TempFBA VALUES (
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
@@ -334,7 +331,6 @@ def bulk_upsert_fba_data(cursor, fba_rows):
 
     print(f"[bulk_upsert_fba_data] Bulk inserted {len(staging_rows)} rows into #TempFBA")
 
-    # MERGE into target using new columns (Charges, Est-VAT, Est-Net, Profit)
     merge_sql = """
         SET NOCOUNT ON;
 
@@ -378,9 +374,8 @@ def bulk_upsert_fba_data(cursor, fba_rows):
     """
 
     cursor.execute(merge_sql)
-    actions = cursor.fetchall()  # safe to fetch OUTPUT
+    actions = cursor.fetchall()
 
-    # Count UPDATE/INSERT
     updated = sum(1 for a in actions if a[0] == "UPDATE")
     inserted = sum(1 for a in actions if a[0] == "INSERT")
 

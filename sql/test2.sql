@@ -1,1 +1,1 @@
-SELECT * FROM FeeEstimatesCache
+EXEC sp_help 'FBAProductSummary';
