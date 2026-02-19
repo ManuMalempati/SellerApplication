@@ -336,7 +336,7 @@ async def refresh_fee_cache():
     total = len(items_with_cog)
 
     for idx, (sku, asin, price, _) in enumerate(items_with_cog, start=1):
-        print(f"[PROGRESS] {idx}/{total} → Fee request for {sku} {asin}")
+        print(f"[PROGRESS] {idx}/{total} -> Fee request for {sku} {asin}")
         try:
             result = get_fees_estimate_local(sku, asin, price)
             fees[(sku, asin, price)] = result
