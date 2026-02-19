@@ -255,6 +255,7 @@ def replace_order_items_for_order(cursor, amazon_order_id, rows):
     cursor.executemany(sql, params)
 
 def bulk_upsert_fba_data(cursor, fba_rows):
+    import time
     start = time.time()
     total = len(fba_rows)
     print(f"[bulk_upsert_fba_data] Starting upsert of {total} rows...")
@@ -264,6 +265,21 @@ def bulk_upsert_fba_data(cursor, fba_rows):
     except:
         pass
 
+    def safe_str(x):
+        return str(x) if x not in (None, "") else None
+
+    def safe_float(x):
+        try:
+            return float(x) if x not in (None, "") else None
+        except:
+            return None
+
+    def safe_int(x):
+        try:
+            return int(x) if x not in (None, "") else 0
+        except:
+            return 0
+
     staging_rows = []
     for row in fba_rows:
         sku = row.get("SKU")
@@ -271,26 +287,26 @@ def bulk_upsert_fba_data(cursor, fba_rows):
             continue
 
         staging_rows.append((
-            sku,
-            row.get("ASIN"),
-            row.get("FNSKU"),
-            row.get("SSKU"),
-            row.get("FBA-Stock") or 0,
-            row.get("Sellable-Qty") or 0,
-            row.get("Unsellable-Qty") or 0,
-            row.get("Title"),
-            row.get("COG"),
-            row.get("Brand"),
-            row.get("Category"),
-            row.get("TotalOrderItems_L30"),
-            row.get("OrderedProductSales_L30"),
-            row.get("UnitsRefunded_L30"),
-            row.get("BuyBoxPercentage_L30"),
-            row.get("Sale-Price"),
-            row.get("Charges") or 0,
-            row.get("Est-VAT") or 0,
-            row.get("Est-Net") or 0,
-            row.get("Profit") or 0,
+            safe_str(sku),
+            safe_str(row.get("ASIN")),
+            safe_str(row.get("FNSKU")),
+            safe_str(row.get("SSKU")),
+            safe_int(row.get("FBA-Stock")),
+            safe_int(row.get("Sellable-Qty")),
+            safe_int(row.get("Unsellable-Qty")),
+            safe_str(row.get("Title")),
+            safe_float(row.get("COG")),
+            safe_str(row.get("Brand")),
+            safe_str(row.get("Category")),
+            safe_int(row.get("TotalOrderItems_L30")),
+            safe_float(row.get("OrderedProductSales_L30")),
+            safe_int(row.get("UnitsRefunded_L30")),
+            safe_float(row.get("BuyBoxPercentage_L30")),
+            safe_float(row.get("Sale-Price")),
+            safe_float(row.get("Charges")),
+            safe_float(row.get("Est-VAT")),
+            safe_float(row.get("Est-Net")),
+            safe_float(row.get("Profit")),
         ))
 
     if not staging_rows:
