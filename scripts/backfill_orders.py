@@ -4,21 +4,24 @@ import time
 import asyncio
 from datetime import datetime, timedelta, timezone
 
+from . import config
+config.load_env()
+
 from app.orders import get_orders
 from app.database import connect_database
 from app.database import replace_order_items_for_order  # Use the delete-and-replace function
 
 # -------------------------------------------------------------------
-# Environment
+# Environment (from config)
 # -------------------------------------------------------------------
 
-BACKFILL_CHUNK_DAYS = int(os.getenv("BACKFILL_CHUNK_DAYS", "1"))
-SYNC_OVERLAP_HOURS = int(os.getenv("SYNC_OVERLAP_HOURS", "2"))
+BACKFILL_CHUNK_DAYS = config.BACKFILL_CHUNK_DAYS
+SYNC_OVERLAP_HOURS = config.SYNC_OVERLAP_HOURS
 
-ORDERS_RETRIES = int(os.getenv("ORDERS_RETRIES", "8"))
-ORDERS_BACKOFF_SECONDS = float(os.getenv("ORDERS_BACKOFF_SECONDS", "4"))
-ORDERS_BACKOFF_MULTIPLIER = float(os.getenv("ORDERS_BACKOFF_MULTIPLIER", "2.5"))
-ORDERS_BACKOFF_JITTER = float(os.getenv("ORDERS_BACKOFF_JITTER", "1.0"))
+ORDERS_RETRIES = config.ORDERS_RETRIES
+ORDERS_BACKOFF_SECONDS = config.ORDERS_BACKOFF_SECONDS
+ORDERS_BACKOFF_MULTIPLIER = config.ORDERS_BACKOFF_MULTIPLIER
+ORDERS_BACKOFF_JITTER = config.ORDERS_BACKOFF_JITTER
 
 
 # -------------------------------------------------------------------

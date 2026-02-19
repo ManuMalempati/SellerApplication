@@ -1,0 +1,1 @@
+EXEC sp_rename 'spapi_app_user.CurrentInventory', 'InventoryReportCopy';

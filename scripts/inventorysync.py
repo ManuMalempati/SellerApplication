@@ -6,16 +6,14 @@ import sys
 import os
 from datetime import datetime, timezone
 from typing import Any, Iterable, List, Tuple
-from dotenv import load_dotenv
 
-# derive repo root and ensure importability
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+# Use centralized config
+from . import config
+# Ensure repo root is on sys.path (preserve previous behavior)
+REPO_ROOT = config.REPO_ROOT
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
-
-ENV_PATH = os.path.join(REPO_ROOT, ".env")
-if os.path.exists(ENV_PATH):
-    load_dotenv(ENV_PATH)
+config.load_env()
 
 # fail-fast required envs
 REQUIRED_ENVS = ["SQLSERVER_CONNECTION_STRING"]
@@ -23,21 +21,20 @@ missing_envs = [k for k in REQUIRED_ENVS if not os.getenv(k)]
 if missing_envs:
     raise RuntimeError("Missing required env vars: " + ", ".join(missing_envs))
 
-# Config (can be overridden via env)
-SRC_SCHEMA_TABLE = os.getenv("INVENTORY_REPORT_TABLE", "dbo.InventoryReport")  # e.g. dbo.InventoryReport
-STAGING_TABLE = os.getenv("INVENTORY_STAGING_TABLE", "spapi_app_user.InventoryStaging")
-TARGET_TABLE = os.getenv("INVENTORY_TARGET_TABLE", "spapi_app_user.CurrentInventory")
-BATCH_SIZE = int(os.getenv("INVENTORY_SYNC_BATCH_SIZE", "1000"))
+# Config (can be overridden via env) - sourced from config.py
+SRC_SCHEMA_TABLE = config.INVENTORY_REPORT_TABLE  # e.g. dbo.InventoryReport
+STAGING_TABLE = config.INVENTORY_STAGING_TABLE
+TARGET_TABLE = config.INVENTORY_TARGET_TABLE
+BATCH_SIZE = config.INVENTORY_SYNC_BATCH_SIZE
 
-LOG_DIR = os.path.join(REPO_ROOT, "logs")
+LOG_DIR = config.LOG_DIR
 os.makedirs(LOG_DIR, exist_ok=True)
 LOG_PATH = os.path.join(LOG_DIR, "inventorysync.log")
 
-LOCKFILE = os.path.join(REPO_ROOT, "inventorysync.lock")
-BACKFILL_LOCKFILE = os.path.join(REPO_ROOT, "backfill.lock")
-LOCK_TIMEOUT_SECONDS = int(os.getenv("INVENTORY_SYNC_LOCK_TIMEOUT_SECONDS", str(6 * 3600)))  # default 6 hours
-# How long inventory sync waits for a backfill to finish before skipping run
-WAIT_FOR_BACKFILL_SECONDS = int(os.getenv("INVENTORY_WAIT_FOR_BACKFILL_SECONDS", "120"))  # default 2 minutes
+LOCKFILE = config.LOCKFILE
+BACKFILL_LOCKFILE = config.BACKFILL_LOCKFILE
+LOCK_TIMEOUT_SECONDS = config.LOCK_TIMEOUT_SECONDS
+WAIT_FOR_BACKFILL_SECONDS = config.WAIT_FOR_BACKFILL_SECONDS
 
 _cost_re = re.compile(r"[^\d\.\-]")  # strip everything except digits, dot, minus
 
@@ -65,7 +62,7 @@ except Exception:
         raise RuntimeError("Could not import connect_database from app.database or database.py. Run this script from repo root or adjust imports.")
 
 # SQL snippets
-# Note: staging now includes ItemName so we can MERGE Title/Name into CurrentInventory
+# Note: staging now includes ItemName so we can MERGE Title/Name into InventoryReportCopy
 CREATE_STAGING_SQL = f"""
 IF OBJECT_ID(N'{STAGING_TABLE}', 'U') IS NULL
 BEGIN
@@ -329,7 +326,7 @@ def run_sync():
         write_conn.commit()
         logger.info("Inserted total %d rows into staging across %d batches.", inserted_rows, batch_inserts)
 
-        logger.info("Running MERGE into CurrentInventory...")
+        logger.info("Running MERGE into InventoryReportCopy...")
         start = time.time()
         write_cursor.execute(MERGE_SQL)
         try:

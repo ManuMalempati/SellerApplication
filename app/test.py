@@ -254,17 +254,17 @@ from .database import connect_database
 def test_l30(asin: str = None):
     """
     Test endpoint to inspect L-30 Sales & Traffic data.
-    Also checks how many ASINs from ProductMappingTest
+    Also checks how many ASINs from FBAProductSummary
     appear in the L30 report.
     """
     # 1. Fetch L30 data from Amazon
     l30_data = fetch_l30_sales_traffic()
     l30_asins = set(l30_data.keys())
 
-    # 2. Load ASINs from ProductMappingTest
+    # 2. Load ASINs from FBAProductSummary
     conn = connect_database()
     cursor = conn.cursor()
-    cursor.execute("SELECT DISTINCT asin FROM ProductMappingTest WHERE asin IS NOT NULL")
+    cursor.execute("SELECT DISTINCT asin FROM FBAProductSummary WHERE asin IS NOT NULL")
     pm_asins = {row[0] for row in cursor.fetchall()}
     cursor.close()
     conn.close()
@@ -318,96 +318,6 @@ async def test_get_listings_item_raw(seller_id: str = None, sku: str = "SDSSDH3-
     return {
         "input": {"seller_id": seller_id, "sku": sku, "path": path},
         "raw_response": resp
-    }
-
-@router.get("/test-all-listings")
-def test_all_listings():
-    """
-    Test endpoint to request and download the All Listings Report:
-    GET_MERCHANT_LISTINGS_ALL_DATA
-
-    Returns all attributes from the tab-delimited flat file.
-    """
-
-    # -----------------------------
-    # 1. Request the report
-    # -----------------------------
-    body = {
-        "reportType": "GET_MERCHANT_LISTINGS_ALL_DATA",
-        "marketplaceIds": [MARKETPLACE_ID],
-        "reportOptions": {
-            "custom": "false",
-            "preferredReportDocumentLocale": "en_US"
-        }
-    }
-
-    print("[all-listings] Requesting report...")
-    resp = spapi_request(
-        "POST",
-        "/reports/2021-06-30/reports",
-        body=body
-    ) or {}
-
-    report_id = resp.get("reportId")
-    if not report_id:
-        return {"error": "No reportId returned", "response": resp}
-
-    print(f"[all-listings] Report requested: {report_id}")
-
-    # -----------------------------
-    # 2. Poll until DONE
-    # -----------------------------
-    while True:
-        time.sleep(1)
-        status_resp = spapi_request(
-            "GET",
-            f"/reports/2021-06-30/reports/{report_id}"
-        ) or {}
-
-        status = status_resp.get("processingStatus")
-        print(f"[all-listings] Status: {status}")
-
-        if status == "DONE":
-            document_id = status_resp.get("reportDocumentId")
-            break
-
-        if status in ("CANCELLED", "FATAL"):
-            return {"error": "Report failed", "status": status_resp}
-
-    print(f"[all-listings] Report ready: {document_id}")
-
-    # -----------------------------
-    # 3. Download the document
-    # -----------------------------
-    doc = spapi_request(
-        "GET",
-        f"/reports/2021-06-30/documents/{document_id}"
-    ) or {}
-
-    url = doc.get("url")
-    raw = requests.get(url).content
-
-    # decompress if needed
-    if doc.get("compressionAlgorithm") == "GZIP":
-        raw = gzip.decompress(raw)
-
-    # -----------------------------
-    # 4. Parse the tab-delimited file
-    # -----------------------------
-    text = raw.decode("utf-8", errors="replace")
-    reader = csv.DictReader(io.StringIO(text), delimiter="\t")
-
-    rows = list(reader)
-
-    print(f"[all-listings] Parsed {len(rows)} rows")
-
-    # -----------------------------
-    # 5. Return sample + full rows
-    # -----------------------------
-    return {
-        "count": len(rows),
-        "sample": rows[:5],   # first 5 rows for preview
-        "columns": reader.fieldnames,
     }
 
 @router.get("/test-active-listings")

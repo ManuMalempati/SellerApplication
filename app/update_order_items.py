@@ -91,7 +91,7 @@ def recalculate_order_items_for_skus(sku_list: list):
                     ir.Category,
                     ir.ItemName
                 FROM ProductMapping pm
-                LEFT JOIN InventoryReport ir ON pm.ssku = ir.PartNumber
+                LEFT JOIN InventoryReportCopy ir ON pm.ssku = ir.PartNumber
                 WHERE pm.asin IN ({asin_placeholders})
             """
             cursor.execute(detail_sql, asin_list)

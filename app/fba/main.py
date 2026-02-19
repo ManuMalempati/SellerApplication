@@ -8,6 +8,7 @@ from ..database import (
     get_product_details_by_asin,
     parse_cost,
     bulk_upsert_fba_data,
+    get_cached_fees,
 )
 from .config import GOVT_VAT_RATE
 from .helpers import request_report, wait_for_report, download_report
@@ -90,7 +91,7 @@ async def fba_report(save_to_db=True):
     print(f"Parsed {len(rows)} unique FNSKUs")
 
     # ---------------------------------------------------------
-    # 4. Load product details
+    # 4. Load product details (BUT DO NOT LOAD TITLE ANYMORE)
     # ---------------------------------------------------------
     asins = list({r["ASIN"] for r in rows if r["ASIN"]})
     print(f"Loading product details for {len(asins)} ASINs...")
@@ -103,16 +104,11 @@ async def fba_report(save_to_db=True):
 
     for r in rows:
         d = product_details.get(r["ASIN"]) or {}
-        r["Title"] = d.get("item_name")
+        # REMOVE TITLE LOADING
+        # r["Title"] = d.get("item_name")
         r["COG"] = d.get("cost")
         r["Brand"] = d.get("brand")
         r["Category"] = d.get("category")
-
-    # ---------------------------------------------------------
-    # 5. Reserved Inventory (skipped)
-    # ---------------------------------------------------------
-
-    print("Skipping Listings API title fetching (disabled). Titles from DB/Inventory remain unchanged.")
 
     # ---------------------------------------------------------
     # 7. Fetch L30 sales & traffic data
@@ -159,56 +155,83 @@ async def fba_report(save_to_db=True):
         sku = r["SKU"]
         listing = listings_map.get(sku)
         if listing:
-            if listing.get("title"):
-                r["Title"] = listing.get("title")
+            r["Title"] = listing.get("title")  # ONLY SOURCE OF TITLE
             r["Sale-Price"] = listing.get("price")
         else:
-            r["Sale-Price"] = r.get("Sale-Price") if "Sale-Price" in r else None
+            r["Title"] = None
+            r["Sale-Price"] = None
 
     # ---------------------------------------------------------
-    # 9. Estimate fees (SKIP invalid rows)
+    # 8.5 FILTER: Keep only ACTIVE SKUs
+    # ---------------------------------------------------------
+    active_rows = []
+    for r in rows:
+        if r["SKU"] in listings_map:
+            active_rows.append(r)
+
+    print(f"Filtered to {len(active_rows)} ACTIVE SKUs (from {len(rows)} total FNSKUs)")
+    rows = active_rows
+
+    # ---------------------------------------------------------
+    # 9. Estimate fees (using cache, NOT API)
     # ---------------------------------------------------------
     fee_items = []
     for r in rows:
         price = r.get("Sale-Price")
         asin = r.get("ASIN")
         sku = r.get("SKU")
-        cog = parse_cost(r.get("COG"))
 
-        # Skip if any required field is missing
-        if not price or not asin or not sku or cog is None:
-            r["Est-Fee"] = None
-            r["Est-FBA Fee"] = None
+        if not price or not asin or not sku:
+            r["Charges"] = None
             r["Est-VAT"] = None
             r["Est-Net"] = None
+            r["Profit"] = None
             continue
 
         fee_items.append((sku, asin, price))
 
-    fees = await run_fees_batch(fee_items)
+    # Fetch cached fees
+    conn = connect_database()
+    cursor = conn.cursor()
+    cached_fees = get_cached_fees(cursor, fee_items)
+    cursor.close()
+    conn.close()
 
     for r in rows:
         price = r.get("Sale-Price")
         asin = r.get("ASIN")
         sku = r.get("SKU")
-        cog = parse_cost(r.get("COG"))
 
-        # Skip if missing required fields
-        if not price or not asin or not sku or cog is None:
+        if not price or not asin or not sku:
             continue
 
-        f = fees.get((sku, asin, price)) or {}
-        net = f.get("net") or {}
+        key = (sku, asin, price)
+        f = cached_fees.get(key)
 
-        ref = float(net.get("ReferralFees", 0) or 0)
-        fba = float(net.get("FBAFees", 0) or 0)
+        if not f:
+            # No cached fees → cannot compute financials
+            r["Charges"] = None
+            r["Est-VAT"] = None
+            r["Est-Net"] = None
+            r["Profit"] = None
+            continue
+
+        charges = f.get("Charges")
         vat = price * GOVT_VAT_RATE
+        est_net = price - charges - vat
 
-        r["Est-Fee"] = -ref if ref else None
-        r["Est-FBA Fee"] = -fba if fba else None
-        r["Est-VAT"] = -vat
-        r["Est-Net"] = price - ref - fba - vat - cog
+        cog = parse_cost(r.get("COG"))
 
+        if cog is None or est_net is None:
+            profit = None
+        else:
+            profit = est_net - cog
+
+        r["Charges"] = charges
+        r["Est-VAT"] = vat
+        r["Est-Net"] = est_net
+        r["Profit"] = profit
+        
     # ---------------------------------------------------------
     # 10. Save to database
     # ---------------------------------------------------------
@@ -238,7 +261,7 @@ async def fba_report(save_to_db=True):
     print("=" * 60)
     print(f"Total items: {len(rows)}")
     print(f"Items with price: {len([r for r in rows if r.get('Sale-Price')])}")
-    print(f"Items with fees: {len([r for r in rows if r['Est-Fee'] is not None])}")
+    print(f"Items with charges: {len([r for r in rows if r.get('Charges') is not None])}")
     print(f"Items with L30 data: {len([r for r in rows if r.get('TotalOrderItems_L30') is not None])}")
     print(f"Total time: {elapsed:.1f}s")
     print("=" * 60)

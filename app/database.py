@@ -92,7 +92,7 @@ def get_product_details_by_asin(cursor, asin_list):
                 ir.Category,
                 ir.ItemName
             FROM ProductMapping pm
-            LEFT JOIN InventoryReport ir ON pm.ssku = ir.PartNumber
+            LEFT JOIN InventoryReportCopy ir ON pm.ssku = ir.PartNumber
             WHERE pm.asin IN ({placeholders})
         """
         
@@ -265,7 +265,7 @@ def bulk_upsert_fba_data(cursor, fba_rows):
     except:
         pass
 
-    # Build staging rows
+    # Build staging rows using the new schema: Charges, Est-VAT, Est-Net, Profit
     staging_rows = []
     for row in fba_rows:
         sku = row.get("SKU")
@@ -288,16 +288,16 @@ def bulk_upsert_fba_data(cursor, fba_rows):
             row.get("UnitsRefunded_L30"),
             row.get("BuyBoxPercentage_L30"),
             row.get("Sale-Price"),
-            row.get("Est-Fee"),
-            row.get("Est-FBA Fee"),
+            row.get("Charges"),
             row.get("Est-VAT"),
             row.get("Est-Net"),
+            row.get("Profit"),
         ))
 
     if not staging_rows:
         return 0
 
-    # Create temp table
+    # Create temp table matching new staging columns
     cursor.execute("""
         SET NOCOUNT ON;
         IF OBJECT_ID('tempdb..#TempFBA') IS NOT NULL DROP TABLE #TempFBA;
@@ -318,14 +318,14 @@ def bulk_upsert_fba_data(cursor, fba_rows):
             UnitsRefunded_L30 INT,
             BuyBoxPercentage_L30 FLOAT,
             Sale_Price FLOAT,
-            Est_Fee FLOAT,
-            Est_FBA_Fee FLOAT,
+            Charges FLOAT,
             Est_VAT FLOAT,
-            Est_Net FLOAT
+            Est_Net FLOAT,
+            Profit FLOAT
         );
     """)
 
-    # Bulk insert
+    # Bulk insert (20 placeholders)
     cursor.executemany("""
         INSERT INTO #TempFBA VALUES (
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
@@ -334,11 +334,11 @@ def bulk_upsert_fba_data(cursor, fba_rows):
 
     print(f"[bulk_upsert_fba_data] Bulk inserted {len(staging_rows)} rows into #TempFBA")
 
-    # MERGE with direct OUTPUT (NO table variable)
+    # MERGE into target using new columns (Charges, Est-VAT, Est-Net, Profit)
     merge_sql = """
         SET NOCOUNT ON;
 
-        MERGE INTO spapi_app_user.ProductMappingTest AS target
+        MERGE INTO spapi_app_user.FBAProductSummary AS target
         USING #TempFBA AS src
           ON target.FNSKU = src.FNSKU
         WHEN MATCHED THEN
@@ -358,27 +358,27 @@ def bulk_upsert_fba_data(cursor, fba_rows):
                 target.UnitsRefunded_L30 = src.UnitsRefunded_L30,
                 target.BuyBoxPercentage_L30 = src.BuyBoxPercentage_L30,
                 target.[Sale-Price] = src.Sale_Price,
-                target.[Est-Fee] = src.Est_Fee,
-                target.[Est-FBA Fee] = src.Est_FBA_Fee,
+                target.Charges = src.Charges,
                 target.[Est-VAT] = src.Est_VAT,
                 target.[Est-Net] = src.Est_Net,
+                target.Profit = src.Profit,
                 target.fba_updated_at = GETDATE()
         WHEN NOT MATCHED BY TARGET THEN
             INSERT (sku, asin, ssku, FNSKU, [FBA-Stock], [Sellable-Qty], [Unsellable-Qty],
                     Title, COG, Brand, Category,
                     TotalOrderItems_L30, OrderedProductSales_L30, UnitsRefunded_L30, BuyBoxPercentage_L30,
-                    [Sale-Price], [Est-Fee], [Est-FBA Fee], [Est-VAT], [Est-Net], fba_updated_at)
+                    [Sale-Price], Charges, [Est-VAT], [Est-Net], Profit, fba_updated_at)
             VALUES (src.SKU, src.ASIN, src.SSKU, src.FNSKU, src.FBA_Stock, src.Sellable_Qty, src.Unsellable_Qty,
                     src.Title, src.COG, src.Brand, src.Category,
                     src.TotalOrderItems_L30, src.OrderedProductSales_L30, src.UnitsRefunded_L30, src.BuyBoxPercentage_L30,
-                    src.Sale_Price, src.Est_Fee, src.Est_FBA_Fee, src.Est_VAT, src.Est_Net, GETDATE())
+                    src.Sale_Price, src.Charges, src.Est_VAT, src.Est_Net, src.Profit, GETDATE())
         OUTPUT $action;
 
         DROP TABLE #TempFBA;
     """
 
     cursor.execute(merge_sql)
-    actions = cursor.fetchall()  # NOW SAFE
+    actions = cursor.fetchall()  # safe to fetch OUTPUT
 
     # Count UPDATE/INSERT
     updated = sum(1 for a in actions if a[0] == "UPDATE")
@@ -387,3 +387,51 @@ def bulk_upsert_fba_data(cursor, fba_rows):
     print(f"[bulk_upsert_fba_data] Completed (Updated: {updated}, Inserted: {inserted})")
 
     return updated + inserted
+
+def get_cached_fees(cursor, fee_items):
+    """
+    fee_items: list of (sku, asin, price)
+    Returns dict keyed by (sku, asin, price)
+    """
+    if not fee_items:
+        return {}
+
+    results = {}
+
+    # Deduplicate
+    unique_items = list(set(fee_items))
+
+    # SQL Server parameter limit safe batching
+    BATCH_SIZE = 1000
+
+    for i in range(0, len(unique_items), BATCH_SIZE):
+        batch = unique_items[i:i + BATCH_SIZE]
+
+        params = []
+        where_clauses = []
+
+        for (sku, asin, price) in batch:
+            where_clauses.append("(SKU = ? AND ASIN = ?)")
+            params.extend([sku, asin])
+
+        sql = f"""
+            SELECT SKU, ASIN, Price,
+                   ReferralFee, FBAFee, Charges, VAT, Net, COG, Profit
+            FROM FeeEstimatesCache
+            WHERE {" OR ".join(where_clauses)}
+        """
+
+        cursor.execute(sql, params)
+        for row in cursor.fetchall():
+            key = (row.SKU, row.ASIN, row.Price)
+            results[key] = {
+                "ReferralFee": row.ReferralFee,
+                "FBAFee": row.FBAFee,
+                "Charges": row.Charges,
+                "VAT": row.VAT,
+                "Net": row.Net,
+                "COG": row.COG,
+                "Profit": row.Profit,
+            }
+
+    return results

@@ -13,8 +13,8 @@ from datetime import datetime
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from dotenv import load_dotenv
-load_dotenv()
+from . import config
+config.load_env()
 
 from app.fba.main import fba_report
 
