@@ -294,32 +294,6 @@ def test_l30(asin: str = None):
         "l30_sample": {k: l30_data[k] for k in list(l30_asins)[:10]},
     }
 
-@router.get("/test-listings-item-raw")
-async def test_get_listings_item_raw(seller_id: str = None, sku: str = "SDSSDH3-2T00-G26"):
-    """
-    Fetch raw Listings API response for a single SKU.
-    Example:
-      /test-listings-item-raw?sku=MYSKU
-      /test-listings-item-raw?seller_id=ABCDE&sku=MYSKU
-    """
-    # Prefer explicit query param, otherwise fall back to env var
-    seller_id = seller_id or os.getenv("SELLER_ID")
-    if not seller_id:
-        return {"error": "seller_id not provided and SELLER_ID env var is not set"}
-
-    if not sku:
-        return {"error": "Provide sku query parameter"}
-
-    path = f"/listings/2021-08-01/items/{seller_id}/{sku}"
-
-    resp = spapi_request("GET", path, params={"marketplaceIds": [MARKETPLACE_ID], 
-                                              "includedData": ["fulfillmentAvailability"]})
-
-    return {
-        "input": {"seller_id": seller_id, "sku": sku, "path": path},
-        "raw_response": resp
-    }
-
 @router.get("/test-active-listings")
 def test_active_listings():
     """
@@ -415,3 +389,88 @@ def test_active_listings():
     # 6. Return ONE list only
     # -----------------------------
     return filtered
+
+@router.get("/test-returns-raw-full")
+async def test_returns_raw_full(days: int = 30):
+    """
+    Fetch GET_FLAT_FILE_RETURNS_DATA_BY_RETURN_DATE for last X days
+    and return the full raw text exactly as Amazon sends it.
+    """
+
+    from datetime import datetime, timedelta, timezone
+    import gzip, requests
+
+    end_dt = datetime.now(timezone.utc)
+    start_dt = end_dt - timedelta(days=days)
+
+    print(f"[returns-raw-full] Requesting report for {start_dt.isoformat()} -> {end_dt.isoformat()}")
+
+    # 1. Create report
+    create_resp = spapi_request(
+        method="POST",
+        path="/reports/2021-06-30/reports",
+        body={
+            "reportType": "GET_FLAT_FILE_RETURNS_DATA_BY_RETURN_DATE",
+            "dataStartTime": start_dt.isoformat(),
+            "dataEndTime": end_dt.isoformat(),
+            "marketplaceIds": [MARKETPLACE_ID],
+        }
+    )
+
+    if not create_resp or "reportId" not in create_resp:
+        return {"error": "Failed to create report", "response": create_resp}
+
+    report_id = create_resp["reportId"]
+    print(f"[returns-raw-full] Report requested: {report_id}")
+
+    # 2. Poll until DONE
+    for _ in range(60):
+        status_resp = spapi_request(
+            method="GET",
+            path=f"/reports/2021-06-30/reports/{report_id}",
+        )
+        if status_resp and status_resp.get("processingStatus") == "DONE":
+            break
+        await asyncio.sleep(5)
+    else:
+        return {"error": "Timeout waiting for report"}
+
+    document_id = status_resp.get("reportDocumentId")
+    if not document_id:
+        return {"error": "No reportDocumentId", "response": status_resp}
+
+    print(f"[returns-raw-full] Document ready: {document_id}")
+
+    # 3. Get download URL
+    doc_resp = spapi_request(
+        method="GET",
+        path=f"/reports/2021-06-30/documents/{document_id}"
+    )
+    if not doc_resp or "url" not in doc_resp:
+        return {"error": "Failed to get document URL", "response": doc_resp}
+
+    url = doc_resp["url"]
+    compression = doc_resp.get("compressionAlgorithm")
+
+    print(f"[returns-raw-full] Downloading raw document...")
+
+    # 4. Download raw bytes
+    raw_bytes = requests.get(url).content
+    raw_len = len(raw_bytes)
+
+    # 5. Decode raw text
+    try:
+        if compression == "GZIP":
+            decoded = gzip.decompress(raw_bytes).decode("utf-8", errors="replace")
+        else:
+            decoded = raw_bytes.decode("utf-8", errors="replace")
+    except Exception as e:
+        decoded = f"[decode error: {e}]"
+
+    return {
+        "compression": compression,
+        "raw_bytes_length": raw_len,
+        "raw_text": decoded,
+        "start": start_dt.isoformat(),
+        "end": end_dt.isoformat(),
+    }

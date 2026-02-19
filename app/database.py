@@ -374,7 +374,7 @@ def bulk_upsert_fba_data(cursor, fba_rows):
                 target.[Est-VAT] = src.Est_VAT,
                 target.[Est-Net] = src.Est_Net,
                 target.Profit = src.Profit,
-                target.fba_updated_at = GETDATE()
+                target.fba_updated_at = DATEADD(HOUR, 4, GETUTCDATE())
         WHEN NOT MATCHED BY TARGET THEN
             INSERT (sku, asin, ssku, FNSKU, [FBA-Stock], [Sellable-Qty], [Unsellable-Qty],
                     Title, COG, Brand, Category,
@@ -383,7 +383,7 @@ def bulk_upsert_fba_data(cursor, fba_rows):
             VALUES (src.SKU, src.ASIN, src.SSKU, src.FNSKU, src.FBA_Stock, src.Sellable_Qty, src.Unsellable_Qty,
                     src.Title, src.COG, src.Brand, src.Category,
                     src.TotalOrderItems_L30, src.OrderedProductSales_L30, src.UnitsRefunded_L30, src.BuyBoxPercentage_L30,
-                    src.Sale_Price, src.Charges, src.Est_VAT, src.Est_Net, src.Profit, GETDATE())
+                    src.Sale_Price, src.Charges, src.Est_VAT, src.Est_Net, src.Profit, DATEADD(HOUR, 4, GETUTCDATE())
         OUTPUT $action;
 
         DROP TABLE #TempFBA;

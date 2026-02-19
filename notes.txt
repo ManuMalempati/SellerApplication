@@ -160,3 +160,5 @@ Profit calculations now follow a stable lookup order:
 
 This approach ensures the system remains reliable regardless of Tally’s refresh timing.
 
+
+As far as I know GET_FLAT_FILE_ALL_ORDERS_DATA_BY_LAST_UPDATE_GENERAL has no canonically unique row identifier. Rather, the way it works is that if the amazon-order-id for a given order appears in the report, then every row for that amazon-order-id must appear in the new report. So any old rows for that amazon-order-id should be deleted, and then the new ones for that amazon-order-id are written out to the report.
