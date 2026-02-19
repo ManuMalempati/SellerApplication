@@ -31,16 +31,13 @@ def rate_limit():
 
     now = time.time()
 
-    # Refill tokens every 1 second
     if now - _last_call_time >= 1:
         _burst_tokens = min(2, _burst_tokens + 1)
         _last_call_time = now
 
-    # If no tokens, wait
     if _burst_tokens == 0:
         sleep_time = 1 - (now - _last_call_time)
         if sleep_time > 0:
-            print(f"[DEBUG] Rate limit hit, sleeping {sleep_time:.2f}s")
             time.sleep(sleep_time)
         _burst_tokens = 1
         _last_call_time = time.time()
@@ -65,7 +62,6 @@ def _extract_from_response(response):
         return None
 
     if "errors" in response:
-        print(f"[DEBUG] API returned errors: {response.get('errors')}")
         return {"errors": response.get("errors")}
 
     result_root = (
@@ -76,7 +72,6 @@ def _extract_from_response(response):
 
     status_value = result_root.get("Status")
     if status_value and status_value != "Success":
-        print(f"[DEBUG] FeesEstimateResult status not Success: {status_value}")
         return None
 
     fees_section = (
@@ -87,7 +82,6 @@ def _extract_from_response(response):
 
     total_section = fees_section.get("TotalFeesEstimate") or {}
     total_fees_amount = _safe_float(total_section.get("Amount"))
-    total_fees_currency = total_section.get("CurrencyCode")
 
     referral_fee_net = 0.0
     fba_fee_net = 0.0
@@ -106,7 +100,7 @@ def _extract_from_response(response):
 
             if "referral" in fee_type:
                 referral_fee_net += final_fee_amount
-            elif fee_type.startswith("fba") or "fba" in fee_type or "pick" in fee_type:
+            elif "fba" in fee_type or "pick" in fee_type:
                 fba_fee_net += final_fee_amount
     else:
         referral_fee_net = _safe_float(
@@ -124,7 +118,6 @@ def _extract_from_response(response):
     return {
         "raw": response,
         "net": {
-            "CurrencyCode": total_fees_currency,
             "TotalAmazonFees": total_fees_amount,
             "ReferralFees": referral_fee_net,
             "FBAFees": fba_fee_net,
@@ -133,9 +126,7 @@ def _extract_from_response(response):
 
 
 def _request_fees(sku, asin, price):
-    print(f"[DEBUG] Requesting fees for SKU={sku}, ASIN={asin}, Price={price}")
-
-    rate_limit()  # <-- RATE LIMITER HERE
+    rate_limit()
 
     # SKU-based request
     if sku:
@@ -163,11 +154,10 @@ def _request_fees(sku, asin, price):
 
             extracted = _extract_from_response(resp)
             if extracted is not None:
-                print(f"[DEBUG] SKU-based fee success for {sku}")
                 return extracted
 
-        except Exception as e:
-            print(f"[DEBUG] SKU-based fee request failed for {sku}: {e}")
+        except Exception:
+            pass
 
     # ASIN-based request
     if asin:
@@ -194,13 +184,11 @@ def _request_fees(sku, asin, price):
 
             extracted = _extract_from_response(resp)
             if extracted is not None:
-                print(f"[DEBUG] ASIN-based fee success for {asin}")
                 return extracted
 
-        except Exception as e:
-            print(f"[DEBUG] ASIN-based fee request failed for {asin}: {e}")
+        except Exception:
+            pass
 
-    print(f"[DEBUG] No fee estimate returned for SKU={sku}, ASIN={asin}")
     return None
 
 
@@ -213,27 +201,20 @@ def get_fees_estimate_local(sku, asin, price):
 
     while attempt < FEE_RETRY_ATTEMPTS:
         attempt += 1
-        print(f"[DEBUG] Fee attempt {attempt}/{FEE_RETRY_ATTEMPTS} for {sku} {asin}")
 
         result = _request_fees(sku, asin, price)
         last_result = result
 
         if isinstance(result, dict) and "errors" in result:
-            print(f"[DEBUG] API error for {sku}: {result}")
             return result
 
         if result is None:
-            print(f"[DEBUG] NULL result, retrying {sku} {asin}")
             continue
 
         net = result.get("net") or {}
         if net.get("ReferralFees") or net.get("FBAFees"):
-            print(f"[DEBUG] Valid fees received for {sku}")
             return result
 
-        print(f"[DEBUG] Zero-fee result, retrying {sku} {asin}")
-
-    print(f"[DEBUG] Final fallback result for {sku}")
     return last_result or {"errors": [{"code": "NoEstimate", "message": "No fees estimate returned"}]}
 
 
@@ -272,7 +253,7 @@ async def fetch_active_listings_report():
 # Main: refresh fee cache
 # ---------------------------------------------------------
 async def refresh_fee_cache():
-    print("Refreshing FeeEstimatesCache...")
+    print("=== FeeEstimatesCache Refresh Started ===")
 
     # ---------------------------------------------------------
     # 1. Load Active Listings
@@ -294,16 +275,16 @@ async def refresh_fee_cache():
             active_items.append((sku, asin, price))
             asin_list.add(asin)
 
-    print(f"[DEBUG] Loaded {len(active_items)} active SKUs")
+    print(f"Loaded {len(active_items)} active SKUs")
 
     if not active_items:
-        print("No active listings found — aborting cache refresh.")
+        print("No active listings found — aborting.")
         return
 
     # ---------------------------------------------------------
     # 2. Load product details (COG)
     # ---------------------------------------------------------
-    print("[DEBUG] Loading product details for COG...")
+    print("Loading product details...")
     conn = connect_database()
     cursor = conn.cursor()
     product_details = get_product_details_by_asin(cursor, list(asin_list)) or {}
@@ -321,33 +302,35 @@ async def refresh_fee_cache():
         if cog is not None:
             items_with_cog.append((sku, asin, price, cog))
 
-    print(f"[DEBUG] {len(items_with_cog)} SKUs have valid COG")
+    print(f"{len(items_with_cog)} SKUs have valid COG")
 
     if not items_with_cog:
-        print("No SKUs with COG found — aborting cache refresh.")
+        print("No SKUs with COG — aborting.")
         return
 
     # ---------------------------------------------------------
     # 4. Call SP-API fee estimate (ONE BY ONE)
     # ---------------------------------------------------------
-    print(f"[DEBUG] Estimating fees for {len(items_with_cog)} SKUs...")
+    print(f"Estimating fees for {len(items_with_cog)} SKUs...")
 
     fees = {}
     total = len(items_with_cog)
 
     for idx, (sku, asin, price, _) in enumerate(items_with_cog, start=1):
-        print(f"[PROGRESS] {idx}/{total} -> Fee request for {sku} {asin}")
+        if idx % 50 == 0 or idx == 1:
+            print(f"  Progress: {idx}/{total}")
+
         try:
             result = get_fees_estimate_local(sku, asin, price)
             fees[(sku, asin, price)] = result
         except Exception as e:
-            print(f"[ERROR] Fee estimate failed for {sku} {asin} {price}: {e}")
+            print(f"[ERROR] Fee estimate failed for {sku}: {e}")
             fees[(sku, asin, price)] = {}
 
     # ---------------------------------------------------------
     # 5. Compute Charges, VAT, Net, Profit
     # ---------------------------------------------------------
-    print("[DEBUG] Computing financials...")
+    print("Computing financials...")
     cache_rows = []
 
     for (sku, asin, price, cog) in items_with_cog:
@@ -375,12 +358,12 @@ async def refresh_fee_cache():
             profit
         ))
 
-    print(f"[DEBUG] Prepared {len(cache_rows)} cache rows")
+    print(f"Prepared {len(cache_rows)} rows for DB")
 
     # ---------------------------------------------------------
     # 6. Upsert into FeeEstimatesCache
     # ---------------------------------------------------------
-    print("[DEBUG] Upserting into FeeEstimatesCache...")
+    print("Saving to FeeEstimatesCache...")
     conn = connect_database()
     cursor = conn.cursor()
     cursor.fast_executemany = True
@@ -412,8 +395,4 @@ async def refresh_fee_cache():
     cursor.close()
     conn.close()
 
-    print("[DEBUG] FeeEstimatesCache refresh complete.")
-
-
-if __name__ == "__main__":
-    asyncio.run(refresh_fee_cache())
+    print("=== FeeEstimatesCache Refresh Complete ===")
