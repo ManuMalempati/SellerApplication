@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, List, Tuple
 
 # Use centralized config
-from . import config
+import config
 # Ensure repo root is on sys.path (preserve previous behavior)
 REPO_ROOT = config.REPO_ROOT
 if REPO_ROOT not in sys.path:
