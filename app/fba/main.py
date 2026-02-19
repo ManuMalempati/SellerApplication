@@ -195,7 +195,7 @@ async def fba_report(save_to_db=True):
     print("[DEBUG] Cached fee lookup complete.")
 
     # ---------------------------------------------------------
-    # Apply cached fees
+    # Apply cached fees (FLOAT → FLOAT)
     # ---------------------------------------------------------
     for r in rows:
         price = r.get("Sale-Price")
@@ -215,12 +215,12 @@ async def fba_report(save_to_db=True):
             r["Profit"] = None
             continue
 
-        charges = round(f.get("Charges") or 0, 2)
-        vat = round(price * GOVT_VAT_RATE, 2)
-        est_net = round(price - charges - vat, 2)
+        charges = f.get("Charges") or 0
+        vat = price * GOVT_VAT_RATE
+        est_net = price - charges - vat
 
         cog = parse_cost(r.get("COG"))
-        profit = round(est_net - (cog or 0), 2) if cog is not None else None
+        profit = est_net - (cog or 0) if cog is not None else None
 
         r["Charges"] = charges
         r["Est-VAT"] = vat
