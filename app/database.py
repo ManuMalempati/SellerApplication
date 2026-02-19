@@ -287,10 +287,10 @@ def bulk_upsert_fba_data(cursor, fba_rows):
             row.get("UnitsRefunded_L30"),
             row.get("BuyBoxPercentage_L30"),
             row.get("Sale-Price"),
-            round(row.get("Charges") or 0, 2),
-            round(row.get("Est-VAT") or 0, 2),
-            round(row.get("Est-Net") or 0, 2),
-            round(row.get("Profit") or 0, 2),
+            row.get("Charges") or 0,
+            row.get("Est-VAT") or 0,
+            row.get("Est-Net") or 0,
+            row.get("Profit") or 0,
         ))
 
     if not staging_rows:
