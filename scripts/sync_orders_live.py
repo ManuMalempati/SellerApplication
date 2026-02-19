@@ -5,7 +5,9 @@ import asyncio
 import datetime as dt
 import time
 
-from dotenv import load_dotenv
+from . import config
+config.load_env()
+
 from app.orders import get_orders
 from app.database import connect_database, replace_order_items_for_order
 
@@ -78,8 +80,8 @@ async def fetch_and_upsert():
         cur.close()
         conn.close()
 
-    # Overlap hours from env
-    overlap_hours = int(os.getenv("SYNC_OVERLAP_HOURS", "2"))
+    # Overlap hours from config
+    overlap_hours = config.SYNC_OVERLAP_HOURS
 
     effective_from = (last_sync - dt.timedelta(hours=overlap_hours)).replace(microsecond=0)
     last_updated_after = effective_from.strftime("%Y-%m-%dT%H:%M:%SZ")

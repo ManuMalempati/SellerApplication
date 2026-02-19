@@ -12,7 +12,6 @@ from ..database import (
 )
 from .config import GOVT_VAT_RATE
 from .helpers import request_report, wait_for_report, download_report
-from .fees import run_fees_batch
 from .sales_traffic import fetch_l30_sales_traffic
 
 
