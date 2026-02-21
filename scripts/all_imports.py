@@ -4,10 +4,10 @@ from datetime import datetime
 import os
 
 # Import your individual pipelines
-from ..app.returns.returns import run_returns_import
-from ..app.returns.reimbursements import run_reimbursements_import
-from ..app.returns.removal import run_removal_orders_import
-from ..app.returns.removalshipments import run_removal_shipments_import
+from app.returns.returns import run_returns_import
+from app.returns.reimbursements import run_reimbursements_import
+from app.returns.removal import run_removal_orders_import
+from app.returns.removalshipments import run_removal_shipments_import
 
 # Default days (environment override supported)
 days = int(os.getenv("RETURNS_DATA_DAYS", 35))
