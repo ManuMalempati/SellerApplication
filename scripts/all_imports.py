@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+import sys
+from datetime import datetime
+import os
+
+# Import your individual pipelines
+from .returns import run_returns_import
+from .reimbursements import run_reimbursements_import
+from .removal import run_removal_orders_import
+from .removalshipments import run_removal_shipments_import
+
+# Default days (environment override supported)
+days = int(os.getenv("RETURNS_DATA_DAYS", 35))
+
+
+def run_all_imports(days=365):
+    print("==============================================")
+    print(f"RUNNING ALL FBA IMPORTS FOR LAST {days} DAYS")
+    print(f"START TIME: {datetime.utcnow().isoformat()}Z")
+    print("==============================================\n")
+
+    try:
+        print(">>> Running RETURNS import...")
+        run_returns_import(days=days)
+        print(">>> RETURNS import complete.\n")
+
+        print(">>> Running REIMBURSEMENTS import...")
+        run_reimbursements_import(days=days)
+        print(">>> REIMBURSEMENTS import complete.\n")
+
+        print(">>> Running REMOVAL ORDERS import...")
+        run_removal_orders_import(days=days)
+        print(">>> REMOVAL ORDERS import complete.\n")
+
+        print(">>> Running REMOVAL SHIPMENTS import...")
+        run_removal_shipments_import(days=days)
+        print(">>> REMOVAL SHIPMENTS import complete.\n")
+
+    except Exception as e:
+        print("==============================================")
+        print("FATAL ERROR IN RUN_ALL_IMPORTS")
+        print("==============================================")
+        print(e)
+        sys.exit(1)
+
+    print("==============================================")
+    print("ALL IMPORTS COMPLETED SUCCESSFULLY")
+    print(f"END TIME: {datetime.utcnow().isoformat()}Z")
+    print("==============================================")
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    run_all_imports(days=days)

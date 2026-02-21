@@ -8,6 +8,7 @@ import csv
 import requests
 import io
 import asyncio
+from bs4 import BeautifulSoup
 
 router = APIRouter()
 
@@ -133,344 +134,93 @@ async def test_pricing_raw(
 def throttle():
     time.sleep(0.5)
 
-@router.get("/test-sales-traffic-filtered")
-def test_sales_traffic_filtered():
 
-    # -----------------------------
-    # 1. Build L-30 date range
-    # -----------------------------
-    end = datetime.utcnow()
-    start = end - timedelta(days=30)
-
-    dataStartTime = start.strftime("%Y-%m-%dT00:00:00Z")
-    dataEndTime = end.strftime("%Y-%m-%dT00:00:00Z")
-
-    print(f"Requesting L-30 days: {dataStartTime} -> {dataEndTime}")
-
-    # -----------------------------
-    # 2. Request the report
-    # -----------------------------
-    throttle()
-    body = {
-        "reportType": "GET_SALES_AND_TRAFFIC_REPORT",
-        "dataStartTime": dataStartTime,
-        "dataEndTime": dataEndTime,
-        "reportOptions": {
-            "dateGranularity": "DAY",
-            "asinGranularity": "CHILD"
-        },
-        "marketplaceIds": [MARKETPLACE_ID]
-    }
-
-    resp = spapi_request(
-        "POST",
-        "/reports/2021-06-30/reports",
-        body=body
-    ) or {}
-
-    report_id = resp.get("reportId")
-    if not report_id:
-        return {"error": "No reportId returned", "response": resp}
-
-    print(f"Report requested: {report_id}")
-
-    # -----------------------------
-    # 3. Poll until DONE
-    # -----------------------------
-    while True:
-        throttle()
-        status_resp = spapi_request(
-            "GET",
-            f"/reports/2021-06-30/reports/{report_id}"
-        ) or {}
-
-        status = status_resp.get("processingStatus")
-        print(f"Status: {status}")
-
-        if status == "DONE":
-            document_id = status_resp.get("reportDocumentId")
-            break
-
-        time.sleep(2)
-
-    print(f"Report ready: {document_id}")
-
-    # -----------------------------
-    # 4. Download the JSON
-    # -----------------------------
-    throttle()
-    doc = spapi_request(
-        "GET",
-        f"/reports/2021-06-30/documents/{document_id}"
-    ) or {}
-
-    url = doc.get("url")
-    raw = requests.get(url).content
-
-    if doc.get("compressionAlgorithm") == "GZIP":
-        import gzip
-        raw = gzip.decompress(raw)
-
-    report_json = raw.decode("utf-8")
-    import json
-    data = json.loads(report_json)
-
-    # -----------------------------
-    # 5. Extract L-30 totals per ASIN
-    # -----------------------------
-    asin_rows = data.get("salesAndTrafficByAsin", [])
-
-    dedup = {}  # ⭐ dict keyed by ASIN
-
-    for row in asin_rows:
-        asin = row.get("parentAsin") or row.get("childAsin")
-        if not asin:
-            continue
-
-        sales = row.get("salesByAsin", {})
-        traffic = row.get("trafficByAsin", {})
-
-        dedup[asin] = {
-            "ASIN": asin,
-            "TotalOrderItems_L30": sales.get("totalOrderItems", 0),
-            "OrderedProductSales_L30": sales.get("orderedProductSales", 0),
-            "UnitsRefunded_L30": sales.get("unitsRefunded", 0),
-            "BuyBoxPercentage_L30": traffic.get("buyBoxPercentage", 0)
-        }
-
-    results = list(dedup.values())
-
-    print(f"Extracted {len(results)} ASIN rows (after ASIN + dedupe filter)")
-
-    return {
-        "count": len(results),
-        "items": results
-    }
-
-
-from .fba.sales_traffic import fetch_l30_sales_traffic
-from .database import connect_database
-@router.get("/test-l30")
-def test_l30(asin: str = None):
+@router.get("/test-buybox")
+async def test_pricing_raw(asin: str):
     """
-    Test endpoint to inspect L-30 Sales & Traffic data.
-    Also checks how many ASINs from FBAProductSummary
-    appear in the L30 report.
-    """
-    # 1. Fetch L30 data from Amazon
-    l30_data = fetch_l30_sales_traffic()
-    l30_asins = set(l30_data.keys())
-
-    # 2. Load ASINs from FBAProductSummary
-    conn = connect_database()
-    cursor = conn.cursor()
-    cursor.execute("SELECT DISTINCT asin FROM FBAProductSummary WHERE asin IS NOT NULL")
-    pm_asins = {row[0] for row in cursor.fetchall()}
-    cursor.close()
-    conn.close()
-
-    # 3. Compute intersection
-    overlap = l30_asins.intersection(pm_asins)
-
-    # 4. If user requested a specific ASIN
-    if asin:
-        asin = asin.strip()
-        return {
-            "requested_asin": asin,
-            "exists_in_l30": asin in l30_asins,
-            "exists_in_product_mapping": asin in pm_asins,
-            "l30_value": l30_data.get(asin),
-            "total_l30_asins": len(l30_asins),
-            "total_pm_asins": len(pm_asins),
-            "overlap_count": len(overlap),
-        }
-
-    # 5. Default summary response
-    return {
-        "total_l30_asins": len(l30_asins),
-        "total_pm_asins": len(pm_asins),
-        "overlap_count": len(overlap),
-        "sample_overlap": list(overlap)[:20],
-        "l30_sample": {k: l30_data[k] for k in list(l30_asins)[:10]},
-    }
-
-@router.get("/test-active-listings")
-def test_active_listings():
-    """
-    Requests the Active Listings Report (GET_MERCHANT_LISTINGS_DATA)
-    and returns ALL rows, filtered to the important attributes only.
+    Test endpoint to fetch RAW pricing output for a given ASIN.
+    Returns the exact SP-API payload for debugging.
     """
 
-    # -----------------------------
-    # 1. Request the report
-    # -----------------------------
-    body = {
-        "reportType": "GET_MERCHANT_LISTINGS_DATA",
-        "marketplaceIds": [MARKETPLACE_ID],
-        "reportOptions": {
-            "preferredReportDocumentLocale": "en_US"
-        }
-    }
-
-    print("[active-listings] Requesting report...")
-    resp = spapi_request(
-        "POST",
-        "/reports/2021-06-30/reports",
-        body=body
-    ) or {}
-
-    report_id = resp.get("reportId")
-    if not report_id:
-        return {"error": "No reportId returned", "response": resp}
-
-    print(f"[active-listings] Report requested: {report_id}")
-
-    # -----------------------------
-    # 2. Poll until DONE
-    # -----------------------------
-    while True:
-        time.sleep(1)
-        status_resp = spapi_request(
-            "GET",
-            f"/reports/2021-06-30/reports/{report_id}"
-        ) or {}
-
-        status = status_resp.get("processingStatus")
-        print(f"[active-listings] Status: {status}")
-
-        if status == "DONE":
-            document_id = status_resp.get("reportDocumentId")
-            break
-
-        if status in ("CANCELLED", "FATAL"):
-            return {"error": "Report failed", "status": status_resp}
-
-    print(f"[active-listings] Report ready: {document_id}")
-
-    # -----------------------------
-    # 3. Download the document
-    # -----------------------------
-    doc = spapi_request(
-        "GET",
-        f"/reports/2021-06-30/documents/{document_id}"
-    ) or {}
-
-    url = doc.get("url")
-    raw = requests.get(url).content
-
-    if doc.get("compressionAlgorithm") == "GZIP":
-        raw = gzip.decompress(raw)
-
-    # -----------------------------
-    # 4. Parse the TSV
-    # -----------------------------
-    text = raw.decode("utf-8", errors="replace")
-    reader = csv.DictReader(io.StringIO(text), delimiter="\t")
-
-    rows = list(reader)
-    print(f"[active-listings] Parsed {len(rows)} rows")
-
-    # -----------------------------
-    # 5. Filter to important attributes ONLY
-    # -----------------------------
-    filtered = []
-    for r in rows:
-        filtered.append({
-            "item-name": r.get("item-name"),
-            "listing-id": r.get("listing-id"),
-            "seller-sku": r.get("seller-sku"),
-            "price": r.get("price"),
-            "quantity": r.get("quantity"),
-            "fulfillment-channel": r.get("fulfillment-channel"),
-            "item-condition": r.get("item-condition"),
-        })
-
-    # -----------------------------
-    # 6. Return ONE list only
-    # -----------------------------
-    return filtered
-
-@router.get("/test-returns-raw-full")
-async def test_returns_raw_full(days: int = 30):
-    """
-    Fetch GET_FLAT_FILE_RETURNS_DATA_BY_RETURN_DATE for last X days
-    and return the full raw text exactly as Amazon sends it.
-    """
-
-    from datetime import datetime, timedelta, timezone
-    import gzip, requests
-
-    end_dt = datetime.now(timezone.utc)
-    start_dt = end_dt - timedelta(days=days)
-
-    print(f"[returns-raw-full] Requesting report for {start_dt.isoformat()} -> {end_dt.isoformat()}")
-
-    # 1. Create report
-    create_resp = spapi_request(
-        method="POST",
-        path="/reports/2021-06-30/reports",
-        body={
-            "reportType": "GET_FLAT_FILE_RETURNS_DATA_BY_RETURN_DATE",
-            "dataStartTime": start_dt.isoformat(),
-            "dataEndTime": end_dt.isoformat(),
-            "marketplaceIds": [MARKETPLACE_ID],
-        }
-    )
-
-    if not create_resp or "reportId" not in create_resp:
-        return {"error": "Failed to create report", "response": create_resp}
-
-    report_id = create_resp["reportId"]
-    print(f"[returns-raw-full] Report requested: {report_id}")
-
-    # 2. Poll until DONE
-    for _ in range(60):
-        status_resp = spapi_request(
-            method="GET",
-            path=f"/reports/2021-06-30/reports/{report_id}",
-        )
-        if status_resp and status_resp.get("processingStatus") == "DONE":
-            break
-        await asyncio.sleep(5)
-    else:
-        return {"error": "Timeout waiting for report"}
-
-    document_id = status_resp.get("reportDocumentId")
-    if not document_id:
-        return {"error": "No reportDocumentId", "response": status_resp}
-
-    print(f"[returns-raw-full] Document ready: {document_id}")
-
-    # 3. Get download URL
-    doc_resp = spapi_request(
-        method="GET",
-        path=f"/reports/2021-06-30/documents/{document_id}"
-    )
-    if not doc_resp or "url" not in doc_resp:
-        return {"error": "Failed to get document URL", "response": doc_resp}
-
-    url = doc_resp["url"]
-    compression = doc_resp.get("compressionAlgorithm")
-
-    print(f"[returns-raw-full] Downloading raw document...")
-
-    # 4. Download raw bytes
-    raw_bytes = requests.get(url).content
-    raw_len = len(raw_bytes)
-
-    # 5. Decode raw text
     try:
-        if compression == "GZIP":
-            decoded = gzip.decompress(raw_bytes).decode("utf-8", errors="replace")
-        else:
-            decoded = raw_bytes.decode("utf-8", errors="replace")
-    except Exception as e:
-        decoded = f"[decode error: {e}]"
+        params = {
+            "MarketplaceId": MARKETPLACE_ID,
+            "ItemCondition": "New"
+        }
 
-    return {
-        "compression": compression,
-        "raw_bytes_length": raw_len,
-        "raw_text": decoded,
-        "start": start_dt.isoformat(),
-        "end": end_dt.isoformat(),
-    }
+        # Call SP‑API
+        resp = spapi_request(
+            method="GET",
+            path=f"/products/pricing/v0/items/{asin}/offers",
+            params=params
+        )
+
+        return {
+            "asin": asin,
+            "raw_response": resp
+        }
+
+    except Exception as e:
+        return {
+            "asin": asin,
+            "error": str(e)
+        }
+
+
+@router.get("/test-seller-name")
+def test_seller_name(seller_id: str):
+
+    """
+    Fetch seller name from Amazon seller storefront page
+    """
+
+    import requests
+    from bs4 import BeautifulSoup
+
+    try:
+
+        url = f"https://www.amazon.ae/sp?seller={seller_id}"
+
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+
+        resp = requests.get(
+            url,
+            headers=headers,
+            timeout=15
+        )
+
+        resp.raise_for_status()
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # Method 1 (most reliable)
+        element = soup.select_one("#seller-name")
+
+        if not element:
+
+            # Method 2 (fallback)
+            element = soup.select_one("h1")
+
+        seller_name = element.get_text(strip=True) if element else None
+
+        return {
+            "seller_id": seller_id,
+            "seller_name": seller_name,
+            "status": "ok" if seller_name else "not_found"
+        }
+
+    except Exception as e:
+
+        return {
+            "seller_id": seller_id,
+            "seller_name": None,
+            "status": "error",
+            "error": str(e)
+        }

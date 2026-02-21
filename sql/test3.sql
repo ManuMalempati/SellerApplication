@@ -1,1 +1,2 @@
-SELECT * FROM OrderItems
+SELECT *
+FROM spapi_app_user.FBABuyBoxAnalysis;
