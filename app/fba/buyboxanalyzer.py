@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any
 
 import os
@@ -9,12 +9,20 @@ from dotenv import load_dotenv
 
 from ..database import connect_database
 from ..auth import spapi_request
-from ..store_name_scraper import get_seller_name   # <-- NEW
+from ..store_name_scraper import get_seller_name
 
 load_dotenv()
 
 MARKETPLACE_ID = os.getenv("MARKETPLACE_ID")
 SELLER_ID = os.getenv("SELLER_ID")
+
+
+# ---------------------------------------------------------
+# Time helper (UTC+4)
+# ---------------------------------------------------------
+
+def now_utc_plus_4():
+    return datetime.now(timezone.utc) + timedelta(hours=4)
 
 
 # ---------------------------------------------------------
@@ -90,7 +98,7 @@ class BuyBoxAnalysis:
             SELECT asin, Title
             FROM spapi_app_user.FBAProductSummary
             WHERE asin IS NOT NULL
-            AND [FBA-Stock] > 0
+            AND [Sellable-Qty] > 0
         """)
 
         rows = cursor.fetchall()
@@ -137,7 +145,7 @@ class BuyBoxAnalysis:
         # Winner
         winner = next((o for o in offers if o.is_buy_box_winner), None)
 
-        # Winner store name (NEW)
+        # Winner store name
         winner_store_name = (
             get_seller_name(winner.seller_id)
             if winner and winner.seller_id
@@ -183,7 +191,7 @@ class BuyBoxAnalysis:
             "lowest_price_amazon": lowest_amazon,
             "lowest_price_merchant": lowest_merchant,
 
-            "analysis_timestamp": datetime.now(timezone.utc),
+            "analysis_timestamp": now_utc_plus_4(),
             "error": None
         }
 

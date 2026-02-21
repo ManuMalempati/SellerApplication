@@ -1,2 +1,1 @@
-SELECT *
-FROM spapi_app_user.FBABuyBoxAnalysis;
+SELECT * FROM FBAProductSummary
