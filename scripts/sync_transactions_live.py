@@ -100,6 +100,14 @@ async def fetch_and_upsert():
         "postedBefore": posted_before,
     }
 
+    print("------------------------------------------------------------")
+    print("Starting LIVE transaction sync")
+    print(f"LastSuccessfulSyncUtc: {last_sync.isoformat()}")
+    print(f"EffectiveFrom (UTC):   {posted_after}")
+    print(f"EffectiveTo (UTC):     {posted_before}")
+    print("------------------------------------------------------------")
+
+    # Fetch transactions
     conn = connect_database()
     cur = conn.cursor()
     try:
@@ -108,15 +116,20 @@ async def fetch_and_upsert():
         cur.close()
         conn.close()
 
+    print(f"get_transactions returned {len(items) if items else 0} rows")
+
     if not items:
         update_last_sync_at(safe_end)
         return 0
+
+    print("Upserting transactions...")
 
     conn = connect_database()
     conn.autocommit = False
     cur = conn.cursor()
 
     try:
+        # 1. Delete all rows for these TransactionIds
         tids = [row["TransactionId"] for row in items]
         placeholders = ",".join("?" for _ in tids)
 
@@ -125,32 +138,34 @@ async def fetch_and_upsert():
             tids
         )
 
+        # 2. Prepare batch insert values
         insert_values = []
         for row in items:
             row["PostedDate"] = parse_posted_date(row["PostedDate"])
 
             insert_values.append((
-                row["TransactionId"],
-                row["PostedDate"],
-                row["TransactionType"],
-                row["TransactionStatus"],
-                row["AmazonOrderId"],
-                row["SellerSKU"],
-                row["ASIN"],
-                row["SSKU"],
-                row["QuantityShipped"],
-                safe_decimal(row["Principal"]),
-                safe_decimal(row["ShippingCharges"]),
-                safe_decimal(row["Promotions"]),
-                safe_decimal(row["FBAFees"]),
-                safe_decimal(row["Commission"]),
-                safe_decimal(row["FixedClosingFee"]),
-                safe_decimal(row["VariableClosingFee"]),
-                safe_decimal(row["ShippingChargeback"]),
-                safe_decimal(row["RefFee"]),
-                safe_decimal(row["Total"]),
+                row["TransactionId"],          # 1
+                row["PostedDate"],             # 2
+                row["TransactionType"],        # 3
+                row["TransactionStatus"],      # 4
+                row["AmazonOrderId"],          # 5
+                row["SellerSKU"],              # 6
+                row["ASIN"],                   # 7
+                row["SSKU"],                   # 8
+                row["QuantityShipped"],        # 9
+                safe_decimal(row["Principal"]),          # 10
+                safe_decimal(row["ShippingCharges"]),    # 11
+                safe_decimal(row["Promotions"]),         # 12
+                safe_decimal(row["FBAFees"]),            # 13
+                safe_decimal(row["Commission"]),         # 14
+                safe_decimal(row["FixedClosingFee"]),    # 15
+                safe_decimal(row["VariableClosingFee"]), # 16
+                safe_decimal(row["ShippingChargeback"]), # 17
+                safe_decimal(row["RefFee"]),             # 18
+                safe_decimal(row["Total"]),              # 19
             ))
 
+        # 3. Batch insert
         cur.fast_executemany = True
         cur.executemany("""
             INSERT INTO spapi_app_user.FinancialTransactions (
@@ -178,7 +193,7 @@ async def fetch_and_upsert():
             )
             VALUES (
                 ?,?,?,?,?,?,?,?,?,?,
-                ?,?,?,?,?,?,?,?,
+                ?,?,?,?,?,?,?,?,?,
                 DATEADD(HOUR,4,SYSDATETIMEOFFSET()),
                 DATEADD(HOUR,4,SYSDATETIMEOFFSET())
             )
@@ -195,6 +210,9 @@ async def fetch_and_upsert():
         conn.close()
 
     update_last_sync_at(safe_end)
+    print("Transaction sync completed successfully.")
+    print("------------------------------------------------------------")
+
     return len(items)
 
 

@@ -110,25 +110,25 @@ async def run_backfill(start_date: datetime, end_date: datetime):
                 row["PostedDate"] = parse_posted_date(row["PostedDate"])
 
                 insert_values.append((
-                    row["TransactionId"],
-                    row["PostedDate"],
-                    row["TransactionType"],
-                    row["TransactionStatus"],
-                    row["AmazonOrderId"],
-                    row["SellerSKU"],
-                    row["ASIN"],
-                    row["SSKU"],
-                    row["QuantityShipped"],
-                    safe_decimal(row["Principal"]),
-                    safe_decimal(row["ShippingCharges"]),
-                    safe_decimal(row["Promotions"]),
-                    safe_decimal(row["FBAFees"]),
-                    safe_decimal(row["Commission"]),
-                    safe_decimal(row["FixedClosingFee"]),
-                    safe_decimal(row["VariableClosingFee"]),
-                    safe_decimal(row["ShippingChargeback"]),
-                    safe_decimal(row["RefFee"]),
-                    safe_decimal(row["Total"]),
+                    row["TransactionId"],          # 1
+                    row["PostedDate"],             # 2
+                    row["TransactionType"],        # 3
+                    row["TransactionStatus"],      # 4
+                    row["AmazonOrderId"],          # 5
+                    row["SellerSKU"],              # 6
+                    row["ASIN"],                   # 7
+                    row["SSKU"],                   # 8
+                    row["QuantityShipped"],        # 9
+                    safe_decimal(row["Principal"]),          # 10
+                    safe_decimal(row["ShippingCharges"]),    # 11
+                    safe_decimal(row["Promotions"]),         # 12
+                    safe_decimal(row["FBAFees"]),            # 13
+                    safe_decimal(row["Commission"]),         # 14
+                    safe_decimal(row["FixedClosingFee"]),    # 15
+                    safe_decimal(row["VariableClosingFee"]), # 16
+                    safe_decimal(row["ShippingChargeback"]), # 17
+                    safe_decimal(row["RefFee"]),             # 18
+                    safe_decimal(row["Total"]),              # 19
                 ))
 
             # 3. Batch insert
@@ -159,7 +159,7 @@ async def run_backfill(start_date: datetime, end_date: datetime):
                 )
                 VALUES (
                     ?,?,?,?,?,?,?,?,?,?,
-                    ?,?,?,?,?,?,?,?,
+                    ?,?,?,?,?,?,?,?,?,
                     DATEADD(HOUR,4,SYSDATETIMEOFFSET()),
                     DATEADD(HOUR,4,SYSDATETIMEOFFSET())
                 )
