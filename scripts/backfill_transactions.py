@@ -30,6 +30,24 @@ def fmt(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def parse_posted_date(value):
+    """Convert ISO8601 Zulu string to Python datetime."""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except:
+        return None
+
+
+def safe_decimal(value):
+    """Convert any numeric-like value to float, else None."""
+    try:
+        return float(value)
+    except:
+        return None
+
+
 # -------------------------------------------------------------------
 # Backfill Logic
 # -------------------------------------------------------------------
@@ -61,7 +79,7 @@ async def run_backfill(start_date: datetime, end_date: datetime):
         print(f"Window {window_index}: {params['postedAfter']} -> {params['postedBefore']}")
         print("Fetching...")
 
-        # Direct call — retry logic already inside get_transactions()
+        # Fetch transactions
         conn = connect_database()
         cur = conn.cursor()
         try:
@@ -72,59 +90,40 @@ async def run_backfill(start_date: datetime, end_date: datetime):
 
         print(f"Fetched {len(rows)} rows")
 
+        if not rows:
+            window_start = window_end
+            continue
+
         # ---------------- DB UPSERT BLOCK ----------------
         try:
             conn = connect_database()
             cur = conn.cursor()
 
-            upserted = 0
+            # 1. Delete ALL rows with TransactionIds in this batch
+            tids = [row["TransactionId"] for row in rows]
+            placeholders = ",".join("?" for _ in tids)
+
+            cur.execute(
+                f"DELETE FROM spapi_app_user.FinancialTransactions WHERE TransactionId IN ({placeholders})",
+                tids
+            )
+
+            # 2. Prepare batch insert values
+            insert_values = []
             for row in rows:
-                tid = row["TransactionId"]
 
-                # Delete existing row
-                cur.execute(
-                    "DELETE FROM spapi_app_user.FinancialTransactions WHERE TransactionId = ?",
-                    (tid,)
-                )
+                # Normalize numeric fields
+                for key in [
+                    "SOLD", "ShippingCharge", "TotalPromotions", "SalesProceed",
+                    "Fee", "FBAFees", "ShippingChargeback", "TotalAmazonFees",
+                    "VAT", "R.VAT", "Fee%", "COG", "Net Profit"
+                ]:
+                    row[key] = safe_decimal(row.get(key))
 
-                # Insert new row
-                cur.execute("""
-                    INSERT INTO spapi_app_user.FinancialTransactions (
-                        TransactionId,
-                        PostedDate,
-                        TransactionType,
-                        TransactionStatus,
-                        AmazonOrderId,
-                        SKU,
-                        ASIN,
-                        SSKU,
-                        Brand,
-                        Category,
-                        Currency,
-                        SOLD,
-                        ShippingCharge,
-                        TotalPromotions,
-                        SalesProceed,
-                        Fee,
-                        FBAFees,
-                        ShippingChargeback,
-                        TotalAmazonFees,
-                        VAT,
-                        R_VAT,
-                        FeePercent,
-                        COG,
-                        NetProfit,
-                        CreatedAt,
-                        UpdatedAt
-                    )
-                    VALUES (
-                        ?,?,?,?,?,?,?,?,?,?,
-                        ?,?,?,?,?,?,?,?,?,?,
-                        ?,?,?,?,
-                        DATEADD(HOUR,4,SYSDATETIMEOFFSET()),
-                        DATEADD(HOUR,4,SYSDATETIMEOFFSET())
-                    )
-                """, (
+                # Convert PostedDate to datetime
+                row["PostedDate"] = parse_posted_date(row["PostedDate"])
+
+                insert_values.append((
                     row["TransactionId"],
                     row["PostedDate"],
                     row["TransactionType"],
@@ -151,17 +150,56 @@ async def run_backfill(start_date: datetime, end_date: datetime):
                     row["Net Profit"],
                 ))
 
-                upserted += 1
+            # 3. Batch insert using executemany()
+            cur.fast_executemany = True
+            cur.executemany("""
+                INSERT INTO spapi_app_user.FinancialTransactions (
+                    TransactionId,
+                    PostedDate,
+                    TransactionType,
+                    TransactionStatus,
+                    AmazonOrderId,
+                    SKU,
+                    ASIN,
+                    SSKU,
+                    Brand,
+                    Category,
+                    Currency,
+                    SOLD,
+                    ShippingCharge,
+                    TotalPromotions,
+                    SalesProceed,
+                    Fee,
+                    FBAFees,
+                    ShippingChargeback,
+                    TotalAmazonFees,
+                    VAT,
+                    R_VAT,
+                    FeePercent,
+                    COG,
+                    NetProfit,
+                    CreatedAt,
+                    UpdatedAt
+                )
+                VALUES (
+                    ?,?,?,?,?,?,?,?,?,?,
+                    ?,?,?,?,?,?,?,?,?,?,
+                    ?,?,?,?,
+                    DATEADD(HOUR,4,SYSDATETIMEOFFSET()),
+                    DATEADD(HOUR,4,SYSDATETIMEOFFSET())
+                )
+            """, insert_values)
 
             conn.commit()
-            cur.close()
-            conn.close()
-
-            print(f"Upserted {upserted} rows")
-            total_upserted += upserted
+            print(f"Upserted {len(rows)} rows")
+            total_upserted += len(rows)
 
         except Exception as exc:
-            print(f"Database error: {exc}")
+            conn.rollback()
+            print("Database error:", exc)
+        finally:
+            cur.close()
+            conn.close()
 
         window_start = window_end
 

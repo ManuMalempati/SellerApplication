@@ -68,6 +68,7 @@ def update_last_sync_at(ts: dt.datetime):
 
 
 async def fetch_and_upsert():
+    # Load last sync
     conn = connect_database()
     cur = conn.cursor()
     try:
@@ -118,51 +119,19 @@ async def fetch_and_upsert():
     cur = conn.cursor()
 
     try:
+        # 1. Delete all rows for these TransactionIds
+        tids = [row["TransactionId"] for row in items]
+        placeholders = ",".join("?" for _ in tids)
+
+        cur.execute(
+            f"DELETE FROM spapi_app_user.FinancialTransactions WHERE TransactionId IN ({placeholders})",
+            tids
+        )
+
+        # 2. Prepare batch insert values
+        insert_values = []
         for row in items:
-            tid = row["TransactionId"]
-
-            cur.execute(
-                "DELETE FROM spapi_app_user.FinancialTransactions WHERE TransactionId = ?",
-                (tid,)
-            )
-
-            cur.execute("""
-                INSERT INTO spapi_app_user.FinancialTransactions (
-                    TransactionId,
-                    PostedDate,
-                    TransactionType,
-                    TransactionStatus,
-                    AmazonOrderId,
-                    SKU,
-                    ASIN,
-                    SSKU,
-                    Brand,
-                    Category,
-                    Currency,
-                    SOLD,
-                    ShippingCharge,
-                    TotalPromotions,
-                    SalesProceed,
-                    Fee,
-                    FBAFees,
-                    ShippingChargeback,
-                    TotalAmazonFees,
-                    VAT,
-                    R_VAT,
-                    FeePercent,
-                    COG,
-                    NetProfit,
-                    CreatedAt,
-                    UpdatedAt
-                )
-                VALUES (
-                    ?,?,?,?,?,?,?,?,?,?,
-                    ?,?,?,?,?,?,?,?,?,?,
-                    ?,?,?,?,
-                    DATEADD(HOUR,4,SYSDATETIMEOFFSET()),
-                    DATEADD(HOUR,4,SYSDATETIMEOFFSET())
-                )
-            """, (
+            insert_values.append((
                 row["TransactionId"],
                 row["PostedDate"],
                 row["TransactionType"],
@@ -189,7 +158,48 @@ async def fetch_and_upsert():
                 row["Net Profit"],
             ))
 
+        # 3. Batch insert
+        cur.fast_executemany = True
+        cur.executemany("""
+            INSERT INTO spapi_app_user.FinancialTransactions (
+                TransactionId,
+                PostedDate,
+                TransactionType,
+                TransactionStatus,
+                AmazonOrderId,
+                SKU,
+                ASIN,
+                SSKU,
+                Brand,
+                Category,
+                Currency,
+                SOLD,
+                ShippingCharge,
+                TotalPromotions,
+                SalesProceed,
+                Fee,
+                FBAFees,
+                ShippingChargeback,
+                TotalAmazonFees,
+                VAT,
+                R_VAT,
+                FeePercent,
+                COG,
+                NetProfit,
+                CreatedAt,
+                UpdatedAt
+            )
+            VALUES (
+                ?,?,?,?,?,?,?,?,?,?,
+                ?,?,?,?,?,?,?,?,?,?,
+                ?,?,?,?,
+                DATEADD(HOUR,4,SYSDATETIMEOFFSET()),
+                DATEADD(HOUR,4,SYSDATETIMEOFFSET())
+            )
+        """, insert_values)
+
         conn.commit()
+
     except Exception as exc:
         conn.rollback()
         print("ERROR during UPSERT:", exc)

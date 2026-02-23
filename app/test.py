@@ -227,9 +227,13 @@ def test_seller_name(seller_id: str):
             "error": str(e)
         }
 
-@router.get("/transactions/duplicates")
-def find_duplicate_order_ids(days: int = 5):
-    # Match the logic of your main /transactions endpoint
+@router.get("/transactions/duplicate-transaction-ids")
+def find_duplicate_transaction_ids(days: int = 15):
+    """
+    Detect duplicate TransactionId values returned by get_transactions().
+    """
+
+    # Match your main endpoint logic
     delta = timedelta(days=days)
     posted_after = format_dt_z(datetime.now(timezone.utc) - delta)
     params = {"postedAfter": posted_after}
@@ -243,23 +247,23 @@ def find_duplicate_order_ids(days: int = 5):
         cursor.close()
         conn.close()
 
-    # Group rows by AmazonOrderId
+    # Group rows by TransactionId
     groups = {}
     for row in data:
-        order_id = row.get("AmazonOrderId")
-        if not order_id:
+        tid = row.get("TransactionId")
+        if not tid:
             continue
-        groups.setdefault(order_id, []).append(row)
+        groups.setdefault(tid, []).append(row)
 
-    # Keep only order IDs with more than one row
+    # Keep only TransactionIds with more than one row
     duplicates = {
-        order_id: rows
-        for order_id, rows in groups.items()
+        tid: rows
+        for tid, rows in groups.items()
         if len(rows) > 1
     }
 
     return {
         "total_rows": len(data),
-        "duplicate_order_ids": len(duplicates),
+        "duplicate_transaction_ids": len(duplicates),
         "duplicates": duplicates
     }

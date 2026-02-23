@@ -162,3 +162,29 @@ This approach ensures the system remains reliable regardless of Tally’s refres
 
 
 As far as I know GET_FLAT_FILE_ALL_ORDERS_DATA_BY_LAST_UPDATE_GENERAL has no canonically unique row identifier. Rather, the way it works is that if the amazon-order-id for a given order appears in the report, then every row for that amazon-order-id must appear in the new report. So any old rows for that amazon-order-id should be deleted, and then the new ones for that amazon-order-id are written out to the report.
+
+
+What TransactionId actually represents
+Amazon’s Finances API groups multiple item‑level charges under a single financial event.
+
+So:
+
+One order with 2 items
+
+One shipment with 2 items
+
+One refund with 2 items
+
+→ One TransactionId  
+→ Multiple item rows
+
+
+we mostly used synthetic keys (sicne lack of unique identifiers):
+A synthetic identity key (recommended)
+The safest, most scalable schema is:
+
+sql
+Id BIGINT IDENTITY(1,1) PRIMARY KEY,
+TransactionId NVARCHAR(255),
+PostedDate DATETIME,
+...
