@@ -11,17 +11,27 @@ from app.transactions import get_transactions
 from app.database import connect_database
 
 
+# -------------------------------------------------------------------
+# Environment
+# -------------------------------------------------------------------
+
 BACKFILL_CHUNK_DAYS = config.BACKFILL_CHUNK_DAYS
 SYNC_OVERLAP_HOURS = config.SYNC_OVERLAP_HOURS
 
 
+# -------------------------------------------------------------------
+# Helpers
+# -------------------------------------------------------------------
+
 def fmt(dt: datetime) -> str:
+    """Format datetime as ISO8601 Zulu."""
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def parse_posted_date(value):
+    """Convert ISO8601 Zulu string to Python datetime."""
     if not value:
         return None
     try:
@@ -31,16 +41,22 @@ def parse_posted_date(value):
 
 
 def safe_decimal(value):
+    """Convert any numeric-like value to float, else None."""
     try:
         return float(value)
     except:
         return None
 
 
+# -------------------------------------------------------------------
+# Backfill Logic
+# -------------------------------------------------------------------
+
 async def run_backfill(start_date: datetime, end_date: datetime):
     print("Backfill starting")
     print(f"Start: {fmt(start_date)}")
     print(f"End:   {fmt(end_date)}")
+    print(f"Window size: {BACKFILL_CHUNK_DAYS} days")
 
     window_start = start_date
     total_upserted = 0
@@ -55,8 +71,11 @@ async def run_backfill(start_date: datetime, end_date: datetime):
             "postedBefore": fmt(window_end),
         }
 
-        print(f"\nWindow {window_index}: {params['postedAfter']} -> {params['postedBefore']}")
+        print("\n------------------------------------------------------------")
+        print(f"Window {window_index}: {params['postedAfter']} -> {params['postedBefore']}")
+        print("Fetching...")
 
+        # Fetch transactions
         conn = connect_database()
         cur = conn.cursor()
         try:
@@ -71,10 +90,12 @@ async def run_backfill(start_date: datetime, end_date: datetime):
             window_start = window_end
             continue
 
+        # ---------------- DB UPSERT BLOCK ----------------
         try:
             conn = connect_database()
             cur = conn.cursor()
 
+            # 1. Delete ALL rows with TransactionIds in this batch
             tids = [row["TransactionId"] for row in rows]
             placeholders = ",".join("?" for _ in tids)
 
@@ -83,6 +104,7 @@ async def run_backfill(start_date: datetime, end_date: datetime):
                 tids
             )
 
+            # 2. Prepare batch insert values
             insert_values = []
             for row in rows:
                 row["PostedDate"] = parse_posted_date(row["PostedDate"])
@@ -109,6 +131,7 @@ async def run_backfill(start_date: datetime, end_date: datetime):
                     safe_decimal(row["Total"]),
                 ))
 
+            # 3. Batch insert
             cur.fast_executemany = True
             cur.executemany("""
                 INSERT INTO spapi_app_user.FinancialTransactions (
@@ -143,8 +166,8 @@ async def run_backfill(start_date: datetime, end_date: datetime):
             """, insert_values)
 
             conn.commit()
-            total_upserted += len(rows)
             print(f"Upserted {len(rows)} rows")
+            total_upserted += len(rows)
 
         except Exception as exc:
             conn.rollback()
@@ -155,4 +178,28 @@ async def run_backfill(start_date: datetime, end_date: datetime):
 
         window_start = window_end
 
-    print(f"\nBackfill complete. Total rows upserted: {total_upserted}")
+    print("\n============================================================")
+    print(f"Backfill complete. Total rows upserted: {total_upserted}")
+    print("============================================================")
+
+
+# -------------------------------------------------------------------
+# Entry Point
+# -------------------------------------------------------------------
+
+def main():
+    now = datetime.now(timezone.utc)
+    end_date = now - timedelta(hours=SYNC_OVERLAP_HOURS)
+
+    days_back = int(os.getenv("BACKFILL_DAYS", "56"))
+    start_date = end_date - timedelta(days=days_back)
+
+    start = time.time()
+    asyncio.run(run_backfill(start_date, end_date))
+    elapsed = time.time() - start
+
+    print(f"\nFinished in {elapsed:.1f} seconds")
+
+
+if __name__ == "__main__":
+    main()

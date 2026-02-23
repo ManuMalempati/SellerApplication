@@ -78,6 +78,7 @@ def update_last_sync_at(ts: dt.datetime):
 
 
 async def fetch_and_upsert():
+    # Load last sync
     conn = connect_database()
     cur = conn.cursor()
     try:
