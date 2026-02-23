@@ -14,6 +14,10 @@ from app.database import connect_database
 SYNC_KEY = "TRANSACTIONS_LIVE_SYNC"
 
 
+# ---------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------
+
 def parse_posted_date(value):
     if not value:
         return None
@@ -30,6 +34,10 @@ def safe_decimal(value):
         return None
 
 
+# ---------------------------------------------------------
+# SyncState Helpers
+# ---------------------------------------------------------
+
 def get_last_sync(cursor) -> dt.datetime:
     cursor.execute(
         "SELECT LastSuccessfulSyncUtc FROM spapi_app_user.SyncState WHERE SyncKey = ?",
@@ -42,9 +50,10 @@ def get_last_sync(cursor) -> dt.datetime:
         return default
 
     val = row[0]
+
     if isinstance(val, str):
         try:
-            parsed = dt.datetime.fromisoformat(val.replace("Z", "+00:00"))
+            parsed = dt.datetime.fromisoformat(val.replace('Z', '+00:00'))
             return parsed.astimezone(dt.timezone.utc)
         except:
             return default
@@ -76,6 +85,10 @@ def update_last_sync_at(ts: dt.datetime):
         cur.close()
         conn.close()
 
+
+# ---------------------------------------------------------
+# LIVE SYNC
+# ---------------------------------------------------------
 
 async def fetch_and_upsert():
     # Load last sync
@@ -129,16 +142,13 @@ async def fetch_and_upsert():
     cur = conn.cursor()
 
     try:
-        # 1. Delete all rows for these TransactionIds
-        tids = [row["TransactionId"] for row in items]
-        placeholders = ",".join("?" for _ in tids)
+        # DELETE by PostedDate range (NOT TransactionId — duplicates exist)
+        cur.execute("""
+            DELETE FROM spapi_app_user.FinancialTransactions
+            WHERE PostedDate >= ? AND PostedDate < ?
+        """, (effective_from, safe_end))
 
-        cur.execute(
-            f"DELETE FROM spapi_app_user.FinancialTransactions WHERE TransactionId IN ({placeholders})",
-            tids
-        )
-
-        # 2. Prepare batch insert values
+        # Prepare batch insert values
         insert_values = []
         for row in items:
             row["PostedDate"] = parse_posted_date(row["PostedDate"])
@@ -165,7 +175,7 @@ async def fetch_and_upsert():
                 safe_decimal(row["Total"]),              # 19
             ))
 
-        # 3. Batch insert
+        # Batch insert
         cur.fast_executemany = True
         cur.executemany("""
             INSERT INTO spapi_app_user.FinancialTransactions (
