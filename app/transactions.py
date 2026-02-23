@@ -297,6 +297,13 @@ def get_transactions(params, db_cursor):
     transactions = []
     skipped = {"no_sku": 0, "no_mapping": 0}
 
+    # Helper for numeric safety
+    def safe_decimal(value):
+        try:
+            return float(value)
+        except:
+            return None
+
     for api_transaction in api_transactions:
         transaction_type = api_transaction.get("transactionType", "Unknown")
         transaction_status = api_transaction.get("transactionStatus", "Unknown")
@@ -375,7 +382,7 @@ def get_transactions(params, db_cursor):
             cost = parse_cost(details.get("cost"))
 
             if cost is None:
-                transaction["COG"] = "Not Available"
+                transaction["COG"] = None
             else:
                 transaction["COG"] = -cost
 
@@ -389,6 +396,14 @@ def get_transactions(params, db_cursor):
             )
 
             transaction["Net Profit"] = net_profit
+
+            # Normalize all numeric fields
+            for key in [
+                "SOLD", "ShippingCharge", "TotalPromotions", "SalesProceed",
+                "Fee", "FBAFees", "ShippingChargeback", "TotalAmazonFees",
+                "VAT", "R.VAT", "Fee%", "COG", "Net Profit"
+            ]:
+                transaction[key] = safe_decimal(transaction.get(key))
 
             transactions.append(transaction)
 
