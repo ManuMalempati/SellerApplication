@@ -83,7 +83,7 @@ def retrieve_transactions(params):
 
     response = retry_call(_fetch_initial)
     payload = response.get("payload", {})
-    tx_list = payload.get("transactions", []) or []
+    tx_list = payload.get("transactions") or []
     all_tx.extend(tx_list)
 
     next_token = payload.get("nextToken")
@@ -99,7 +99,7 @@ def retrieve_transactions(params):
 
         response = retry_call(_fetch_page)
         payload = response.get("payload", {})
-        tx_list = payload.get("transactions", []) or []
+        tx_list = payload.get("transactions") or []
         all_tx.extend(tx_list)
 
         next_token = payload.get("nextToken")
@@ -163,13 +163,12 @@ def get_transactions(params, db_cursor):
         transaction_status = tx.get("transactionStatus")
 
         amazon_order_id = None
-        for rid in tx.get("relatedIdentifiers", []) or []:
+        for rid in tx.get("relatedIdentifiers") or []:
             if rid.get("relatedIdentifierName") == "ORDER_ID":
                 amazon_order_id = rid.get("relatedIdentifierValue")
 
         items = tx.get("items") or []
         for item in items:
-            # Extract SKU, ASIN, qty
             sku = None
             asin = None
             qty = None
@@ -182,13 +181,11 @@ def get_transactions(params, db_cursor):
                     qty = ctx.get("quantityShipped")
 
             if not sku:
-                # No SKU → skip row
                 continue
 
             mapping = product_mapping.get(sku, {})
             ssku = mapping.get("ssku")
 
-            # Extract breakdowns
             breakdowns = item.get("breakdowns") or []
 
             principal = extract_breakdown(breakdowns, "OurPricePrincipal")

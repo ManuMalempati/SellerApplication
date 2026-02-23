@@ -53,10 +53,6 @@ def safe_decimal(value):
 # -------------------------------------------------------------------
 
 async def run_backfill(start_date: datetime, end_date: datetime):
-    """
-    Backfills transactions from start_date to end_date in windows of BACKFILL_CHUNK_DAYS.
-    """
-
     print("Backfill starting")
     print(f"Start: {fmt(start_date)}")
     print(f"End:   {fmt(end_date)}")
@@ -99,13 +95,16 @@ async def run_backfill(start_date: datetime, end_date: datetime):
             conn = connect_database()
             cur = conn.cursor()
 
-            # DELETE by PostedDate range (NOT TransactionId — duplicates exist)
-            cur.execute("""
-                DELETE FROM spapi_app_user.FinancialTransactions
-                WHERE PostedDate >= ? AND PostedDate < ?
-            """, (window_start, window_end))
+            # 1. Delete ALL rows with TransactionIds in this batch
+            tids = [row["TransactionId"] for row in rows]
+            placeholders = ",".join("?" for _ in tids)
 
-            # Prepare batch insert values
+            cur.execute(
+                f"DELETE FROM spapi_app_user.FinancialTransactions WHERE TransactionId IN ({placeholders})",
+                tids
+            )
+
+            # 2. Prepare batch insert values
             insert_values = []
             for row in rows:
                 row["PostedDate"] = parse_posted_date(row["PostedDate"])
@@ -132,7 +131,7 @@ async def run_backfill(start_date: datetime, end_date: datetime):
                     safe_decimal(row["Total"]),              # 19
                 ))
 
-            # Batch insert
+            # 3. Batch insert using executemany()
             cur.fast_executemany = True
             cur.executemany("""
                 INSERT INTO spapi_app_user.FinancialTransactions (
@@ -189,10 +188,6 @@ async def run_backfill(start_date: datetime, end_date: datetime):
 # -------------------------------------------------------------------
 
 def main():
-    """
-    Backfill from N days ago until now, with overlap.
-    """
-
     now = datetime.now(timezone.utc)
     end_date = now - timedelta(hours=SYNC_OVERLAP_HOURS)
 
