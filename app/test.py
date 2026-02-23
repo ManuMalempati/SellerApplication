@@ -9,6 +9,8 @@ import requests
 import io
 import asyncio
 from bs4 import BeautifulSoup
+from .database import connect_database
+from .transactions import get_transactions
 
 router = APIRouter()
 
@@ -224,3 +226,40 @@ def test_seller_name(seller_id: str):
             "status": "error",
             "error": str(e)
         }
+
+@router.get("/transactions/duplicates")
+def find_duplicate_order_ids(days: int = 5):
+    # Match the logic of your main /transactions endpoint
+    delta = timedelta(days=days)
+    posted_after = format_dt_z(datetime.now(timezone.utc) - delta)
+    params = {"postedAfter": posted_after}
+
+    conn = connect_database()
+    cursor = conn.cursor()
+
+    try:
+        data = get_transactions(params=params, db_cursor=cursor)
+    finally:
+        cursor.close()
+        conn.close()
+
+    # Group rows by AmazonOrderId
+    groups = {}
+    for row in data:
+        order_id = row.get("AmazonOrderId")
+        if not order_id:
+            continue
+        groups.setdefault(order_id, []).append(row)
+
+    # Keep only order IDs with more than one row
+    duplicates = {
+        order_id: rows
+        for order_id, rows in groups.items()
+        if len(rows) > 1
+    }
+
+    return {
+        "total_rows": len(data),
+        "duplicate_order_ids": len(duplicates),
+        "duplicates": duplicates
+    }

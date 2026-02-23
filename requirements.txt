@@ -30,3 +30,4 @@ openpyxl==3.1.2
 requests
 lxml
 beautifulsoup4
+tenacity
