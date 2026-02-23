@@ -167,6 +167,64 @@ def get_transactions(params, db_cursor):
             if rid.get("relatedIdentifierName") == "ORDER_ID":
                 amazon_order_id = rid.get("relatedIdentifierValue")
 
+        # ⭐ SPECIAL CASE: FBAInventoryReimbursement
+        if transaction_type == "FBAInventoryReimbursement":
+            sku = None
+            asin = None
+            qty = None
+
+            # SKU comes from item.contexts
+            items = tx.get("items") or []
+            if items:
+                item = items[0]
+                contexts = item.get("contexts") or []
+                for ctx in contexts:
+                    if ctx.get("contextType") == "ProductContext":
+                        sku = ctx.get("sku")
+                        asin = ctx.get("asin")
+                        qty = ctx.get("quantityShipped")
+
+            mapping = product_mapping.get(sku, {}) if sku else {}
+            ssku = mapping.get("ssku")
+
+            # ⭐ Reimbursement amount comes from tx["breakdowns"]
+            tx_breakdowns = tx.get("breakdowns") or []
+
+            reimbursement_amount = extract_breakdown(tx_breakdowns, "FBAInventoryReimbursement")
+
+            row = {
+                "TransactionId": transaction_id,
+                "PostedDate": posted_date,
+                "TransactionStatus": transaction_status,
+                "TransactionType": transaction_type,
+                "AmazonOrderId": amazon_order_id,
+
+                "SellerSKU": sku,
+                "ASIN": asin,
+                "SSKU": ssku,
+                "QuantityShipped": qty,
+
+                "Principal": reimbursement_amount,
+                "ShippingCharges": 0.0,
+                "Promotions": 0.0,
+
+                "FBAFees": 0.0,
+                "Commission": 0.0,
+                "FixedClosingFee": 0.0,
+                "VariableClosingFee": 0.0,
+                "ShippingChargeback": 0.0,
+                "RefFee": 0.0,
+
+                "Total": reimbursement_amount,
+            }
+
+            rows.append(row)
+            continue  # skip normal processing
+
+        # ---------------------------------------------------------
+        # NORMAL ORDER / REFUND PROCESSING (unchanged)
+        # ---------------------------------------------------------
+
         items = tx.get("items") or []
         for item in items:
             sku = None

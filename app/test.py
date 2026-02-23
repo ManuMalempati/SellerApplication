@@ -268,31 +268,167 @@ def find_duplicate_transaction_ids(days: int = 15):
         "duplicates": duplicates
     }
 
-@router.get("/transactions/raw-1-day")
-def get_raw_financial_transactions_1_day():
+
+@router.get("/settlement-report/raw")
+def get_latest_settlement_report():
     """
-    Return RAW Amazon SP‑API financial transactions (2024‑06‑19 API)
-    for the last 1 day. No parsing, no flattening.
+    Fetch the most recent Settlement Report V2 generated in the last 90 days.
+    Settlement reports are usually bi-weekly, so a 90-day window ensures success.
+    """
+    import csv
+    import gzip
+    import io
+    import requests
+    import time
+    from datetime import datetime, timedelta, timezone
+
+    report_type = "GET_V2_SETTLEMENT_REPORT_DATA_FLAT_FILE_V2"
+
+    # Step 1 — List reports from the last 90 days (Amazon's max retention)
+    now_utc = datetime.now(timezone.utc)
+    # 2 days is too short because settlements happen every 7-14 days.
+    created_since = (now_utc - timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    params = {
+        "reportTypes": report_type,
+        "processingStatuses": "DONE",
+        "pageSize": 1,  # We just want the most recent finalized report
+        "createdSince": created_since,
+        "marketplaceIds": [MARKETPLACE_ID]
+    }
+
+    print(f"Searching for {report_type} since {created_since}...")
+
+    list_resp = spapi_request(
+        method="GET",
+        path="/reports/2021-06-30/reports",
+        params=params
+    )
+
+    reports = list_resp.get("reports", [])
+    if not reports:
+        return {
+            "error": "No settlement reports found. Check your disbursement cycle in Seller Central.",
+            "createdSince": created_since,
+            "api_response": list_resp
+        }
+
+    # Use the most recent generated report
+    latest_report = reports[0]
+    report_id = latest_report["reportId"]
+    document_id = latest_report["reportDocumentId"]
+
+    print(f"Found Report ID: {report_id} | Document ID: {document_id}")
+
+    # Step 2 — Get the document download URL
+    # We skip the "GET report by ID" call because document_id is already in the list response
+    doc_resp = spapi_request(
+        method="GET",
+        path=f"/reports/2021-06-30/documents/{document_id}"
+    )
+
+    url = doc_resp.get("url")
+    compression = doc_resp.get("compressionAlgorithm")
+
+    if not url:
+        return {"error": "Could not retrieve download URL", "response": doc_resp}
+
+    # Step 3 — Download the raw data
+    print(f"Downloading report. Compression: {compression}")
+    r = requests.get(url)
+    raw_data = r.content
+
+    # Step 4 — Decompress and decode
+    if compression == "GZIP":
+        try:
+            raw_data = gzip.decompress(raw_data)
+        except Exception as e:
+            return {"error": f"Decompression failed: {str(e)}"}
+
+    try:
+        text_content = raw_data.decode("utf-8", errors="replace")
+    except Exception as e:
+        return {"error": f"Decoding failed: {str(e)}"}
+
+    # Step 5 — Parse TAB-delimited file
+    # Settlement reports use Tabs (\t), not commas.
+    reader = csv.DictReader(io.StringIO(text_content), delimiter="\t")
+    rows = list(reader)
+
+    return {
+        "info": {
+            "reportId": report_id,
+            "documentId": document_id,
+            "generatedAt": latest_report.get("createdTime"),
+            "rowCount": len(rows)
+        },
+        "allRows": rows  # This contains every transaction including 'Service Fees'
+    }
+
+@router.get("/transactions/raw-fba-reimbursements-5-days")
+def get_raw_fba_inventory_reimbursements_last_5_days():
+    """
+    Fetch RAW Finances 2024‑06‑19 API transactions for the last 5 days.
+    Filter ONLY FBAInventoryReimbursement transactions.
+    Return raw SP‑API response (no parsing).
     """
 
-    posted_after = format_dt_z(datetime.now(timezone.utc) - timedelta(days=10))
-    posted_before = format_dt_z(datetime.now(timezone.utc) - timedelta(minutes=3))  # Amazon requires 2 min buffer
+    from datetime import datetime, timedelta, timezone
+
+    now_utc = datetime.now(timezone.utc)
+
+    posted_after = (now_utc - timedelta(days=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    posted_before = (now_utc - timedelta(minutes=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     params = {
         "postedAfter": posted_after,
         "postedBefore": posted_before,
-        "marketplaceId": MARKETPLACE_ID,
         "pageSize": 100
     }
 
-    raw = spapi_request(
+    print("Fetching RAW Finances 2024‑06‑19 transactions...")
+    print("PostedAfter:", posted_after)
+    print("PostedBefore:", posted_before)
+
+    # ---- FIRST CALL ----
+    raw_pages = []
+
+    response = spapi_request(
         method="GET",
         path="/finances/2024-06-19/transactions",
         params=params
     )
+    raw_pages.append(response)
+
+    # ---- PAGINATION ----
+    next_token = response.get("payload", {}).get("nextToken")
+
+    while next_token:
+        print("Fetching next page with nextToken:", next_token)
+
+        response = spapi_request(
+            method="GET",
+            path="/finances/2024-06-19/transactions",
+            params={"nextToken": next_token}
+        )
+
+        raw_pages.append(response)
+        next_token = response.get("payload", {}).get("nextToken")
+
+    # ---- FILTER ONLY FBAInventoryReimbursement ----
+    filtered = []
+
+    for page in raw_pages:
+        txs = page.get("payload", {}).get("transactions", [])
+        for tx in txs:
+            if (tx.get("transactionType") or "").strip() == "FBAInventoryReimbursement":
+                filtered.append(tx)
 
     return {
         "posted_after": posted_after,
         "posted_before": posted_before,
-        "raw_response": raw
+        "total_pages": len(raw_pages),
+        "total_transactions": sum(len(p.get("payload", {}).get("transactions", [])) for p in raw_pages),
+        "fba_reimbursement_count": len(filtered),
+        "raw_response": filtered[:50]  # return first 50 raw reimbursement transactions
     }
