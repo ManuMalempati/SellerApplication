@@ -462,10 +462,6 @@ def get_cached_fees(cursor, fee_items):
 
     return results
 
-# ---------------------------------------------------------
-# FAST, LIFECYCLE-AWARE, SQL-BASED SELECTIVE DELETE UPSERT
-# ---------------------------------------------------------
-
 import datetime as dt
 
 def _parse_posted_date(value):
@@ -473,12 +469,6 @@ def _parse_posted_date(value):
         return None
     try:
         return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except:
-        return None
-
-def _safe_decimal(value):
-    try:
-        return float(value)
     except:
         return None
 
@@ -490,15 +480,12 @@ STATUS_RANK = {
 
 def upsert_financial_transactions(rows):
     """
-    Fully optimized, lifecycle-aware upsert for FinancialTransactions.
+    Lifecycle rules (identity = OrderId + Type + SKU + ASIN + SSKU):
 
-    - Dedup by TransactionId
-    - Collapse batch by logical key + financials
-    - SQL-based selective delete:
-        * Identity-first match
-        * Financial tie-break only when needed
-        * Delete only ONE predecessor
-    - Insert new rows
+    - If DEFERRED exists and DEFERRED_RELEASED arrives → DEFERRED is deleted, DEFERRED_RELEASED kept.
+    - If DEFERRED or DEFERRED_RELEASED exists and RELEASED arrives → they are deleted, RELEASED kept.
+    - This applies whether the lower-status row is already in DB or in the same batch.
+    - Same TransactionId is always replaced (idempotent).
     """
 
     if not rows:
@@ -509,9 +496,7 @@ def upsert_financial_transactions(rows):
     conn.autocommit = False
 
     try:
-        # -------------------------------------------------
-        # 1. Deduplicate by TransactionId
-        # -------------------------------------------------
+        # 1) Deduplicate by TransactionId
         by_tid = {}
         for r in rows:
             tid = r.get("TransactionId")
@@ -519,11 +504,8 @@ def upsert_financial_transactions(rows):
                 by_tid[tid] = r
         rows = list(by_tid.values())
 
-        # -------------------------------------------------
-        # 2. Collapse batch by logical key + financials
-        # -------------------------------------------------
+        # 2) Collapse batch by identity, keeping highest status
         collapsed = {}
-
         for r in rows:
             status = r.get("TransactionStatus")
             rank = STATUS_RANK.get(status, -1)
@@ -534,12 +516,6 @@ def upsert_financial_transactions(rows):
                 r.get("SellerSKU"),
                 r.get("ASIN"),
                 r.get("SSKU"),
-                r.get("QuantityShipped"),
-                _safe_decimal(r.get("Principal")),
-                _safe_decimal(r.get("ShippingCharges")),
-                _safe_decimal(r.get("ShippingChargeback")),
-                _safe_decimal(r.get("RefFee")),
-                _safe_decimal(r.get("Total")),
             )
 
             existing = collapsed.get(key)
@@ -551,14 +527,11 @@ def upsert_financial_transactions(rows):
                     collapsed[key] = r
 
         rows = list(collapsed.values())
-
         if not rows:
             conn.commit()
             return 0
 
-        # -------------------------------------------------
-        # 3. Create temp table
-        # -------------------------------------------------
+        # 3) Temp table
         cur.execute("""
         IF OBJECT_ID('tempdb..#TempFinancial') IS NOT NULL DROP TABLE #TempFinancial;
 
@@ -584,9 +557,6 @@ def upsert_financial_transactions(rows):
         )
         """)
 
-        # -------------------------------------------------
-        # 4. Bulk insert into temp table
-        # -------------------------------------------------
         insert_temp = []
         for row in rows:
             row["PostedDate"] = _parse_posted_date(row["PostedDate"])
@@ -600,15 +570,15 @@ def upsert_financial_transactions(rows):
                 row["ASIN"],
                 row["SSKU"],
                 row["QuantityShipped"],
-                _safe_decimal(row["Principal"]),
-                _safe_decimal(row["ShippingCharges"]),
-                _safe_decimal(row["Promotions"]),
-                _safe_decimal(row["FBAFees"]),
-                _safe_decimal(row["FixedClosingFee"]),
-                _safe_decimal(row["VariableClosingFee"]),
-                _safe_decimal(row["ShippingChargeback"]),
-                _safe_decimal(row["RefFee"]),
-                _safe_decimal(row["Total"]),
+                float(row["Principal"]) if row.get("Principal") is not None else None,
+                float(row["ShippingCharges"]) if row.get("ShippingCharges") is not None else None,
+                float(row["Promotions"]) if row.get("Promotions") is not None else None,
+                float(row["FBAFees"]) if row.get("FBAFees") is not None else None,
+                float(row["FixedClosingFee"]) if row.get("FixedClosingFee") is not None else None,
+                float(row["VariableClosingFee"]) if row.get("VariableClosingFee") is not None else None,
+                float(row["ShippingChargeback"]) if row.get("ShippingChargeback") is not None else None,
+                float(row["RefFee"]) if row.get("RefFee") is not None else None,
+                float(row["Total"]) if row.get("Total") is not None else None,
             ))
 
         cur.fast_executemany = True
@@ -616,59 +586,30 @@ def upsert_financial_transactions(rows):
             INSERT INTO #TempFinancial VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, insert_temp)
 
-        # -------------------------------------------------
-        # 5. SQL-BASED SELECTIVE DELETE
-        # -------------------------------------------------
-
-        # Build identity groups (OrderId, Type, SKU, ASIN, SSKU)
+        # 4) Lifecycle delete in DB based on identity + status
+        #    - If batch has DEFERRED_RELEASED → delete DEFERRED in DB for same identity
+        #    - If batch has RELEASED → delete DEFERRED and DEFERRED_RELEASED in DB for same identity
         cur.execute("""
-            WITH IdentityMatches AS (
-                SELECT 
-                    AmazonOrderId, TransactionType, SellerSKU, ASIN, SSKU,
-                    COUNT(*) AS Cnt
-                FROM spapi_app_user.FinancialTransactions
-                WHERE TransactionStatus IN ('DEFERRED','DEFERRED_RELEASED')
-                GROUP BY AmazonOrderId, TransactionType, SellerSKU, ASIN, SSKU
-            ),
-            Candidates AS (
-                SELECT TOP (1)
-                    T.TransactionId
-                FROM spapi_app_user.FinancialTransactions T
-                JOIN #TempFinancial S
-                  ON T.AmazonOrderId   = S.AmazonOrderId
-                 AND T.TransactionType = S.TransactionType
-                 AND T.SellerSKU       = S.SellerSKU
-                 AND ISNULL(T.ASIN,'') = ISNULL(S.ASIN,'')
-                 AND ISNULL(T.SSKU,'') = ISNULL(S.SSKU,'')
-                JOIN IdentityMatches IM
-                  ON IM.AmazonOrderId   = T.AmazonOrderId
-                 AND IM.TransactionType = T.TransactionType
-                 AND IM.SellerSKU       = T.SellerSKU
-                 AND IM.ASIN            = T.ASIN
-                 AND IM.SSKU            = T.SSKU
-                WHERE 
-                    T.TransactionStatus IN ('DEFERRED','DEFERRED_RELEASED')
-                    AND S.TransactionStatus = 'RELEASED'
-                    AND (
-                        IM.Cnt = 1
-                        OR (
-                            IM.Cnt >= 2
-                            AND T.QuantityShipped      = S.QuantityShipped
-                            AND T.Principal            = S.Principal
-                            AND T.ShippingCharges      = S.ShippingCharges
-                            AND T.ShippingChargeback   = S.ShippingChargeback
-                            AND T.RefFee               = S.RefFee
-                            AND T.Total                = S.Total
-                        )
-                    )
+        DELETE T
+        FROM spapi_app_user.FinancialTransactions T
+        JOIN #TempFinancial S
+          ON T.AmazonOrderId   = S.AmazonOrderId
+         AND T.TransactionType = S.TransactionType
+         AND T.SellerSKU       = S.SellerSKU
+         AND ISNULL(T.ASIN,'') = ISNULL(S.ASIN,'')
+         AND ISNULL(T.SSKU,'') = ISNULL(S.SSKU,'')
+        WHERE
+            (
+                S.TransactionStatus = 'DEFERRED_RELEASED'
+                AND T.TransactionStatus = 'DEFERRED'
             )
-            DELETE FROM spapi_app_user.FinancialTransactions
-            WHERE TransactionId IN (SELECT TransactionId FROM Candidates);
+         OR (
+                S.TransactionStatus = 'RELEASED'
+                AND T.TransactionStatus IN ('DEFERRED','DEFERRED_RELEASED')
+            )
         """)
 
-        # -------------------------------------------------
-        # 6. Delete exact TransactionIds (idempotency)
-        # -------------------------------------------------
+        # 5) Idempotency: delete any existing rows with same TransactionId
         cur.execute("""
         DELETE T
         FROM spapi_app_user.FinancialTransactions T
@@ -676,9 +617,7 @@ def upsert_financial_transactions(rows):
           ON T.TransactionId = S.TransactionId
         """)
 
-        # -------------------------------------------------
-        # 7. Insert all new rows
-        # -------------------------------------------------
+        # 6) Insert all new rows
         cur.execute("""
         INSERT INTO spapi_app_user.FinancialTransactions (
             TransactionId,
