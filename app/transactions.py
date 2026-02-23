@@ -162,16 +162,14 @@ def get_transactions(params, db_cursor):
         transaction_type = tx.get("transactionType")
         transaction_status = tx.get("transactionStatus")
 
-        # ⭐ NEW: Skip DEFERRED_RELEASED (we only want final RELEASED)
-        if transaction_status == "DEFERRED_RELEASED":
-            continue
-
         amazon_order_id = None
         for rid in tx.get("relatedIdentifiers") or []:
             if rid.get("relatedIdentifierName") == "ORDER_ID":
                 amazon_order_id = rid.get("relatedIdentifierValue")
 
-        # ⭐ SPECIAL CASE: FBAInventoryReimbursement
+        # ---------------------------------------------------------
+        # SPECIAL CASE: FBAInventoryReimbursement
+        # ---------------------------------------------------------
         if transaction_type == "FBAInventoryReimbursement":
             sku = None
             asin = None
@@ -223,7 +221,7 @@ def get_transactions(params, db_cursor):
             continue
 
         # ---------------------------------------------------------
-        # NORMAL ORDER / REFUND PROCESSING
+        # NORMAL ORDER / REFUND / OTHER ITEM-BASED PROCESSING
         # ---------------------------------------------------------
 
         items = tx.get("items") or []

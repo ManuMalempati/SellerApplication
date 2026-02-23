@@ -142,73 +142,98 @@ async def fetch_and_upsert():
     cur = conn.cursor()
 
     try:
-        # 1. Delete all rows for these TransactionIds
-        tids = [row["TransactionId"] for row in items]
-        placeholders = ",".join("?" for _ in tids)
-
-        cur.execute(
-            f"DELETE FROM spapi_app_user.FinancialTransactions WHERE TransactionId IN ({placeholders})",
-            tids
-        )
-
-        # 2. Prepare batch insert values
-        insert_values = []
         for row in items:
+            amazon_order_id = row["AmazonOrderId"]
+            sku = row["SellerSKU"]
+            status = row["TransactionStatus"]
+
+            # ---------------------------------------------------------
+            # LIFECYCLE REPLACEMENT LOGIC
+            # ---------------------------------------------------------
+
+            if status == "DEFERRED":
+                # Replace older DEFERRED only
+                cur.execute("""
+                    DELETE FROM spapi_app_user.FinancialTransactions
+                    WHERE AmazonOrderId = ?
+                      AND SellerSKU = ?
+                      AND TransactionStatus = 'DEFERRED'
+                """, (amazon_order_id, sku))
+
+            elif status == "DEFERRED_RELEASED":
+                # Replace DEFERRED + DEFERRED_RELEASED
+                cur.execute("""
+                    DELETE FROM spapi_app_user.FinancialTransactions
+                    WHERE AmazonOrderId = ?
+                      AND SellerSKU = ?
+                      AND TransactionStatus IN ('DEFERRED', 'DEFERRED_RELEASED')
+                """, (amazon_order_id, sku))
+
+            elif status == "RELEASED":
+                # Replace DEFERRED + DEFERRED_RELEASED only
+                # DO NOT delete existing RELEASED
+                cur.execute("""
+                    DELETE FROM spapi_app_user.FinancialTransactions
+                    WHERE AmazonOrderId = ?
+                      AND SellerSKU = ?
+                      AND TransactionStatus IN ('DEFERRED', 'DEFERRED_RELEASED')
+                """, (amazon_order_id, sku))
+
+            # ---------------------------------------------------------
+            # INSERT NEW ROW
+            # ---------------------------------------------------------
+
             row["PostedDate"] = parse_posted_date(row["PostedDate"])
 
-            insert_values.append((
-                row["TransactionId"],          # 1
-                row["PostedDate"],             # 2
-                row["TransactionType"],        # 3
-                row["TransactionStatus"],      # 4
-                row["AmazonOrderId"],          # 5
-                row["SellerSKU"],              # 6
-                row["ASIN"],                   # 7
-                row["SSKU"],                   # 8
-                row["QuantityShipped"],        # 9
-                safe_decimal(row["Principal"]),          # 10
-                safe_decimal(row["ShippingCharges"]),    # 11
-                safe_decimal(row["Promotions"]),         # 12
-                safe_decimal(row["FBAFees"]),            # 13
-                safe_decimal(row["FixedClosingFee"]),    # 14
-                safe_decimal(row["VariableClosingFee"]), # 15
-                safe_decimal(row["ShippingChargeback"]), # 16
-                safe_decimal(row["RefFee"]),             # 17
-                safe_decimal(row["Total"]),              # 18
+            cur.execute("""
+                INSERT INTO spapi_app_user.FinancialTransactions (
+                    TransactionId,
+                    PostedDate,
+                    TransactionType,
+                    TransactionStatus,
+                    AmazonOrderId,
+                    SellerSKU,
+                    ASIN,
+                    SSKU,
+                    QuantityShipped,
+                    Principal,
+                    ShippingCharges,
+                    Promotions,
+                    FBAFees,
+                    FixedClosingFee,
+                    VariableClosingFee,
+                    ShippingChargeback,
+                    RefFee,
+                    Total,
+                    CreatedAt,
+                    UpdatedAt
+                )
+                VALUES (
+                    ?,?,?,?,?,?,?,?,?,?,
+                    ?,?,?,?,?,?,?,?,
+                    DATEADD(HOUR,4,SYSDATETIMEOFFSET()),
+                    DATEADD(HOUR,4,SYSDATETIMEOFFSET())
+                )
+            """, (
+                row["TransactionId"],
+                row["PostedDate"],
+                row["TransactionType"],
+                row["TransactionStatus"],
+                row["AmazonOrderId"],
+                row["SellerSKU"],
+                row["ASIN"],
+                row["SSKU"],
+                row["QuantityShipped"],
+                safe_decimal(row["Principal"]),
+                safe_decimal(row["ShippingCharges"]),
+                safe_decimal(row["Promotions"]),
+                safe_decimal(row["FBAFees"]),
+                safe_decimal(row["FixedClosingFee"]),
+                safe_decimal(row["VariableClosingFee"]),
+                safe_decimal(row["ShippingChargeback"]),
+                safe_decimal(row["RefFee"]),
+                safe_decimal(row["Total"]),
             ))
-
-        # 3. Batch insert
-        cur.fast_executemany = True
-        cur.executemany("""
-            INSERT INTO spapi_app_user.FinancialTransactions (
-                TransactionId,
-                PostedDate,
-                TransactionType,
-                TransactionStatus,
-                AmazonOrderId,
-                SellerSKU,
-                ASIN,
-                SSKU,
-                QuantityShipped,
-                Principal,
-                ShippingCharges,
-                Promotions,
-                FBAFees,
-                FixedClosingFee,
-                VariableClosingFee,
-                ShippingChargeback,
-                RefFee,
-                Total,
-                CreatedAt,
-                UpdatedAt
-            )
-            VALUES (
-                ?,?,?,?,?,?,?,?,?,?,
-                ?,?,?,?,?,?,?,?,
-                DATEADD(HOUR,4,SYSDATETIMEOFFSET()),
-                DATEADD(HOUR,4,SYSDATETIMEOFFSET())
-            )
-        """, insert_values)
 
         conn.commit()
 
