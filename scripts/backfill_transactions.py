@@ -123,12 +123,11 @@ async def run_backfill(start_date: datetime, end_date: datetime):
                     safe_decimal(row["ShippingCharges"]),    # 11
                     safe_decimal(row["Promotions"]),         # 12
                     safe_decimal(row["FBAFees"]),            # 13
-                    safe_decimal(row["Commission"]),         # 14
-                    safe_decimal(row["FixedClosingFee"]),    # 15
-                    safe_decimal(row["VariableClosingFee"]), # 16
-                    safe_decimal(row["ShippingChargeback"]), # 17
-                    safe_decimal(row["RefFee"]),             # 18
-                    safe_decimal(row["Total"]),              # 19
+                    safe_decimal(row["FixedClosingFee"]),    # 14
+                    safe_decimal(row["VariableClosingFee"]), # 15
+                    safe_decimal(row["ShippingChargeback"]), # 16
+                    safe_decimal(row["RefFee"]),             # 17
+                    safe_decimal(row["Total"]),              # 18
                 ))
 
             # 3. Batch insert using executemany()
@@ -148,7 +147,6 @@ async def run_backfill(start_date: datetime, end_date: datetime):
                     ShippingCharges,
                     Promotions,
                     FBAFees,
-                    Commission,
                     FixedClosingFee,
                     VariableClosingFee,
                     ShippingChargeback,
@@ -159,7 +157,7 @@ async def run_backfill(start_date: datetime, end_date: datetime):
                 )
                 VALUES (
                     ?,?,?,?,?,?,?,?,?,?,
-                    ?,?,?,?,?,?,?,?,?,
+                    ?,?,?,?,?,?,?,?,
                     DATEADD(HOUR,4,SYSDATETIMEOFFSET()),
                     DATEADD(HOUR,4,SYSDATETIMEOFFSET())
                 )

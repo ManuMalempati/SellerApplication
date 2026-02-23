@@ -275,7 +275,7 @@ def get_raw_financial_transactions_1_day():
     for the last 1 day. No parsing, no flattening.
     """
 
-    posted_after = format_dt_z(datetime.now(timezone.utc) - timedelta(days=1))
+    posted_after = format_dt_z(datetime.now(timezone.utc) - timedelta(days=10))
     posted_before = format_dt_z(datetime.now(timezone.utc) - timedelta(minutes=3))  # Amazon requires 2 min buffer
 
     params = {
