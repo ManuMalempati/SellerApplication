@@ -14,6 +14,32 @@ from app.database import connect_database
 SYNC_KEY = "TRANSACTIONS_LIVE_SYNC"
 
 
+# ---------------------------------------------------------
+# Helpers (same as backfill)
+# ---------------------------------------------------------
+
+def parse_posted_date(value):
+    """Convert ISO8601 Zulu string to Python datetime."""
+    if not value:
+        return None
+    try:
+        return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except:
+        return None
+
+
+def safe_decimal(value):
+    """Convert any numeric-like value to float, else None."""
+    try:
+        return float(value)
+    except:
+        return None
+
+
+# ---------------------------------------------------------
+# SyncState Helpers
+# ---------------------------------------------------------
+
 def get_last_sync(cursor) -> dt.datetime:
     cursor.execute(
         "SELECT LastSuccessfulSyncUtc FROM spapi_app_user.SyncState WHERE SyncKey = ?",
@@ -66,6 +92,10 @@ def update_last_sync_at(ts: dt.datetime):
         cur.close()
         conn.close()
 
+
+# ---------------------------------------------------------
+# LIVE SYNC (now identical to backfill logic)
+# ---------------------------------------------------------
 
 async def fetch_and_upsert():
     # Load last sync
@@ -132,9 +162,21 @@ async def fetch_and_upsert():
             tids
         )
 
-        # 2. Prepare batch insert values
+        # 2. Prepare batch insert values (same as backfill)
         insert_values = []
         for row in items:
+
+            # Normalize numeric fields
+            for key in [
+                "SOLD", "ShippingCharge", "TotalPromotions", "SalesProceed",
+                "Fee", "FBAFees", "ShippingChargeback", "TotalAmazonFees",
+                "VAT", "R.VAT", "Fee%", "COG", "Net Profit"
+            ]:
+                row[key] = safe_decimal(row.get(key))
+
+            # Convert PostedDate to datetime
+            row["PostedDate"] = parse_posted_date(row["PostedDate"])
+
             insert_values.append((
                 row["TransactionId"],
                 row["PostedDate"],
@@ -162,7 +204,7 @@ async def fetch_and_upsert():
                 row["Net Profit"],
             ))
 
-        # 3. Batch insert
+        # 3. Batch insert (same as backfill)
         cur.fast_executemany = True
         cur.executemany("""
             INSERT INTO spapi_app_user.FinancialTransactions (
