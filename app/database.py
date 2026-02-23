@@ -463,8 +463,10 @@ def get_cached_fees(cursor, fee_items):
     return results
 
 # ---------------------------------------------------------
-# FAST, LIFECYCLE-AWARE, BATCH-COLLAPSING UPSERT
+# FAST, LIFECYCLE-AWARE, SELECTIVE DELETE UPSERT
 # ---------------------------------------------------------
+
+import datetime as dt
 
 def _parse_posted_date(value):
     if not value:
@@ -490,13 +492,10 @@ def upsert_financial_transactions(rows):
     """
     Fully optimized, lifecycle-aware upsert for FinancialTransactions.
 
-    Handles:
-    - Dedup by TransactionId
-    - Collapse batch by logical key + financials
-    - RELEASED > DEFERRED_RELEASED > DEFERRED
-    - Set-based lifecycle delete
-    - Set-based delete by TransactionId
-    - Single batch insert
+    NEW:
+    - Selective delete:
+        If multiple DEFERRED_RELEASED rows exist, only delete the one that matches
+        the RELEASED row on financial fields.
     """
 
     if not rows:
@@ -615,27 +614,92 @@ def upsert_financial_transactions(rows):
         """, insert_temp)
 
         # -------------------------------------------------
-        # 5. Lifecycle delete (TransactionType + ASIN + SSKU aware)
+        # 5. SELECTIVE DELETE LOGIC
         # -------------------------------------------------
+
+        # Step 5.1 — Get all identity groups in this batch
         cur.execute("""
-        DELETE T
-        FROM spapi_app_user.FinancialTransactions T
-        JOIN #TempFinancial S
-          ON T.AmazonOrderId   = S.AmazonOrderId
-         AND T.SellerSKU       = S.SellerSKU
-         AND T.TransactionType = S.TransactionType
-         AND ISNULL(T.ASIN,'') = ISNULL(S.ASIN,'')
-         AND ISNULL(T.SSKU,'') = ISNULL(S.SSKU,'')
-        WHERE
-            (
-                S.TransactionStatus = 'DEFERRED'
-                AND T.TransactionStatus = 'DEFERRED'
-            )
-         OR (
-                S.TransactionStatus IN ('DEFERRED_RELEASED','RELEASED')
-                AND T.TransactionStatus IN ('DEFERRED','DEFERRED_RELEASED')
-            )
+            SELECT DISTINCT
+                AmazonOrderId, TransactionType, SellerSKU, ASIN, SSKU
+            FROM #TempFinancial
         """)
+        identity_groups = cur.fetchall()
+
+        for (order_id, ttype, sku, asin, ssku) in identity_groups:
+
+            # Step 5.2 — Get all existing DEFERRED/DEFERRED_RELEASED rows for this identity
+            cur.execute("""
+                SELECT
+                    TransactionId,
+                    QuantityShipped,
+                    Principal,
+                    ShippingCharges,
+                    ShippingChargeback,
+                    RefFee,
+                    Total
+                FROM spapi_app_user.FinancialTransactions
+                WHERE AmazonOrderId = ?
+                  AND TransactionType = ?
+                  AND SellerSKU = ?
+                  AND ISNULL(ASIN,'') = ISNULL(?, '')
+                  AND ISNULL(SSKU,'') = ISNULL(?, '')
+                  AND TransactionStatus IN ('DEFERRED', 'DEFERRED_RELEASED')
+            """, (order_id, ttype, sku, asin, ssku))
+
+            existing_rows = cur.fetchall()
+
+            if not existing_rows:
+                continue
+
+            # Step 5.3 — Get the RELEASED row from the batch (if any)
+            cur.execute("""
+                SELECT
+                    QuantityShipped,
+                    Principal,
+                    ShippingCharges,
+                    ShippingChargeback,
+                    RefFee,
+                    Total
+                FROM #TempFinancial
+                WHERE AmazonOrderId = ?
+                  AND TransactionType = ?
+                  AND SellerSKU = ?
+                  AND ISNULL(ASIN,'') = ISNULL(?, '')
+                  AND ISNULL(SSKU,'') = ISNULL(?, '')
+                  AND TransactionStatus = 'RELEASED'
+            """, (order_id, ttype, sku, asin, ssku))
+
+            released_row = cur.fetchone()
+
+            if not released_row:
+                continue
+
+            # Step 5.4 — Try to match RELEASED row to exactly one predecessor
+            matched_tid = None
+
+            for ex in existing_rows:
+                (tid, qty, p, sc, scb, rf, tot) = ex
+
+                if (
+                    qty == released_row[0] and
+                    float(p or 0) == float(released_row[1] or 0) and
+                    float(sc or 0) == float(released_row[2] or 0) and
+                    float(scb or 0) == float(released_row[3] or 0) and
+                    float(rf or 0) == float(released_row[4] or 0) and
+                    float(tot or 0) == float(released_row[5] or 0)
+                ):
+                    matched_tid = tid
+                    break
+
+            # Step 5.5 — If matched, delete only that one
+            if matched_tid:
+                cur.execute("""
+                    DELETE FROM spapi_app_user.FinancialTransactions
+                    WHERE TransactionId = ?
+                """, (matched_tid,))
+            else:
+                # No match → do NOT delete any DEFERRED_RELEASED rows
+                pass
 
         # -------------------------------------------------
         # 6. Delete exact TransactionIds (idempotency)
