@@ -1,2 +1,3 @@
-SELECT * FROM FinancialTransactions
-WHERE AmazonOrderId = '407-9105569-9421146'
+UPDATE spapi_app_user.SyncState
+SET LastSuccessfulSyncUtc = DATEADD(DAY, -3, SYSDATETIMEOFFSET())
+WHERE SyncKey = 'TRANSACTIONS_LIVE_SYNC';

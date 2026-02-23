@@ -1,1 +1,1 @@
-SELECT COUNT(*) FROM FinancialTransactions
+TRUNCATE TABLE spapi_app_user.FinancialTransactions
