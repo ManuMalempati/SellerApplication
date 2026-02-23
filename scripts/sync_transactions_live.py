@@ -82,8 +82,12 @@ async def fetch_and_upsert():
     effective_from = (last_sync - dt.timedelta(hours=overlap_hours)).replace(microsecond=0)
     posted_after = effective_from.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    end_dt = dt.datetime.now(dt.timezone.utc)
-    posted_before = end_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Amazon requires postedBefore <= now - 2 minutes
+    now_utc = dt.datetime.now(dt.timezone.utc)
+    safe_end = now_utc - dt.timedelta(minutes=2)
+
+    posted_before = safe_end.strftime("%Y-%m-%dT%H:%M:%SZ")
+    end_dt = safe_end  # store this in SyncState
 
     params = {
         "postedAfter": posted_after,
