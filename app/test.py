@@ -366,11 +366,11 @@ def get_latest_settlement_report():
     }
 
 @router.get("/transactions/raw-fba-reimbursements-5-days")
-def get_raw_fba_inventory_reimbursements_last_5_days():
+def get_fba_inventory_reimbursements_last_5_days():
     """
-    Fetch RAW Finances 2024‑06‑19 API transactions for the last 5 days.
+    Fetch Finances 2024‑06‑19 transactions for the last 5 days.
     Filter ONLY FBAInventoryReimbursement transactions.
-    Return raw SP‑API response (no parsing).
+    Return raw processed rows.
     """
 
     from datetime import datetime, timedelta, timezone
@@ -386,49 +386,31 @@ def get_raw_fba_inventory_reimbursements_last_5_days():
         "pageSize": 100
     }
 
-    print("Fetching RAW Finances 2024‑06‑19 transactions...")
+    print("Fetching Finances 2024‑06‑19 transactions (FBAInventoryReimbursement only)...")
     print("PostedAfter:", posted_after)
     print("PostedBefore:", posted_before)
 
-    # ---- FIRST CALL ----
-    raw_pages = []
+    # DB cursor required by get_transactions()
+    conn = connect_database()
+    cur = conn.cursor()
 
-    response = spapi_request(
-        method="GET",
-        path="/finances/2024-06-19/transactions",
-        params=params
-    )
-    raw_pages.append(response)
+    try:
+        all_rows = get_transactions(params=params, db_cursor=cur)
+    finally:
+        cur.close()
+        conn.close()
 
-    # ---- PAGINATION ----
-    next_token = response.get("payload", {}).get("nextToken")
-
-    while next_token:
-        print("Fetching next page with nextToken:", next_token)
-
-        response = spapi_request(
-            method="GET",
-            path="/finances/2024-06-19/transactions",
-            params={"nextToken": next_token}
-        )
-
-        raw_pages.append(response)
-        next_token = response.get("payload", {}).get("nextToken")
-
-    # ---- FILTER ONLY FBAInventoryReimbursement ----
-    filtered = []
-
-    for page in raw_pages:
-        txs = page.get("payload", {}).get("transactions", [])
-        for tx in txs:
-            if (tx.get("transactionType") or "").strip() == "FBAInventoryReimbursement":
-                filtered.append(tx)
+    # ⭐ Filter only FBAInventoryReimbursement
+    filtered = [
+        row for row in all_rows
+        if (row.get("TransactionType") or "").strip() == "FBAInventoryReimbursement"
+    ]
 
     return {
         "posted_after": posted_after,
         "posted_before": posted_before,
-        "total_pages": len(raw_pages),
-        "total_transactions": sum(len(p.get("payload", {}).get("transactions", [])) for p in raw_pages),
-        "fba_reimbursement_count": len(filtered),
-        "raw_response": filtered[:50]  # return first 50 raw reimbursement transactions
+        "total_rows": len(all_rows),
+        "fba_reimbursement_rows": len(filtered),
+        "preview": filtered[:20],
+        "rows": filtered
     }

@@ -162,6 +162,10 @@ def get_transactions(params, db_cursor):
         transaction_type = tx.get("transactionType")
         transaction_status = tx.get("transactionStatus")
 
+        # ⭐ NEW: Skip DEFERRED_RELEASED (we only want final RELEASED)
+        if transaction_status == "DEFERRED_RELEASED":
+            continue
+
         amazon_order_id = None
         for rid in tx.get("relatedIdentifiers") or []:
             if rid.get("relatedIdentifierName") == "ORDER_ID":
@@ -173,7 +177,6 @@ def get_transactions(params, db_cursor):
             asin = None
             qty = None
 
-            # SKU comes from item.contexts
             items = tx.get("items") or []
             if items:
                 item = items[0]
@@ -187,9 +190,7 @@ def get_transactions(params, db_cursor):
             mapping = product_mapping.get(sku, {}) if sku else {}
             ssku = mapping.get("ssku")
 
-            # ⭐ Reimbursement amount comes from tx["breakdowns"]
             tx_breakdowns = tx.get("breakdowns") or []
-
             reimbursement_amount = extract_breakdown(tx_breakdowns, "FBAInventoryReimbursement")
 
             row = {
@@ -219,10 +220,10 @@ def get_transactions(params, db_cursor):
             }
 
             rows.append(row)
-            continue  # skip normal processing
+            continue
 
         # ---------------------------------------------------------
-        # NORMAL ORDER / REFUND PROCESSING (unchanged)
+        # NORMAL ORDER / REFUND PROCESSING
         # ---------------------------------------------------------
 
         items = tx.get("items") or []
