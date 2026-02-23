@@ -21,7 +21,7 @@ def format_dt_z(d: datetime) -> str:
     return d.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 @app.get("/transactions")
-async def transactions(days: int = 1, hours: int = 0, minutes: int = 0):
+async def transactions(days: int = 2, hours: int = 0, minutes: int = 0):
     delta = timedelta(days=days, hours=hours, minutes=minutes)
     posted_after = format_dt_z(datetime.now(timezone.utc) - delta)
     params = {"postedAfter": posted_after}

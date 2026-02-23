@@ -11,27 +11,17 @@ from app.transactions import get_transactions
 from app.database import connect_database
 
 
-# -------------------------------------------------------------------
-# Environment (from config)
-# -------------------------------------------------------------------
-
 BACKFILL_CHUNK_DAYS = config.BACKFILL_CHUNK_DAYS
 SYNC_OVERLAP_HOURS = config.SYNC_OVERLAP_HOURS
 
 
-# -------------------------------------------------------------------
-# Helpers
-# -------------------------------------------------------------------
-
 def fmt(dt: datetime) -> str:
-    """Format datetime as ISO8601 Zulu."""
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def parse_posted_date(value):
-    """Convert ISO8601 Zulu string to Python datetime."""
     if not value:
         return None
     try:
@@ -41,26 +31,16 @@ def parse_posted_date(value):
 
 
 def safe_decimal(value):
-    """Convert any numeric-like value to float, else None."""
     try:
         return float(value)
     except:
         return None
 
 
-# -------------------------------------------------------------------
-# Backfill Logic
-# -------------------------------------------------------------------
-
 async def run_backfill(start_date: datetime, end_date: datetime):
-    """
-    Backfills transactions from start_date to end_date in windows of BACKFILL_CHUNK_DAYS.
-    """
-
     print("Backfill starting")
     print(f"Start: {fmt(start_date)}")
     print(f"End:   {fmt(end_date)}")
-    print(f"Window size: {BACKFILL_CHUNK_DAYS} days")
 
     window_start = start_date
     total_upserted = 0
@@ -75,11 +55,8 @@ async def run_backfill(start_date: datetime, end_date: datetime):
             "postedBefore": fmt(window_end),
         }
 
-        print("\n------------------------------------------------------------")
-        print(f"Window {window_index}: {params['postedAfter']} -> {params['postedBefore']}")
-        print("Fetching...")
+        print(f"\nWindow {window_index}: {params['postedAfter']} -> {params['postedBefore']}")
 
-        # Fetch transactions
         conn = connect_database()
         cur = conn.cursor()
         try:
@@ -94,12 +71,10 @@ async def run_backfill(start_date: datetime, end_date: datetime):
             window_start = window_end
             continue
 
-        # ---------------- DB UPSERT BLOCK ----------------
         try:
             conn = connect_database()
             cur = conn.cursor()
 
-            # 1. Delete ALL rows with TransactionIds in this batch
             tids = [row["TransactionId"] for row in rows]
             placeholders = ",".join("?" for _ in tids)
 
@@ -108,19 +83,8 @@ async def run_backfill(start_date: datetime, end_date: datetime):
                 tids
             )
 
-            # 2. Prepare batch insert values
             insert_values = []
             for row in rows:
-
-                # Normalize numeric fields
-                for key in [
-                    "SOLD", "ShippingCharge", "TotalPromotions", "SalesProceed",
-                    "Fee", "FBAFees", "ShippingChargeback", "TotalAmazonFees",
-                    "VAT", "R.VAT", "Fee%", "COG", "Net Profit"
-                ]:
-                    row[key] = safe_decimal(row.get(key))
-
-                # Convert PostedDate to datetime
                 row["PostedDate"] = parse_posted_date(row["PostedDate"])
 
                 insert_values.append((
@@ -129,28 +93,22 @@ async def run_backfill(start_date: datetime, end_date: datetime):
                     row["TransactionType"],
                     row["TransactionStatus"],
                     row["AmazonOrderId"],
-                    row["SKU"],
+                    row["SellerSKU"],
                     row["ASIN"],
                     row["SSKU"],
-                    row["Brand"],
-                    row["Category"],
-                    row["Currency"],
-                    row["SOLD"],
-                    row["ShippingCharge"],
-                    row["TotalPromotions"],
-                    row["SalesProceed"],
-                    row["Fee"],
-                    row["FBAFees"],
-                    row["ShippingChargeback"],
-                    row["TotalAmazonFees"],
-                    row["VAT"],
-                    row["R.VAT"],
-                    row["Fee%"],
-                    row["COG"],
-                    row["Net Profit"],
+                    row["QuantityShipped"],
+                    safe_decimal(row["Principal"]),
+                    safe_decimal(row["ShippingCharges"]),
+                    safe_decimal(row["Promotions"]),
+                    safe_decimal(row["FBAFees"]),
+                    safe_decimal(row["Commission"]),
+                    safe_decimal(row["FixedClosingFee"]),
+                    safe_decimal(row["VariableClosingFee"]),
+                    safe_decimal(row["ShippingChargeback"]),
+                    safe_decimal(row["RefFee"]),
+                    safe_decimal(row["Total"]),
                 ))
 
-            # 3. Batch insert using executemany()
             cur.fast_executemany = True
             cur.executemany("""
                 INSERT INTO spapi_app_user.FinancialTransactions (
@@ -159,40 +117,34 @@ async def run_backfill(start_date: datetime, end_date: datetime):
                     TransactionType,
                     TransactionStatus,
                     AmazonOrderId,
-                    SKU,
+                    SellerSKU,
                     ASIN,
                     SSKU,
-                    Brand,
-                    Category,
-                    Currency,
-                    SOLD,
-                    ShippingCharge,
-                    TotalPromotions,
-                    SalesProceed,
-                    Fee,
+                    QuantityShipped,
+                    Principal,
+                    ShippingCharges,
+                    Promotions,
                     FBAFees,
+                    Commission,
+                    FixedClosingFee,
+                    VariableClosingFee,
                     ShippingChargeback,
-                    TotalAmazonFees,
-                    VAT,
-                    R_VAT,
-                    FeePercent,
-                    COG,
-                    NetProfit,
+                    RefFee,
+                    Total,
                     CreatedAt,
                     UpdatedAt
                 )
                 VALUES (
                     ?,?,?,?,?,?,?,?,?,?,
-                    ?,?,?,?,?,?,?,?,?,?,
-                    ?,?,?,?,
+                    ?,?,?,?,?,?,?,?,
                     DATEADD(HOUR,4,SYSDATETIMEOFFSET()),
                     DATEADD(HOUR,4,SYSDATETIMEOFFSET())
                 )
             """, insert_values)
 
             conn.commit()
-            print(f"Upserted {len(rows)} rows")
             total_upserted += len(rows)
+            print(f"Upserted {len(rows)} rows")
 
         except Exception as exc:
             conn.rollback()
@@ -203,32 +155,4 @@ async def run_backfill(start_date: datetime, end_date: datetime):
 
         window_start = window_end
 
-    print("\n============================================================")
-    print(f"Backfill complete. Total rows upserted: {total_upserted}")
-    print("============================================================")
-
-
-# -------------------------------------------------------------------
-# Entry Point
-# -------------------------------------------------------------------
-
-def main():
-    """
-    Backfill from N days ago until now, with overlap.
-    """
-
-    now = datetime.now(timezone.utc)
-    end_date = now - timedelta(hours=SYNC_OVERLAP_HOURS)
-
-    days_back = int(os.getenv("BACKFILL_DAYS", "56"))
-    start_date = end_date - timedelta(days=days_back)
-
-    start = time.time()
-    asyncio.run(run_backfill(start_date, end_date))
-    elapsed = time.time() - start
-
-    print(f"\nFinished in {elapsed:.1f} seconds")
-
-
-if __name__ == "__main__":
-    main()
+    print(f"\nBackfill complete. Total rows upserted: {total_upserted}")

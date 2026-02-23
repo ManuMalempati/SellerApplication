@@ -267,3 +267,32 @@ def find_duplicate_transaction_ids(days: int = 15):
         "duplicate_transaction_ids": len(duplicates),
         "duplicates": duplicates
     }
+
+@router.get("/transactions/raw-1-day")
+def get_raw_financial_transactions_1_day():
+    """
+    Return RAW Amazon SP‑API financial transactions (2024‑06‑19 API)
+    for the last 1 day. No parsing, no flattening.
+    """
+
+    posted_after = format_dt_z(datetime.now(timezone.utc) - timedelta(days=1))
+    posted_before = format_dt_z(datetime.now(timezone.utc) - timedelta(minutes=3))  # Amazon requires 2 min buffer
+
+    params = {
+        "postedAfter": posted_after,
+        "postedBefore": posted_before,
+        "marketplaceId": MARKETPLACE_ID,
+        "pageSize": 100
+    }
+
+    raw = spapi_request(
+        method="GET",
+        path="/finances/2024-06-19/transactions",
+        params=params
+    )
+
+    return {
+        "posted_after": posted_after,
+        "posted_before": posted_before,
+        "raw_response": raw
+    }
