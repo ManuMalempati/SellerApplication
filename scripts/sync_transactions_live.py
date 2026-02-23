@@ -9,6 +9,7 @@ config.load_env()
 
 from app.transactions import get_transactions
 from app.database import connect_database
+from app.database import upsert_financial_transactions   # ⭐ NEW — shared optimized upsert
 
 
 SYNC_KEY = "TRANSACTIONS_LIVE_SYNC"
@@ -135,174 +136,16 @@ async def fetch_and_upsert():
         update_last_sync_at(safe_end)
         return 0
 
-    print("Fast upserting transactions...")
+    print("Fast upserting transactions via shared upsert...")
 
-    conn = connect_database()
-    cur = conn.cursor()
-    conn.autocommit = False
-
-    try:
-        # 1. Deduplicate in Python by TransactionId
-        unique = {}
-        for r in rows:
-            tid = r.get("TransactionId")
-            if tid:
-                unique[tid] = r
-        rows = list(unique.values())
-        print("After dedup:", len(rows))
-
-        if not rows:
-            conn.commit()
-            update_last_sync_at(safe_end)
-            return 0
-
-        # 2. Create temp table
-        cur.execute("""
-        IF OBJECT_ID('tempdb..#TempFinancial') IS NOT NULL DROP TABLE #TempFinancial;
-
-        CREATE TABLE #TempFinancial(
-            TransactionId NVARCHAR(100) PRIMARY KEY,
-            PostedDate DATETIMEOFFSET,
-            TransactionType NVARCHAR(50),
-            TransactionStatus NVARCHAR(50),
-            AmazonOrderId NVARCHAR(50),
-            SellerSKU NVARCHAR(100),
-            ASIN NVARCHAR(50),
-            SSKU NVARCHAR(50),
-            QuantityShipped INT,
-            Principal FLOAT,
-            ShippingCharges FLOAT,
-            Promotions FLOAT,
-            FBAFees FLOAT,
-            FixedClosingFee FLOAT,
-            VariableClosingFee FLOAT,
-            ShippingChargeback FLOAT,
-            RefFee FLOAT,
-            Total FLOAT
-        )
-        """)
-
-        # 3. Bulk insert into temp table
-        insert_temp = []
-        for row in rows:
-            row["PostedDate"] = parse_posted_date(row["PostedDate"])
-            insert_temp.append((
-                row["TransactionId"],
-                row["PostedDate"],
-                row["TransactionType"],
-                row["TransactionStatus"],
-                row["AmazonOrderId"],
-                row["SellerSKU"],
-                row["ASIN"],
-                row["SSKU"],
-                row["QuantityShipped"],
-                safe_decimal(row["Principal"]),
-                safe_decimal(row["ShippingCharges"]),
-                safe_decimal(row["Promotions"]),
-                safe_decimal(row["FBAFees"]),
-                safe_decimal(row["FixedClosingFee"]),
-                safe_decimal(row["VariableClosingFee"]),
-                safe_decimal(row["ShippingChargeback"]),
-                safe_decimal(row["RefFee"]),
-                safe_decimal(row["Total"]),
-            ))
-
-        cur.fast_executemany = True
-        cur.executemany("""
-            INSERT INTO #TempFinancial VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """, insert_temp)
-
-        # 4. Lifecycle delete (SET-BASED, FAST, TransactionType-aware)
-        cur.execute("""
-        DELETE T
-        FROM spapi_app_user.FinancialTransactions T
-        JOIN #TempFinancial S
-          ON T.AmazonOrderId   = S.AmazonOrderId
-         AND T.SellerSKU       = S.SellerSKU
-         AND T.TransactionType = S.TransactionType
-        WHERE
-            (
-                S.TransactionStatus = 'DEFERRED'
-                AND T.TransactionStatus = 'DEFERRED'
-            )
-         OR (
-                S.TransactionStatus IN ('DEFERRED_RELEASED','RELEASED')
-                AND T.TransactionStatus IN ('DEFERRED','DEFERRED_RELEASED')
-            )
-        """)
-
-        # 5. Delete exact TransactionIds (idempotency)
-        cur.execute("""
-        DELETE T
-        FROM spapi_app_user.FinancialTransactions T
-        JOIN #TempFinancial S
-          ON T.TransactionId = S.TransactionId
-        """)
-
-        # 6. Insert all new rows
-        cur.execute("""
-        INSERT INTO spapi_app_user.FinancialTransactions (
-            TransactionId,
-            PostedDate,
-            TransactionType,
-            TransactionStatus,
-            AmazonOrderId,
-            SellerSKU,
-            ASIN,
-            SSKU,
-            QuantityShipped,
-            Principal,
-            ShippingCharges,
-            Promotions,
-            FBAFees,
-            FixedClosingFee,
-            VariableClosingFee,
-            ShippingChargeback,
-            RefFee,
-            Total,
-            CreatedAt,
-            UpdatedAt
-        )
-        SELECT
-            TransactionId,
-            PostedDate,
-            TransactionType,
-            TransactionStatus,
-            AmazonOrderId,
-            SellerSKU,
-            ASIN,
-            SSKU,
-            QuantityShipped,
-            Principal,
-            ShippingCharges,
-            Promotions,
-            FBAFees,
-            FixedClosingFee,
-            VariableClosingFee,
-            ShippingChargeback,
-            RefFee,
-            Total,
-            DATEADD(HOUR,4,SYSDATETIMEOFFSET()),
-            DATEADD(HOUR,4,SYSDATETIMEOFFSET())
-        FROM #TempFinancial
-        """)
-
-        conn.commit()
-        print("Fast upsert complete:", len(rows))
-
-    except Exception as exc:
-        conn.rollback()
-        print("ERROR during UPSERT:", exc)
-        raise
-    finally:
-        cur.close()
-        conn.close()
+    # ⭐ Use shared optimized lifecycle-aware upsert
+    upserted = upsert_financial_transactions(rows)
 
     update_last_sync_at(safe_end)
-    print("Transaction sync completed successfully.")
+    print(f"Transaction sync completed successfully. Upserted {upserted} rows.")
     print("------------------------------------------------------------")
 
-    return len(rows)
+    return upserted
 
 
 def main():

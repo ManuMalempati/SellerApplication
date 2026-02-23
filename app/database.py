@@ -5,6 +5,7 @@ import os
 from dotenv import load_dotenv
 import json
 import time
+import datetime as dt
 
 load_dotenv()
 
@@ -460,3 +461,250 @@ def get_cached_fees(cursor, fee_items):
             }
 
     return results
+
+# ---------------------------------------------------------
+# FAST, LIFECYCLE-AWARE, BATCH-COLLAPSING UPSERT
+# ---------------------------------------------------------
+
+def _parse_posted_date(value):
+    if not value:
+        return None
+    try:
+        return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except:
+        return None
+
+def _safe_decimal(value):
+    try:
+        return float(value)
+    except:
+        return None
+
+STATUS_RANK = {
+    "DEFERRED": 0,
+    "DEFERRED_RELEASED": 1,
+    "RELEASED": 2,
+}
+
+def upsert_financial_transactions(rows):
+    """
+    Fully optimized, lifecycle-aware upsert for FinancialTransactions.
+
+    Handles:
+    - Dedup by TransactionId
+    - Collapse batch by logical key + financials
+    - RELEASED > DEFERRED_RELEASED > DEFERRED
+    - Set-based lifecycle delete
+    - Set-based delete by TransactionId
+    - Single batch insert
+    """
+
+    if not rows:
+        return 0
+
+    conn = connect_database()
+    cur = conn.cursor()
+    conn.autocommit = False
+
+    try:
+        # -------------------------------------------------
+        # 1. Deduplicate by TransactionId
+        # -------------------------------------------------
+        by_tid = {}
+        for r in rows:
+            tid = r.get("TransactionId")
+            if tid:
+                by_tid[tid] = r
+        rows = list(by_tid.values())
+
+        # -------------------------------------------------
+        # 2. Collapse batch by logical key + financials
+        # -------------------------------------------------
+        collapsed = {}
+
+        for r in rows:
+            status = r.get("TransactionStatus")
+            rank = STATUS_RANK.get(status, -1)
+
+            key = (
+                r.get("AmazonOrderId"),
+                r.get("TransactionType"),
+                r.get("SellerSKU"),
+                r.get("ASIN"),
+                r.get("SSKU"),
+                r.get("QuantityShipped"),
+                _safe_decimal(r.get("Principal")),
+                _safe_decimal(r.get("ShippingCharges")),
+                _safe_decimal(r.get("ShippingChargeback")),
+                _safe_decimal(r.get("RefFee")),
+                _safe_decimal(r.get("Total")),
+            )
+
+            existing = collapsed.get(key)
+            if not existing:
+                collapsed[key] = r
+            else:
+                existing_rank = STATUS_RANK.get(existing.get("TransactionStatus"), -1)
+                if rank > existing_rank:
+                    collapsed[key] = r
+
+        rows = list(collapsed.values())
+
+        if not rows:
+            conn.commit()
+            return 0
+
+        # -------------------------------------------------
+        # 3. Create temp table
+        # -------------------------------------------------
+        cur.execute("""
+        IF OBJECT_ID('tempdb..#TempFinancial') IS NOT NULL DROP TABLE #TempFinancial;
+
+        CREATE TABLE #TempFinancial(
+            TransactionId NVARCHAR(100) PRIMARY KEY,
+            PostedDate DATETIMEOFFSET,
+            TransactionType NVARCHAR(50),
+            TransactionStatus NVARCHAR(50),
+            AmazonOrderId NVARCHAR(50),
+            SellerSKU NVARCHAR(100),
+            ASIN NVARCHAR(50),
+            SSKU NVARCHAR(50),
+            QuantityShipped INT,
+            Principal FLOAT,
+            ShippingCharges FLOAT,
+            Promotions FLOAT,
+            FBAFees FLOAT,
+            FixedClosingFee FLOAT,
+            VariableClosingFee FLOAT,
+            ShippingChargeback FLOAT,
+            RefFee FLOAT,
+            Total FLOAT
+        )
+        """)
+
+        # -------------------------------------------------
+        # 4. Bulk insert into temp table
+        # -------------------------------------------------
+        insert_temp = []
+        for row in rows:
+            row["PostedDate"] = _parse_posted_date(row["PostedDate"])
+            insert_temp.append((
+                row["TransactionId"],
+                row["PostedDate"],
+                row["TransactionType"],
+                row["TransactionStatus"],
+                row["AmazonOrderId"],
+                row["SellerSKU"],
+                row["ASIN"],
+                row["SSKU"],
+                row["QuantityShipped"],
+                _safe_decimal(row["Principal"]),
+                _safe_decimal(row["ShippingCharges"]),
+                _safe_decimal(row["Promotions"]),
+                _safe_decimal(row["FBAFees"]),
+                _safe_decimal(row["FixedClosingFee"]),
+                _safe_decimal(row["VariableClosingFee"]),
+                _safe_decimal(row["ShippingChargeback"]),
+                _safe_decimal(row["RefFee"]),
+                _safe_decimal(row["Total"]),
+            ))
+
+        cur.fast_executemany = True
+        cur.executemany("""
+            INSERT INTO #TempFinancial VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, insert_temp)
+
+        # -------------------------------------------------
+        # 5. Lifecycle delete (TransactionType + ASIN + SSKU aware)
+        # -------------------------------------------------
+        cur.execute("""
+        DELETE T
+        FROM spapi_app_user.FinancialTransactions T
+        JOIN #TempFinancial S
+          ON T.AmazonOrderId   = S.AmazonOrderId
+         AND T.SellerSKU       = S.SellerSKU
+         AND T.TransactionType = S.TransactionType
+         AND ISNULL(T.ASIN,'') = ISNULL(S.ASIN,'')
+         AND ISNULL(T.SSKU,'') = ISNULL(S.SSKU,'')
+        WHERE
+            (
+                S.TransactionStatus = 'DEFERRED'
+                AND T.TransactionStatus = 'DEFERRED'
+            )
+         OR (
+                S.TransactionStatus IN ('DEFERRED_RELEASED','RELEASED')
+                AND T.TransactionStatus IN ('DEFERRED','DEFERRED_RELEASED')
+            )
+        """)
+
+        # -------------------------------------------------
+        # 6. Delete exact TransactionIds (idempotency)
+        # -------------------------------------------------
+        cur.execute("""
+        DELETE T
+        FROM spapi_app_user.FinancialTransactions T
+        JOIN #TempFinancial S
+          ON T.TransactionId = S.TransactionId
+        """)
+
+        # -------------------------------------------------
+        # 7. Insert all new rows
+        # -------------------------------------------------
+        cur.execute("""
+        INSERT INTO spapi_app_user.FinancialTransactions (
+            TransactionId,
+            PostedDate,
+            TransactionType,
+            TransactionStatus,
+            AmazonOrderId,
+            SellerSKU,
+            ASIN,
+            SSKU,
+            QuantityShipped,
+            Principal,
+            ShippingCharges,
+            Promotions,
+            FBAFees,
+            FixedClosingFee,
+            VariableClosingFee,
+            ShippingChargeback,
+            RefFee,
+            Total,
+            CreatedAt,
+            UpdatedAt
+        )
+        SELECT
+            TransactionId,
+            PostedDate,
+            TransactionType,
+            TransactionStatus,
+            AmazonOrderId,
+            SellerSKU,
+            ASIN,
+            SSKU,
+            QuantityShipped,
+            Principal,
+            ShippingCharges,
+            Promotions,
+            FBAFees,
+            FixedClosingFee,
+            VariableClosingFee,
+            ShippingChargeback,
+            RefFee,
+            Total,
+            DATEADD(HOUR,4,SYSDATETIMEOFFSET()),
+            DATEADD(HOUR,4,SYSDATETIMEOFFSET())
+        FROM #TempFinancial
+        """)
+
+        conn.commit()
+        return len(rows)
+
+    except Exception as exc:
+        conn.rollback()
+        print("ERROR during upsert_financial_transactions:", exc)
+        raise
+
+    finally:
+        cur.close()
+        conn.close()

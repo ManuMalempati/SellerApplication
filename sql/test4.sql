@@ -1,2 +1,2 @@
 SELECT * FROM FinancialTransactions
-WHERE TransactionType != 'Shipment' AND TransactionType != 'Refund'
+WHERE AmazonOrderId = '406-4558981-6500324'

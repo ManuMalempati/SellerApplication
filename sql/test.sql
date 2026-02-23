@@ -1,1 +1,2 @@
-SELECT * FROM SyncState
+SELECT * FROM FinancialTransactions
+WHERE TransactionStatus = 'DEFERRED_RELEASED'
