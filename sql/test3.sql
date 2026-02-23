@@ -1,1 +1,3 @@
-SELECT * FROM FBAProductSummary
+UPDATE spapi_app_user.SyncState
+SET LastSuccessfulSyncUtc = DATEADD(DAY, -4, SYSDATETIMEOFFSET())
+WHERE SyncKey = 'TRANSACTIONS_LIVE_SYNC';
