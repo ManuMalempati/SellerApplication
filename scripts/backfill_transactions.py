@@ -90,9 +90,7 @@ async def run_backfill(start_date: datetime, end_date: datetime):
             cur = conn.cursor()
             conn.autocommit = False
 
-            # -------------------------------------------------
             # 1. Deduplicate in Python by TransactionId
-            # -------------------------------------------------
             unique = {}
             for r in rows:
                 tid = r.get("TransactionId")
@@ -106,9 +104,7 @@ async def run_backfill(start_date: datetime, end_date: datetime):
                 window_start = window_end
                 continue
 
-            # -------------------------------------------------
             # 2. Create temp table
-            # -------------------------------------------------
             cur.execute("""
             IF OBJECT_ID('tempdb..#TempFinancial') IS NOT NULL DROP TABLE #TempFinancial;
 
@@ -134,9 +130,7 @@ async def run_backfill(start_date: datetime, end_date: datetime):
             )
             """)
 
-            # -------------------------------------------------
             # 3. Bulk insert into temp table
-            # -------------------------------------------------
             insert_temp = []
             for row in rows:
                 row["PostedDate"] = parse_posted_date(row["PostedDate"])
@@ -166,15 +160,14 @@ async def run_backfill(start_date: datetime, end_date: datetime):
                 INSERT INTO #TempFinancial VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, insert_temp)
 
-            # -------------------------------------------------
-            # 4. Lifecycle delete (SET-BASED, FAST)
-            # -------------------------------------------------
+            # 4. Lifecycle delete (SET-BASED, FAST, TransactionType-aware)
             cur.execute("""
             DELETE T
             FROM spapi_app_user.FinancialTransactions T
             JOIN #TempFinancial S
-              ON T.AmazonOrderId = S.AmazonOrderId
-             AND T.SellerSKU = S.SellerSKU
+              ON T.AmazonOrderId   = S.AmazonOrderId
+             AND T.SellerSKU       = S.SellerSKU
+             AND T.TransactionType = S.TransactionType
             WHERE
                 (
                     S.TransactionStatus = 'DEFERRED'
@@ -186,9 +179,7 @@ async def run_backfill(start_date: datetime, end_date: datetime):
                 )
             """)
 
-            # -------------------------------------------------
             # 5. Delete exact TransactionIds (idempotency)
-            # -------------------------------------------------
             cur.execute("""
             DELETE T
             FROM spapi_app_user.FinancialTransactions T
@@ -196,9 +187,7 @@ async def run_backfill(start_date: datetime, end_date: datetime):
               ON T.TransactionId = S.TransactionId
             """)
 
-            # -------------------------------------------------
             # 6. Insert all new rows
-            # -------------------------------------------------
             cur.execute("""
             INSERT INTO spapi_app_user.FinancialTransactions (
                 TransactionId,

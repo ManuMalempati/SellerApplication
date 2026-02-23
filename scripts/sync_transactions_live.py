@@ -142,9 +142,7 @@ async def fetch_and_upsert():
     conn.autocommit = False
 
     try:
-        # -------------------------------------------------
         # 1. Deduplicate in Python by TransactionId
-        # -------------------------------------------------
         unique = {}
         for r in rows:
             tid = r.get("TransactionId")
@@ -158,9 +156,7 @@ async def fetch_and_upsert():
             update_last_sync_at(safe_end)
             return 0
 
-        # -------------------------------------------------
         # 2. Create temp table
-        # -------------------------------------------------
         cur.execute("""
         IF OBJECT_ID('tempdb..#TempFinancial') IS NOT NULL DROP TABLE #TempFinancial;
 
@@ -186,9 +182,7 @@ async def fetch_and_upsert():
         )
         """)
 
-        # -------------------------------------------------
         # 3. Bulk insert into temp table
-        # -------------------------------------------------
         insert_temp = []
         for row in rows:
             row["PostedDate"] = parse_posted_date(row["PostedDate"])
@@ -218,19 +212,14 @@ async def fetch_and_upsert():
             INSERT INTO #TempFinancial VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, insert_temp)
 
-        # -------------------------------------------------
-        # 4. Lifecycle delete (SET-BASED, FAST)
-        # -------------------------------------------------
-        # Logic:
-        # - If new row is DEFERRED: remove existing DEFERRED for same OrderId+SKU
-        # - If new row is DEFERRED_RELEASED: remove DEFERRED + DEFERRED_RELEASED
-        # - If new row is RELEASED: remove DEFERRED + DEFERRED_RELEASED (keep RELEASED)
+        # 4. Lifecycle delete (SET-BASED, FAST, TransactionType-aware)
         cur.execute("""
         DELETE T
         FROM spapi_app_user.FinancialTransactions T
         JOIN #TempFinancial S
-          ON T.AmazonOrderId = S.AmazonOrderId
-         AND T.SellerSKU = S.SellerSKU
+          ON T.AmazonOrderId   = S.AmazonOrderId
+         AND T.SellerSKU       = S.SellerSKU
+         AND T.TransactionType = S.TransactionType
         WHERE
             (
                 S.TransactionStatus = 'DEFERRED'
@@ -242,9 +231,7 @@ async def fetch_and_upsert():
             )
         """)
 
-        # -------------------------------------------------
         # 5. Delete exact TransactionIds (idempotency)
-        # -------------------------------------------------
         cur.execute("""
         DELETE T
         FROM spapi_app_user.FinancialTransactions T
@@ -252,9 +239,7 @@ async def fetch_and_upsert():
           ON T.TransactionId = S.TransactionId
         """)
 
-        # -------------------------------------------------
         # 6. Insert all new rows
-        # -------------------------------------------------
         cur.execute("""
         INSERT INTO spapi_app_user.FinancialTransactions (
             TransactionId,
