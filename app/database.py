@@ -9,6 +9,7 @@ import datetime as dt
 
 load_dotenv()
 
+
 def connect_database():
     """Establish connection to the SQL Server database"""
     try:
@@ -20,6 +21,7 @@ def connect_database():
             print(f"Authentication error: {e.args}")
         else:
             print(f"Connection failed: {sqlstate}")
+
 
 def get_product_mapping(cursor, seller_sku_list):
     product_mapping = {}
@@ -46,6 +48,7 @@ def get_product_mapping(cursor, seller_sku_list):
         }
     return product_mapping
 
+
 def get_all_product_mapping(cursor):
     query = """
         SELECT sku, asin, ssku
@@ -66,6 +69,7 @@ def get_all_product_mapping(cursor):
             "fee_updated_at": None,
         }
     return mapping
+
 
 def get_product_details_by_asin(cursor, asin_list):
     """
@@ -110,6 +114,7 @@ def get_product_details_by_asin(cursor, asin_list):
     
     return results
 
+
 def parse_cost(cost_value):
     if cost_value is None:
         return None
@@ -118,6 +123,7 @@ def parse_cost(cost_value):
         return float(cost_str)
     except (ValueError, AttributeError):
         return None
+
 
 # -------------- DELETE & REPLACE ORDER ITEMS --------------
 
@@ -181,6 +187,7 @@ def insert_order_item(cursor, row):
         row["LastSeenAt"],
     )
     cursor.execute(sql, params)
+
 
 def replace_order_items_for_order(cursor, amazon_order_id, rows):
     # 1. Delete existing rows for this order
@@ -254,6 +261,7 @@ def replace_order_items_for_order(cursor, amazon_order_id, rows):
 
     # 3. Bulk insert
     cursor.executemany(sql, params)
+
 
 def bulk_upsert_fba_data(cursor, fba_rows):
     import time
@@ -414,6 +422,7 @@ def bulk_upsert_fba_data(cursor, fba_rows):
 
     return updated + inserted
 
+
 def get_cached_fees(cursor, fee_items):
     """
     fee_items: list of (sku, asin, price)
@@ -462,13 +471,61 @@ def get_cached_fees(cursor, fee_items):
 
     return results
 
-import datetime as dt
 
 STATUS_RANK = {
     "DEFERRED": 0,
     "DEFERRED_RELEASED": 1,
     "RELEASED": 2,
 }
+
+
+def update_orderitems_from_temp_financial(cur):
+    """
+    Model B:
+    - Shipments: Payment = Total on ALL matching OrderItems rows (RELEASED only).
+    - Refunds: apply to earliest unrefunded OrderItems row per (OrderId, SKU).
+    """
+
+    # Shipments → Payment
+    cur.execute("""
+    UPDATE O
+    SET O.Payment = S.Total
+    FROM OrderItems O
+    JOIN #TempFinancial S
+      ON O.AmazonOrderId = S.AmazonOrderId
+     AND O.SKU           = S.SellerSKU
+    WHERE S.TransactionType   = 'Shipment'
+      AND S.TransactionStatus = 'RELEASED';
+    """)
+
+    # Refunds → earliest unrefunded row (or earliest row if all refunded)
+    cur.execute("""
+    ;WITH RefundSource AS (
+        SELECT
+            S.TransactionId,
+            S.AmazonOrderId,
+            S.SellerSKU,
+            S.Total,
+            S.PostedDate
+        FROM #TempFinancial S
+        WHERE S.TransactionType   = 'Refund'
+          AND S.TransactionStatus = 'RELEASED'
+    )
+    UPDATE O
+    SET 
+        O.Refund     = R.Total,
+        O.RefundDate = R.PostedDate
+    FROM RefundSource R
+    CROSS APPLY (
+        SELECT TOP 1 O2.*
+        FROM OrderItems O2
+        WHERE O2.AmazonOrderId = R.AmazonOrderId
+          AND O2.SKU           = R.SellerSKU
+        ORDER BY 
+            CASE WHEN O2.Refund IS NULL THEN 0 ELSE 1 END,
+            O2.OrderDate
+    ) O
+    """)
 
 
 def upsert_financial_transactions(rows):
@@ -481,6 +538,7 @@ def upsert_financial_transactions(rows):
     - Idempotency is identity-based, NOT TransactionId-based.
     - Multiple rows with the same TransactionId are allowed (different SKUs/items).
     - All timestamps stored as naive DATETIME in UTC+4 (no timezone suffix).
+    - Also updates OrderItems.Payment / Refund / RefundDate (Model B).
     """
 
     if not rows:
@@ -546,7 +604,6 @@ def upsert_financial_transactions(rows):
 
         insert_temp = []
         for row in rows:
-            # PostedDate is already naive UTC+4 datetime from get_transactions()
             insert_temp.append((
                 row.get("TransactionId"),
                 row.get("PostedDate"),
@@ -654,6 +711,9 @@ def upsert_financial_transactions(rows):
             DATEADD(HOUR,4,GETUTCDATE())
         FROM #TempFinancial
         """)
+
+        # 6) Update OrderItems from #TempFinancial (Model B)
+        update_orderitems_from_temp_financial(cur)
 
         conn.commit()
         return len(rows)

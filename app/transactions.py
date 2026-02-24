@@ -7,9 +7,11 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_resul
 from .auth import spapi_request
 from .database import get_product_mapping
 
+
 # ---------------------------------------------------------
 # Timezone helpers
 # ---------------------------------------------------------
+
 UTC_PLUS_4 = timezone(timedelta(hours=4))
 
 
@@ -31,6 +33,7 @@ def to_utc_plus_4_naive(value: str):
 # ---------------------------------------------------------
 # Rate Limiter
 # ---------------------------------------------------------
+
 class TokenBucketRateLimiter:
     def __init__(self, rate: float, burst: int):
         self.rate = rate
@@ -62,6 +65,7 @@ transactions_rate_limiter = TokenBucketRateLimiter(rate=0.5, burst=10)
 # ---------------------------------------------------------
 # Retry Logic
 # ---------------------------------------------------------
+
 def _should_retry(result):
     if isinstance(result, dict) and "errors" in result:
         codes = [e.get("code") for e in result["errors"]]
@@ -81,6 +85,7 @@ def retry_call(func, *args, **kwargs):
 # ---------------------------------------------------------
 # Safe decimal
 # ---------------------------------------------------------
+
 def safe(value):
     try:
         return float(value)
@@ -91,6 +96,7 @@ def safe(value):
 # ---------------------------------------------------------
 # Retrieve Finances 2024-06-19 API transactions
 # ---------------------------------------------------------
+
 def retrieve_transactions(params):
     all_tx = []
 
@@ -129,8 +135,9 @@ def retrieve_transactions(params):
 
 
 # ---------------------------------------------------------
-# Extract breakdown values
+# Extract breakdown values recursively
 # ---------------------------------------------------------
+
 def extract_breakdown(breakdowns, target):
     if not breakdowns:
         return 0.0
@@ -152,6 +159,7 @@ def extract_breakdown(breakdowns, target):
 # ---------------------------------------------------------
 # Main Processor
 # ---------------------------------------------------------
+
 def get_transactions(params, db_cursor):
     print("Fetching Finances 2024-06-19 Transactions...")
 
@@ -193,6 +201,7 @@ def get_transactions(params, db_cursor):
         # ---------------------------------------------------------
         # SPECIAL CASE: FBAInventoryReimbursement
         # ---------------------------------------------------------
+
         if transaction_type == "FBAInventoryReimbursement":
             sku = None
             asin = None

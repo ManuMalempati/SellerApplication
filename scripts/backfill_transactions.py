@@ -9,7 +9,7 @@ config.load_env()
 
 from app.transactions import get_transactions
 from app.database import connect_database
-from app.database import upsert_financial_transactions   # ⭐ NEW — shared optimized upsert
+from app.database import upsert_financial_transactions   # shared optimized upsert
 
 
 BACKFILL_CHUNK_DAYS = config.BACKFILL_CHUNK_DAYS
@@ -21,10 +21,18 @@ SYNC_OVERLAP_HOURS = config.SYNC_OVERLAP_HOURS
 # ---------------------------------------------------------
 
 def fmt(dt: datetime) -> str:
-    """Format datetime as ISO8601 Zulu."""
+    """
+    Format datetime as ISO8601 Zulu for SP-API.
+    Always output UTC Z timestamps.
+    """
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return (
+        dt.astimezone(timezone.utc)
+          .replace(microsecond=0)
+          .isoformat()
+          .replace("+00:00", "Z")
+    )
 
 
 # ---------------------------------------------------------
@@ -43,7 +51,10 @@ async def run_backfill(start_date: datetime, end_date: datetime):
 
     while window_start < end_date:
 
-        window_end = min(window_start + timedelta(days=BACKFILL_CHUNK_DAYS), end_date)
+        window_end = min(
+            window_start + timedelta(days=BACKFILL_CHUNK_DAYS),
+            end_date
+        )
         window_index += 1
 
         params = {
