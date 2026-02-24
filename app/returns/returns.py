@@ -16,15 +16,63 @@ load_dotenv()
 
 MARKETPLACE_ID = os.getenv("MARKETPLACE_ID")
 
+
+# ---------------------------------------------------------
+# Sanitizers
+# ---------------------------------------------------------
+
 def clean_str(x):
     if x is None:
         return None
-    return str(x).strip()
+    x = str(x).strip()
+    return x if x != "" else None
+
+
+def safe_int(x):
+    try:
+        x = str(x).strip()
+        if x in ("", " ", "-", "--", "N/A", "NA", "None", "null"):
+            return 0
+        return int(float(x))
+    except:
+        return 0
+
+
+def safe_dt(x):
+    """
+    Convert ISO8601 → UTC+4 naive datetime
+    """
+    if not x:
+        return None
+
+    x = str(x).strip()
+    if x in ("", " ", "N/A", "NA", "-", "--", "0000-00-00T00:00:00+00:00"):
+        return None
+
+    try:
+        if x.endswith("Z"):
+            x = x.replace("Z", "+00:00")
+
+        dt_utc = datetime.fromisoformat(x)
+        if dt_utc.tzinfo is None:
+            dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+
+        dt_utc4 = dt_utc.astimezone(timezone(timedelta(hours=4)))
+        return dt_utc4.replace(tzinfo=None)
+
+    except:
+        return None
+
+
+def now_utc_plus_4():
+    dt = datetime.now(timezone.utc) + timedelta(hours=4)
+    return dt.replace(tzinfo=None)
 
 
 # ---------------------------------------------------------
-# Fetch FBA Customer Returns Report (last 60 days)
+# Fetch FBA Customer Returns Report
 # ---------------------------------------------------------
+
 def fetch_fba_customer_returns(days=365):
     end_dt = datetime.now(timezone.utc)
     start_dt = end_dt - timedelta(days=days)
@@ -97,6 +145,7 @@ def fetch_fba_customer_returns(days=365):
 # ---------------------------------------------------------
 # UPSERT rows into FBACustomerReturns
 # ---------------------------------------------------------
+
 def upsert_fba_customer_returns(rows):
     if not rows:
         print("[FBA-RETURNS] No rows to upsert.")
@@ -113,25 +162,27 @@ def upsert_fba_customer_returns(rows):
     staging = []
     for r in rows:
         staging.append((
-            r.get("return-date"),
+            safe_dt(r.get("return-date")),
             clean_str(r.get("order-id")),
             clean_str(r.get("sku")),
             clean_str(r.get("asin")),
             clean_str(r.get("fnsku")),
-            r.get("product-name"),
-            int(r.get("quantity") or 0),
-            r.get("fulfillment-center-id"),
-            r.get("detailed-disposition"),
-            r.get("reason"),
-            r.get("license-plate-number"),
-            r.get("customer-comments"),
+            clean_str(r.get("product-name")),
+            safe_int(r.get("quantity")),
+            clean_str(r.get("fulfillment-center-id")),
+            clean_str(r.get("detailed-disposition")),
+            clean_str(r.get("reason")),
+            clean_str(r.get("license-plate-number")),
+            clean_str(r.get("customer-comments")),
+            now_utc_plus_4(),   # created_at
+            now_utc_plus_4(),   # updated_at
         ))
 
-    # Create temp table (DATETIMEOFFSET!)
+    # Create temp table (DATETIME, not DATETIMEOFFSET)
     cursor.execute("""
         IF OBJECT_ID('tempdb..#TempReturns') IS NOT NULL DROP TABLE #TempReturns;
         CREATE TABLE #TempReturns (
-            return_date DATETIMEOFFSET,
+            return_date DATETIME,
             order_id NVARCHAR(50),
             sku NVARCHAR(200),
             asin NVARCHAR(20),
@@ -142,53 +193,52 @@ def upsert_fba_customer_returns(rows):
             detailed_disposition NVARCHAR(200),
             reason NVARCHAR(500),
             license_plate_number NVARCHAR(200),
-            customer_comments NVARCHAR(MAX)
+            customer_comments NVARCHAR(MAX),
+            created_at DATETIME,
+            updated_at DATETIME
         );
     """)
 
     cursor.executemany("""
         INSERT INTO #TempReturns VALUES (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         );
     """, staging)
 
     # MERGE UPSERT
     merge_sql = """
-                MERGE INTO spapi_app_user.FBACustomerReturns AS target
-                USING #TempReturns AS src
-                ON target.order_id = src.order_id
-                AND target.sku = src.sku
-                AND target.asin = src.asin
-                AND target.fnsku = src.fnsku
-                AND target.return_date = src.return_date
-                AND target.license_plate_number = src.license_plate_number
+        MERGE INTO spapi_app_user.FBACustomerReturns AS target
+        USING #TempReturns AS src
+        ON target.order_id = src.order_id
+        AND target.sku = src.sku
+        AND target.asin = src.asin
+        AND target.fnsku = src.fnsku
+        AND target.return_date = src.return_date
+        AND target.license_plate_number = src.license_plate_number
 
-                WHEN MATCHED THEN
-                    UPDATE SET
-                        target.product_name = src.product_name,
-                        target.quantity = src.quantity,
-                        target.fulfillment_center_id = src.fulfillment_center_id,
-                        target.detailed_disposition = src.detailed_disposition,
-                        target.reason = src.reason,
-                        target.customer_comments = src.customer_comments,
-                        target.updated_at = DATEADD(HOUR, 4, SYSDATETIMEOFFSET())
+        WHEN MATCHED THEN
+            UPDATE SET
+                target.product_name = src.product_name,
+                target.quantity = src.quantity,
+                target.fulfillment_center_id = src.fulfillment_center_id,
+                target.detailed_disposition = src.detailed_disposition,
+                target.reason = src.reason,
+                target.customer_comments = src.customer_comments,
+                target.updated_at = src.updated_at
 
-                WHEN NOT MATCHED BY TARGET THEN
-                    INSERT (
-                        return_date, order_id, sku, asin, fnsku, license_plate_number,
-                        product_name, quantity, fulfillment_center_id, detailed_disposition,
-                        reason, customer_comments, created_at, updated_at
-                    )
-                    VALUES (
-                        src.return_date, src.order_id, src.sku, src.asin, src.fnsku, src.license_plate_number,
-                        src.product_name, src.quantity, src.fulfillment_center_id, src.detailed_disposition,
-                        src.reason, src.customer_comments,
-                        DATEADD(HOUR, 4, SYSDATETIMEOFFSET()),
-                        DATEADD(HOUR, 4, SYSDATETIMEOFFSET())
-                    )
+        WHEN NOT MATCHED BY TARGET THEN
+            INSERT (
+                return_date, order_id, sku, asin, fnsku, license_plate_number,
+                product_name, quantity, fulfillment_center_id, detailed_disposition,
+                reason, customer_comments, created_at, updated_at
+            )
+            VALUES (
+                src.return_date, src.order_id, src.sku, src.asin, src.fnsku, src.license_plate_number,
+                src.product_name, src.quantity, src.fulfillment_center_id, src.detailed_disposition,
+                src.reason, src.customer_comments, src.created_at, src.updated_at
+            )
 
-                OUTPUT $action;
-
+        OUTPUT $action;
     """
 
     cursor.execute(merge_sql)
@@ -208,6 +258,7 @@ def upsert_fba_customer_returns(rows):
 # ---------------------------------------------------------
 # Main function
 # ---------------------------------------------------------
+
 def run_returns_import(days):
     print("==============================================")
     print("FBA CUSTOMER RETURNS IMPORT - START")
@@ -219,7 +270,6 @@ def run_returns_import(days):
     print("==============================================")
     print("FBA CUSTOMER RETURNS IMPORT - COMPLETE")
     print("==============================================")
-
 
 if __name__ == "__main__":
     run_returns_import(days=365)
