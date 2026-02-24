@@ -92,6 +92,7 @@ async def fetch_and_upsert():
     overlap_hours = config.SYNC_OVERLAP_HOURS
     effective_from = last_sync - dt.timedelta(hours=overlap_hours)
 
+    # SP‑API requires UTC Z timestamps
     posted_after = effective_from.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     now_utc = dt.datetime.now(dt.timezone.utc)

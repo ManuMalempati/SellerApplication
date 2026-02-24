@@ -29,10 +29,17 @@ def format_as_utc_plus4_no_offset(value):
             dt = value
         else:
             return str(value)
+
+        # Ensure timezone awareness
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
+
+        # Convert to UTC+4
         dt_utc4 = dt.astimezone(UTC_PLUS_4)
+
+        # Return naive string (NO OFFSET)
         return dt_utc4.replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+
     except Exception:
         return ""
 
@@ -195,7 +202,8 @@ def get_transactions(params, db_cursor):
     for tx in txs:
         transaction_id = tx.get("transactionId")
         posted_date_raw = tx.get("postedDate")
-        # store as UTC+4 naive formatted string so DB value and display match
+
+        # ⭐ ALWAYS store as UTC+4 naive string
         posted_date = format_as_utc_plus4_no_offset(posted_date_raw)
 
         transaction_type = tx.get("transactionType")
@@ -233,7 +241,7 @@ def get_transactions(params, db_cursor):
 
             row = {
                 "TransactionId": transaction_id,
-                "PostedDate": posted_date,  # now a string "YYYY-MM-DD HH:MM:SS" in UTC+4
+                "PostedDate": posted_date,
                 "TransactionStatus": transaction_status,
                 "TransactionType": transaction_type,
                 "AmazonOrderId": amazon_order_id,
@@ -309,7 +317,7 @@ def get_transactions(params, db_cursor):
 
             row = {
                 "TransactionId": transaction_id,
-                "PostedDate": posted_date,  # now a string "YYYY-MM-DD HH:MM:SS" in UTC+4
+                "PostedDate": posted_date,
                 "TransactionStatus": transaction_status,
                 "TransactionType": transaction_type,
                 "AmazonOrderId": amazon_order_id,

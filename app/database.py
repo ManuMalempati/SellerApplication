@@ -471,7 +471,6 @@ def get_cached_fees(cursor, fee_items):
 
     return results
 
-
 STATUS_RANK = {
     "DEFERRED": 0,
     "DEFERRED_RELEASED": 1,
@@ -486,7 +485,9 @@ def update_orderitems_from_temp_financial(cur):
     - Refunds: apply to earliest unrefunded OrderItems row per (OrderId, SKU).
     """
 
-    # Shipments → Payment
+    # ---------------------------------------------------------
+    # 1. Shipments → Payment (overwrite on all matching rows)
+    # ---------------------------------------------------------
     cur.execute("""
     UPDATE O
     SET O.Payment = S.Total
@@ -498,7 +499,9 @@ def update_orderitems_from_temp_financial(cur):
       AND S.TransactionStatus = 'RELEASED';
     """)
 
-    # Refunds → earliest unrefunded row (or earliest row if all refunded)
+    # ---------------------------------------------------------
+    # 2. Refunds → earliest unrefunded row (or earliest row)
+    # ---------------------------------------------------------
     cur.execute("""
     ;WITH RefundSource AS (
         SELECT
@@ -534,7 +537,6 @@ def upsert_financial_transactions(rows):
 
     - If DEFERRED exists and DEFERRED_RELEASED arrives → DEFERRED is deleted, DEFERRED_RELEASED kept.
     - If DEFERRED or DEFERRED_RELEASED exists and RELEASED arrives → they are deleted, RELEASED kept.
-    - This applies whether the lower-status row is already in DB or in the same batch.
     - Idempotency is identity-based, NOT TransactionId-based.
     - Multiple rows with the same TransactionId are allowed (different SKUs/items).
     - All timestamps stored as naive DATETIME in UTC+4 (no timezone suffix).
@@ -549,7 +551,9 @@ def upsert_financial_transactions(rows):
     conn.autocommit = False
 
     try:
-        # 1) Collapse batch by identity, keeping highest status
+        # ---------------------------------------------------------
+        # 1. Collapse batch by identity, keeping highest status
+        # ---------------------------------------------------------
         collapsed = {}
         for r in rows:
             status = r.get("TransactionStatus")
@@ -564,19 +568,17 @@ def upsert_financial_transactions(rows):
             )
 
             existing = collapsed.get(key)
-            if not existing:
+            if not existing or rank > STATUS_RANK.get(existing.get("TransactionStatus"), -1):
                 collapsed[key] = r
-            else:
-                existing_rank = STATUS_RANK.get(existing.get("TransactionStatus"), -1)
-                if rank > existing_rank:
-                    collapsed[key] = r
 
         rows = list(collapsed.values())
         if not rows:
             conn.commit()
             return 0
 
-        # 2) Temp table (DATETIME, no offset)
+        # ---------------------------------------------------------
+        # 2. Temp table (DATETIME, no offset)
+        # ---------------------------------------------------------
         cur.execute("""
         IF OBJECT_ID('tempdb..#TempFinancial') IS NOT NULL DROP TABLE #TempFinancial;
 
@@ -606,7 +608,7 @@ def upsert_financial_transactions(rows):
         for row in rows:
             insert_temp.append((
                 row.get("TransactionId"),
-                row.get("PostedDate"),
+                row.get("PostedDate"),  # already UTC+4 naive
                 row.get("TransactionType"),
                 row.get("TransactionStatus"),
                 row.get("AmazonOrderId"),
@@ -630,7 +632,9 @@ def upsert_financial_transactions(rows):
             INSERT INTO #TempFinancial VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, insert_temp)
 
-        # 3) Lifecycle delete in DB based on identity + status
+        # ---------------------------------------------------------
+        # 3. Lifecycle delete (lower → higher)
+        # ---------------------------------------------------------
         cur.execute("""
         DELETE T
         FROM spapi_app_user.FinancialTransactions T
@@ -641,17 +645,13 @@ def upsert_financial_transactions(rows):
          AND ISNULL(T.ASIN,'') = ISNULL(S.ASIN,'')
          AND ISNULL(T.SSKU,'') = ISNULL(S.SSKU,'')
         WHERE
-            (
-                S.TransactionStatus = 'DEFERRED_RELEASED'
-                AND T.TransactionStatus = 'DEFERRED'
-            )
-         OR (
-                S.TransactionStatus = 'RELEASED'
-                AND T.TransactionStatus IN ('DEFERRED','DEFERRED_RELEASED')
-            )
+            (S.TransactionStatus = 'DEFERRED_RELEASED' AND T.TransactionStatus = 'DEFERRED')
+         OR (S.TransactionStatus = 'RELEASED' AND T.TransactionStatus IN ('DEFERRED','DEFERRED_RELEASED'));
         """)
 
-        # 4) Identity-based idempotency for same status
+        # ---------------------------------------------------------
+        # 4. Idempotency: delete same-status duplicates
+        # ---------------------------------------------------------
         cur.execute("""
         DELETE T
         FROM spapi_app_user.FinancialTransactions T
@@ -661,10 +661,12 @@ def upsert_financial_transactions(rows):
          AND T.SellerSKU       = S.SellerSKU
          AND ISNULL(T.ASIN,'') = ISNULL(S.ASIN,'')
          AND ISNULL(T.SSKU,'') = ISNULL(S.SSKU,'')
-         AND T.TransactionStatus = S.TransactionStatus
+         AND T.TransactionStatus = S.TransactionStatus;
         """)
 
-        # 5) Insert all new rows (CreatedAt/UpdatedAt as DATETIME in UTC+4)
+        # ---------------------------------------------------------
+        # 5. Insert new rows (CreatedAt/UpdatedAt = UTC+4 naive)
+        # ---------------------------------------------------------
         cur.execute("""
         INSERT INTO spapi_app_user.FinancialTransactions (
             TransactionId,
@@ -707,12 +709,14 @@ def upsert_financial_transactions(rows):
             ShippingChargeback,
             RefFee,
             Total,
-            DATEADD(HOUR,4,GETUTCDATE()),
-            DATEADD(HOUR,4,GETUTCDATE())
+            CONVERT(DATETIME, DATEADD(HOUR,4,GETUTCDATE())),
+            CONVERT(DATETIME, DATEADD(HOUR,4,GETUTCDATE()))
         FROM #TempFinancial
         """)
 
-        # 6) Update OrderItems from #TempFinancial (Model B)
+        # ---------------------------------------------------------
+        # 6. Update OrderItems (Model B)
+        # ---------------------------------------------------------
         update_orderitems_from_temp_financial(cur)
 
         conn.commit()
