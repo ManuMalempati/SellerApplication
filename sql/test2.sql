@@ -1,1 +1,1 @@
-TRUNCATE TABLE spapi_app_user.FinancialTransactions
+SELECT * FROM SyncState

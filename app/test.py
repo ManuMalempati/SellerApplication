@@ -414,3 +414,50 @@ def get_fba_inventory_reimbursements_last_5_days():
         "preview": filtered[:20],
         "rows": filtered
     }
+
+@router.get("/debug/transactions/duplicate-transaction-ids")
+def debug_duplicate_transaction_ids():
+    """
+    Fetches processed transactions (via get_transactions) for last 3 days
+    and returns only TransactionIds that appear more than once.
+    """
+
+    # Last 3 days window
+    delta = timedelta(days=3)
+    posted_after = format_dt_z(datetime.now(timezone.utc) - delta)
+
+    params = {
+        "postedAfter": posted_after
+    }
+
+    conn = connect_database()
+    cur = conn.cursor()
+
+    try:
+        # Use your main processor (includes item expansion + product mapping)
+        rows = get_transactions(params=params, db_cursor=cur)
+    finally:
+        cur.close()
+        conn.close()
+
+    # Group by TransactionId
+    groups = {}
+    for row in rows:
+        tid = row.get("TransactionId")
+        if not tid:
+            continue
+        groups.setdefault(tid, []).append(row)
+
+    # Keep only duplicates
+    duplicates = {
+        tid: tx_rows
+        for tid, tx_rows in groups.items()
+        if len(tx_rows) > 1
+    }
+
+    return {
+        "posted_after": posted_after,
+        "total_rows": len(rows),
+        "duplicate_transaction_ids": len(duplicates),
+        "duplicates": duplicates,
+    }

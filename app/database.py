@@ -485,7 +485,8 @@ def upsert_financial_transactions(rows):
     - If DEFERRED exists and DEFERRED_RELEASED arrives → DEFERRED is deleted, DEFERRED_RELEASED kept.
     - If DEFERRED or DEFERRED_RELEASED exists and RELEASED arrives → they are deleted, RELEASED kept.
     - This applies whether the lower-status row is already in DB or in the same batch.
-    - Same TransactionId is always replaced (idempotent).
+    - Idempotency is identity-based, NOT TransactionId-based.
+    - Multiple rows with the same TransactionId are allowed (different SKUs/items).
     """
 
     if not rows:
@@ -496,15 +497,7 @@ def upsert_financial_transactions(rows):
     conn.autocommit = False
 
     try:
-        # 1) Deduplicate by TransactionId
-        by_tid = {}
-        for r in rows:
-            tid = r.get("TransactionId")
-            if tid:
-                by_tid[tid] = r
-        rows = list(by_tid.values())
-
-        # 2) Collapse batch by identity, keeping highest status
+        # 1) Collapse batch by identity, keeping highest status
         collapsed = {}
         for r in rows:
             status = r.get("TransactionStatus")
@@ -531,12 +524,12 @@ def upsert_financial_transactions(rows):
             conn.commit()
             return 0
 
-        # 3) Temp table
+        # 2) Temp table (TransactionId is NOT PK anymore)
         cur.execute("""
         IF OBJECT_ID('tempdb..#TempFinancial') IS NOT NULL DROP TABLE #TempFinancial;
 
         CREATE TABLE #TempFinancial(
-            TransactionId NVARCHAR(100) PRIMARY KEY,
+            TransactionId NVARCHAR(100),
             PostedDate DATETIMEOFFSET,
             TransactionType NVARCHAR(50),
             TransactionStatus NVARCHAR(50),
@@ -561,15 +554,15 @@ def upsert_financial_transactions(rows):
         for row in rows:
             row["PostedDate"] = _parse_posted_date(row["PostedDate"])
             insert_temp.append((
-                row["TransactionId"],
+                row.get("TransactionId"),
                 row["PostedDate"],
-                row["TransactionType"],
-                row["TransactionStatus"],
-                row["AmazonOrderId"],
-                row["SellerSKU"],
-                row["ASIN"],
-                row["SSKU"],
-                row["QuantityShipped"],
+                row.get("TransactionType"),
+                row.get("TransactionStatus"),
+                row.get("AmazonOrderId"),
+                row.get("SellerSKU"),
+                row.get("ASIN"),
+                row.get("SSKU"),
+                row.get("QuantityShipped"),
                 float(row["Principal"]) if row.get("Principal") is not None else None,
                 float(row["ShippingCharges"]) if row.get("ShippingCharges") is not None else None,
                 float(row["Promotions"]) if row.get("Promotions") is not None else None,
@@ -586,7 +579,7 @@ def upsert_financial_transactions(rows):
             INSERT INTO #TempFinancial VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, insert_temp)
 
-        # 4) Lifecycle delete in DB based on identity + status
+        # 3) Lifecycle delete in DB based on identity + status
         #    - If batch has DEFERRED_RELEASED → delete DEFERRED in DB for same identity
         #    - If batch has RELEASED → delete DEFERRED and DEFERRED_RELEASED in DB for same identity
         cur.execute("""
@@ -609,15 +602,21 @@ def upsert_financial_transactions(rows):
             )
         """)
 
-        # 5) Idempotency: delete any existing rows with same TransactionId
+        # 4) Identity-based idempotency for same status:
+        #    If a row with same identity and same status already exists, replace it.
         cur.execute("""
         DELETE T
         FROM spapi_app_user.FinancialTransactions T
         JOIN #TempFinancial S
-          ON T.TransactionId = S.TransactionId
+          ON T.AmazonOrderId   = S.AmazonOrderId
+         AND T.TransactionType = S.TransactionType
+         AND T.SellerSKU       = S.SellerSKU
+         AND ISNULL(T.ASIN,'') = ISNULL(S.ASIN,'')
+         AND ISNULL(T.SSKU,'') = ISNULL(S.SSKU,'')
+         AND T.TransactionStatus = S.TransactionStatus
         """)
 
-        # 6) Insert all new rows
+        # 5) Insert all new rows
         cur.execute("""
         INSERT INTO spapi_app_user.FinancialTransactions (
             TransactionId,
