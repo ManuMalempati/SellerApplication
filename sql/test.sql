@@ -1,2 +1,1 @@
-CREATE INDEX IX_FinancialTransactions_TransactionId
-ON spapi_app_user.FinancialTransactions (TransactionId);
+SELECT * FROM FBAProductSummary

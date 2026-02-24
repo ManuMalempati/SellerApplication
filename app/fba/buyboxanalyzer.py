@@ -22,7 +22,9 @@ SELLER_ID = os.getenv("SELLER_ID")
 # ---------------------------------------------------------
 
 def now_utc_plus_4():
-    return datetime.now(timezone.utc) + timedelta(hours=4)
+    """Return a naive UTC+4 datetime (no timezone info)."""
+    dt = datetime.now(timezone.utc) + timedelta(hours=4)
+    return dt.replace(tzinfo=None)
 
 
 # ---------------------------------------------------------
@@ -98,7 +100,7 @@ class BuyBoxAnalysis:
             SELECT asin, Title
             FROM spapi_app_user.FBAProductSummary
             WHERE asin IS NOT NULL
-            AND [Sellable-Qty] > 0
+              AND [Sellable-Qty] > 0
         """)
 
         rows = cursor.fetchall()
@@ -225,17 +227,10 @@ class BuyBoxAnalysis:
                 lowest_price_merchant,
 
                 analysis_timestamp,
-
                 created_at,
                 updated_at
             )
-            VALUES (
-                ?,?,?,?,?,?,
-                ?,?,?,?,
-                ?,?,?,?,
-                DATEADD(HOUR,4,SYSDATETIMEOFFSET()),
-                DATEADD(HOUR,4,SYSDATETIMEOFFSET())
-            )
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
             result["asin"],
@@ -255,7 +250,9 @@ class BuyBoxAnalysis:
             result["lowest_price_amazon"],
             result["lowest_price_merchant"],
 
-            result["analysis_timestamp"]
+            result["analysis_timestamp"],          # UTC+4 naive
+            now_utc_plus_4(),                      # created_at
+            now_utc_plus_4()                       # updated_at
         ))
 
         conn.commit()

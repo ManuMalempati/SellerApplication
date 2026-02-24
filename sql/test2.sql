@@ -1,1 +1,1 @@
-SELECT * FROM FinancialTransactions
+SELECT * FROM FBABuyBoxAnalysis
