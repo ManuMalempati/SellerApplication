@@ -1,10 +1,31 @@
 import os
 import time
 import threading
+from datetime import datetime, timezone, timedelta
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_result
 
 from .auth import spapi_request
 from .database import get_product_mapping
+
+# ---------------------------------------------------------
+# Timezone helpers
+# ---------------------------------------------------------
+UTC_PLUS_4 = timezone(timedelta(hours=4))
+
+
+def to_utc_plus_4_naive(value: str):
+    """
+    Convert Amazon's UTC Z timestamp into a naive datetime in UTC+4.
+    Example output: 2026-02-24 14:15:34 (no timezone info).
+    """
+    if not value:
+        return None
+    try:
+        dt_utc = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        dt_utc4 = dt_utc.astimezone(UTC_PLUS_4)
+        return dt_utc4.replace(tzinfo=None)
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------
@@ -158,7 +179,9 @@ def get_transactions(params, db_cursor):
 
     for tx in txs:
         transaction_id = tx.get("transactionId")
-        posted_date = tx.get("postedDate")
+        posted_date_raw = tx.get("postedDate")
+        posted_date = to_utc_plus_4_naive(posted_date_raw)
+
         transaction_type = tx.get("transactionType")
         transaction_status = tx.get("transactionStatus")
 

@@ -1,1 +1,2 @@
-TRUNCATE TABLE spapi_app_user.FinancialTransactions
+SELECT * FROM OrderItems
+WHERE AmazonOrderId = '406-4558981-6500324'

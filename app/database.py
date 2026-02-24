@@ -464,19 +464,12 @@ def get_cached_fees(cursor, fee_items):
 
 import datetime as dt
 
-def _parse_posted_date(value):
-    if not value:
-        return None
-    try:
-        return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except:
-        return None
-
 STATUS_RANK = {
     "DEFERRED": 0,
     "DEFERRED_RELEASED": 1,
     "RELEASED": 2,
 }
+
 
 def upsert_financial_transactions(rows):
     """
@@ -487,6 +480,7 @@ def upsert_financial_transactions(rows):
     - This applies whether the lower-status row is already in DB or in the same batch.
     - Idempotency is identity-based, NOT TransactionId-based.
     - Multiple rows with the same TransactionId are allowed (different SKUs/items).
+    - All timestamps stored as naive DATETIME in UTC+4 (no timezone suffix).
     """
 
     if not rows:
@@ -524,13 +518,13 @@ def upsert_financial_transactions(rows):
             conn.commit()
             return 0
 
-        # 2) Temp table (TransactionId is NOT PK anymore)
+        # 2) Temp table (DATETIME, no offset)
         cur.execute("""
         IF OBJECT_ID('tempdb..#TempFinancial') IS NOT NULL DROP TABLE #TempFinancial;
 
         CREATE TABLE #TempFinancial(
             TransactionId NVARCHAR(100),
-            PostedDate DATETIMEOFFSET,
+            PostedDate DATETIME,
             TransactionType NVARCHAR(50),
             TransactionStatus NVARCHAR(50),
             AmazonOrderId NVARCHAR(50),
@@ -552,10 +546,10 @@ def upsert_financial_transactions(rows):
 
         insert_temp = []
         for row in rows:
-            row["PostedDate"] = _parse_posted_date(row["PostedDate"])
+            # PostedDate is already naive UTC+4 datetime from get_transactions()
             insert_temp.append((
                 row.get("TransactionId"),
-                row["PostedDate"],
+                row.get("PostedDate"),
                 row.get("TransactionType"),
                 row.get("TransactionStatus"),
                 row.get("AmazonOrderId"),
@@ -580,8 +574,6 @@ def upsert_financial_transactions(rows):
         """, insert_temp)
 
         # 3) Lifecycle delete in DB based on identity + status
-        #    - If batch has DEFERRED_RELEASED → delete DEFERRED in DB for same identity
-        #    - If batch has RELEASED → delete DEFERRED and DEFERRED_RELEASED in DB for same identity
         cur.execute("""
         DELETE T
         FROM spapi_app_user.FinancialTransactions T
@@ -602,8 +594,7 @@ def upsert_financial_transactions(rows):
             )
         """)
 
-        # 4) Identity-based idempotency for same status:
-        #    If a row with same identity and same status already exists, replace it.
+        # 4) Identity-based idempotency for same status
         cur.execute("""
         DELETE T
         FROM spapi_app_user.FinancialTransactions T
@@ -616,7 +607,7 @@ def upsert_financial_transactions(rows):
          AND T.TransactionStatus = S.TransactionStatus
         """)
 
-        # 5) Insert all new rows
+        # 5) Insert all new rows (CreatedAt/UpdatedAt as DATETIME in UTC+4)
         cur.execute("""
         INSERT INTO spapi_app_user.FinancialTransactions (
             TransactionId,
@@ -659,8 +650,8 @@ def upsert_financial_transactions(rows):
             ShippingChargeback,
             RefFee,
             Total,
-            DATEADD(HOUR,4,SYSDATETIMEOFFSET()),
-            DATEADD(HOUR,4,SYSDATETIMEOFFSET())
+            DATEADD(HOUR,4,GETUTCDATE()),
+            DATEADD(HOUR,4,GETUTCDATE())
         FROM #TempFinancial
         """)
 
