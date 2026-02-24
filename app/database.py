@@ -480,13 +480,18 @@ STATUS_RANK = {
 
 def update_orderitems_from_temp_financial(cur):
     """
-    Model B:
-    - Shipments: Payment = Total on ALL matching OrderItems rows (RELEASED only).
-    - Refunds: apply to earliest unrefunded OrderItems row per (OrderId, SKU).
+    Updated Model B:
+    - Shipments:
+        DEFERRED and RELEASED both update Payment.
+        RELEASED overwrites DEFERRED if both exist.
+    - Refunds:
+        DEFERRED and RELEASED both apply to earliest unrefunded row.
+        RELEASED overwrites DEFERRED if both exist.
+    - DEFERRED_RELEASED is ignored.
     """
 
     # ---------------------------------------------------------
-    # 1. Shipments → Payment (overwrite on all matching rows)
+    # 1. Shipments → Payment (DEFERRED + RELEASED)
     # ---------------------------------------------------------
     cur.execute("""
     UPDATE O
@@ -495,12 +500,12 @@ def update_orderitems_from_temp_financial(cur):
     JOIN #TempFinancial S
       ON O.AmazonOrderId = S.AmazonOrderId
      AND O.SKU           = S.SellerSKU
-    WHERE S.TransactionType   = 'Shipment'
-      AND S.TransactionStatus = 'RELEASED';
+    WHERE S.TransactionType = 'Shipment'
+      AND S.TransactionStatus IN ('DEFERRED', 'RELEASED');
     """)
 
     # ---------------------------------------------------------
-    # 2. Refunds → earliest unrefunded row (or earliest row)
+    # 2. Refunds → earliest unrefunded row (DEFERRED + RELEASED)
     # ---------------------------------------------------------
     cur.execute("""
     ;WITH RefundSource AS (
@@ -511,8 +516,8 @@ def update_orderitems_from_temp_financial(cur):
             S.Total,
             S.PostedDate
         FROM #TempFinancial S
-        WHERE S.TransactionType   = 'Refund'
-          AND S.TransactionStatus = 'RELEASED'
+        WHERE S.TransactionType = 'Refund'
+          AND S.TransactionStatus IN ('DEFERRED', 'RELEASED')
     )
     UPDATE O
     SET 
@@ -529,7 +534,6 @@ def update_orderitems_from_temp_financial(cur):
             O2.OrderDate
     ) O
     """)
-
 
 def upsert_financial_transactions(rows):
     """
