@@ -15,19 +15,26 @@ from .database import get_product_mapping
 UTC_PLUS_4 = timezone(timedelta(hours=4))
 
 
-def to_utc_plus_4_naive(value: str):
+def format_as_utc_plus4_no_offset(value):
     """
-    Convert Amazon's UTC Z timestamp into a naive datetime in UTC+4.
-    Example output: 2026-02-24 14:15:34 (no timezone info).
+    Convert an ISO UTC Z timestamp or datetime into a naive string in UTC+4.
+    Returns string like: "2026-02-24 14:15:34" or "" on failure.
     """
     if not value:
-        return None
+        return ""
     try:
-        dt_utc = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        dt_utc4 = dt_utc.astimezone(UTC_PLUS_4)
-        return dt_utc4.replace(tzinfo=None)
+        if isinstance(value, str):
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        elif isinstance(value, datetime):
+            dt = value
+        else:
+            return str(value)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt_utc4 = dt.astimezone(UTC_PLUS_4)
+        return dt_utc4.replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
-        return None
+        return ""
 
 
 # ---------------------------------------------------------
@@ -188,7 +195,8 @@ def get_transactions(params, db_cursor):
     for tx in txs:
         transaction_id = tx.get("transactionId")
         posted_date_raw = tx.get("postedDate")
-        posted_date = to_utc_plus_4_naive(posted_date_raw)
+        # store as UTC+4 naive formatted string so DB value and display match
+        posted_date = format_as_utc_plus4_no_offset(posted_date_raw)
 
         transaction_type = tx.get("transactionType")
         transaction_status = tx.get("transactionStatus")
@@ -225,7 +233,7 @@ def get_transactions(params, db_cursor):
 
             row = {
                 "TransactionId": transaction_id,
-                "PostedDate": posted_date,
+                "PostedDate": posted_date,  # now a string "YYYY-MM-DD HH:MM:SS" in UTC+4
                 "TransactionStatus": transaction_status,
                 "TransactionType": transaction_type,
                 "AmazonOrderId": amazon_order_id,
@@ -301,7 +309,7 @@ def get_transactions(params, db_cursor):
 
             row = {
                 "TransactionId": transaction_id,
-                "PostedDate": posted_date,
+                "PostedDate": posted_date,  # now a string "YYYY-MM-DD HH:MM:SS" in UTC+4
                 "TransactionStatus": transaction_status,
                 "TransactionType": transaction_type,
                 "AmazonOrderId": amazon_order_id,
