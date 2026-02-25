@@ -576,6 +576,8 @@ def upsert_financial_transactions(rows):
             ShippingCharges FLOAT,
             Promotions FLOAT,
             FBAFees FLOAT,
+            Commission FLOAT,
+            RefundCommission FLOAT,   -- ⭐ NEW
             FixedClosingFee FLOAT,
             VariableClosingFee FLOAT,
             ShippingChargeback FLOAT,
@@ -588,7 +590,7 @@ def upsert_financial_transactions(rows):
         for row in rows:
             insert_temp.append((
                 row.get("TransactionId"),
-                row.get("PostedDate"),  # already UTC+4 naive
+                row.get("PostedDate"),
                 row.get("TransactionType"),
                 row.get("TransactionStatus"),
                 row.get("AmazonOrderId"),
@@ -600,6 +602,8 @@ def upsert_financial_transactions(rows):
                 float(row["ShippingCharges"]) if row.get("ShippingCharges") is not None else None,
                 float(row["Promotions"]) if row.get("Promotions") is not None else None,
                 float(row["FBAFees"]) if row.get("FBAFees") is not None else None,
+                float(row["Commission"]) if row.get("Commission") is not None else None,
+                float(row["RefundCommission"]) if row.get("RefundCommission") is not None else None,  # ⭐ NEW
                 float(row["FixedClosingFee"]) if row.get("FixedClosingFee") is not None else None,
                 float(row["VariableClosingFee"]) if row.get("VariableClosingFee") is not None else None,
                 float(row["ShippingChargeback"]) if row.get("ShippingChargeback") is not None else None,
@@ -609,7 +613,7 @@ def upsert_financial_transactions(rows):
 
         cur.fast_executemany = True
         cur.executemany("""
-            INSERT INTO #TempFinancial VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            INSERT INTO #TempFinancial VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, insert_temp)
 
         # ---------------------------------------------------------
@@ -662,6 +666,8 @@ def upsert_financial_transactions(rows):
             ShippingCharges,
             Promotions,
             FBAFees,
+            Commission,
+            RefundCommission,   -- ⭐ NEW
             FixedClosingFee,
             VariableClosingFee,
             ShippingChargeback,
@@ -684,6 +690,8 @@ def upsert_financial_transactions(rows):
             ShippingCharges,
             Promotions,
             FBAFees,
+            Commission,
+            RefundCommission,   -- ⭐ NEW
             FixedClosingFee,
             VariableClosingFee,
             ShippingChargeback,

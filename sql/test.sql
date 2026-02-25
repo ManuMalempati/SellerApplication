@@ -1,2 +1,2 @@
-ALTER TABLE OrderItems
-ALTER COLUMN Reimbursed FLOAT NULL;
+SELECT * FROM OrderItems
+WHERE AmazonOrderId = '408-5513385-7553161'

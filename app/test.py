@@ -461,3 +461,38 @@ def debug_duplicate_transaction_ids():
         "duplicate_transaction_ids": len(duplicates),
         "duplicates": duplicates,
     }
+
+@router.get("/transactions/raw-refunds-3-days")
+def get_raw_refund_transactions_last_3_days():
+    """
+    Return RAW Amazon SP‑API financial transactions (2024‑06‑19 API)
+    for the last 3 days, filtered to only Refund transactions.
+    """
+
+    now_utc = datetime.now(timezone.utc)
+
+    posted_after = (now_utc - timedelta(days=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    posted_before = (now_utc - timedelta(minutes=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    params = {
+        "postedAfter": posted_after,
+        "postedBefore": posted_before,
+        "transactionType": "Refund",
+        "pageSize": 100
+    }
+
+    print("Fetching RAW Refund transactions...")
+    print("PostedAfter:", posted_after)
+    print("PostedBefore:", posted_before)
+
+    raw = spapi_request(
+        method="GET",
+        path="/finances/2024-06-19/transactions",
+        params=params
+    )
+
+    return {
+        "posted_after": posted_after,
+        "posted_before": posted_before,
+        "raw_response": raw
+    }

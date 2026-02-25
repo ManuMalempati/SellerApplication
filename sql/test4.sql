@@ -1,2 +1,2 @@
-SELECT * FROM FinancialTransactions
-WHERE QuantityShipped > 1
+ALTER TABLE spapi_app_user.FinancialTransactions
+ADD RefundCommission FLOAT NULL;

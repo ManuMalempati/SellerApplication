@@ -16,10 +16,6 @@ UTC_PLUS_4 = timezone(timedelta(hours=4))
 
 
 def format_as_utc_plus4_no_offset(value):
-    """
-    Convert an ISO UTC Z timestamp or datetime into a naive string in UTC+4.
-    Returns string like: "2026-02-24 14:15:34" or "" on failure.
-    """
     if not value:
         return ""
     try:
@@ -30,14 +26,10 @@ def format_as_utc_plus4_no_offset(value):
         else:
             return str(value)
 
-        # Ensure timezone awareness
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
 
-        # Convert to UTC+4
         dt_utc4 = dt.astimezone(UTC_PLUS_4)
-
-        # Return naive string (NO OFFSET)
         return dt_utc4.replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
 
     except Exception:
@@ -202,12 +194,12 @@ def get_transactions(params, db_cursor):
     for tx in txs:
         transaction_id = tx.get("transactionId")
         posted_date_raw = tx.get("postedDate")
-
-        # ⭐ ALWAYS store as UTC+4 naive string
         posted_date = format_as_utc_plus4_no_offset(posted_date_raw)
 
         transaction_type = tx.get("transactionType")
         transaction_status = tx.get("transactionStatus")
+
+        api_total = safe(tx.get("totalAmount", {}).get("currencyAmount"))  # ⭐ ALWAYS USE API TOTAL
 
         amazon_order_id = None
         for rid in tx.get("relatedIdentifiers") or []:
@@ -236,9 +228,6 @@ def get_transactions(params, db_cursor):
             mapping = product_mapping.get(sku, {}) if sku else {}
             ssku = mapping.get("ssku")
 
-            tx_breakdowns = tx.get("breakdowns") or []
-            reimbursement_amount = extract_breakdown(tx_breakdowns, "FBAInventoryReimbursement")
-
             row = {
                 "TransactionId": transaction_id,
                 "PostedDate": posted_date,
@@ -251,18 +240,19 @@ def get_transactions(params, db_cursor):
                 "SSKU": ssku,
                 "QuantityShipped": qty,
 
-                "Principal": reimbursement_amount,
+                "Principal": api_total,
                 "ShippingCharges": 0.0,
                 "Promotions": 0.0,
 
                 "FBAFees": 0.0,
                 "Commission": 0.0,
+                "RefundCommission": 0.0,
                 "FixedClosingFee": 0.0,
                 "VariableClosingFee": 0.0,
                 "ShippingChargeback": 0.0,
                 "RefFee": 0.0,
 
-                "Total": reimbursement_amount,
+                "Total": api_total,   # ⭐ DIRECT FROM API
             }
 
             rows.append(row)
@@ -299,21 +289,13 @@ def get_transactions(params, db_cursor):
 
             fba_fees = extract_breakdown(breakdowns, "FBAPerUnitFulfillmentFee")
             commission = extract_breakdown(breakdowns, "Commission")
+            refund_commission = extract_breakdown(breakdowns, "RefundCommission")
             shipping_chargeback = extract_breakdown(breakdowns, "ShippingChargeback")
 
             fixed_closing = 0.0
             variable_closing = 0.0
 
             ref_fee = commission + fixed_closing + variable_closing
-
-            total = (
-                principal
-                + shipping
-                + promotions
-                + fba_fees
-                + commission
-                + shipping_chargeback
-            )
 
             row = {
                 "TransactionId": transaction_id,
@@ -333,12 +315,13 @@ def get_transactions(params, db_cursor):
 
                 "FBAFees": fba_fees,
                 "Commission": commission,
+                "RefundCommission": refund_commission,
                 "FixedClosingFee": fixed_closing,
                 "VariableClosingFee": variable_closing,
                 "ShippingChargeback": shipping_chargeback,
                 "RefFee": ref_fee,
 
-                "Total": total,
+                "Total": api_total,   # ⭐ DIRECT FROM API
             }
 
             rows.append(row)
