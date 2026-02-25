@@ -1,2 +1,1 @@
-ALTER TABLE spapi_app_user.FinancialTransactions
-ADD RefundCommission FLOAT NULL;
+SELECT * FROM OrderItems WHERE AmazonOrderId = '402-7301898-8997933'

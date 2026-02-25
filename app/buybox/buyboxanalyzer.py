@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 from ..database import connect_database
 from ..auth import spapi_request
-from ..store_name_scraper import get_seller_name
+from .store_name_scraper import get_seller_name
 
 load_dotenv()
 

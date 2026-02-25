@@ -21,7 +21,7 @@ REM Timestamp start of run
 echo === Started %date% %time% === >> logs\buybox_analyzer.log 2>&1
 
 REM Run the BuyBoxAnalyzer
-"%VENV_PATH%\Scripts\python.exe" -u -m app.fba.buyboxanalyzer >> logs\buybox_analyzer.log 2>&1
+"%VENV_PATH%\Scripts\python.exe" -u -m app.buybox.buyboxanalyzer >> logs\buybox_analyzer.log 2>&1
 
 REM Timestamp end of run
 echo === Ended %date% %time% === >> logs\buybox_analyzer.log 2>&1
