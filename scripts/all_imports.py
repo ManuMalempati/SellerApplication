@@ -12,7 +12,6 @@ from app.returns.removalshipments import run_removal_shipments_import
 # Default days (environment override supported)
 days = int(os.getenv("RETURNS_DATA_DAYS", 35))
 
-
 def now_utc_plus_4():
     """Return timezone-aware datetime in UTC+4."""
     return (datetime.now(timezone.utc) + timedelta(hours=4)).isoformat()

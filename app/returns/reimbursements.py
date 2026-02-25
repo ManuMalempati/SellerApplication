@@ -157,7 +157,7 @@ def fetch_fba_reimbursements(days=365):
 
 
 # ---------------------------------------------------------
-# DELETE-AND-REPLACE UPSERT
+# DELETE-AND-REPLACE UPSERT + AGG → ORDERITEMS
 # ---------------------------------------------------------
 
 def upsert_fba_reimbursements(rows):
@@ -169,6 +169,7 @@ def upsert_fba_reimbursements(rows):
     conn = connect_database()
     cursor = conn.cursor()
 
+    # 1. Delete existing rows for these reimbursement_ids
     reimb_ids = sorted({
         clean_str(r.get("reimbursement-id"))
         for r in rows
@@ -187,6 +188,7 @@ def upsert_fba_reimbursements(rows):
 
     print("[FBA-REIMB] Inserting fresh rows...")
 
+    # 2. Insert raw rows
     staging = []
     for r in rows:
         staging.append((
@@ -208,8 +210,8 @@ def upsert_fba_reimbursements(rows):
             safe_int(r.get("quantity-reimbursed-total")),
             clean_str(r.get("original-reimbursement-id")),
             clean_str(r.get("original-reimbursement-type")),
-            now_utc_plus_4(),   # created_at
-            now_utc_plus_4(),   # updated_at
+            now_utc_plus_4(),
+            now_utc_plus_4(),
         ))
 
     cursor.fast_executemany = True
@@ -240,11 +242,40 @@ def upsert_fba_reimbursements(rows):
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, staging)
 
+    # 3. Aggregate reimbursements at AmazonOrderId + SKU level
+    cursor.execute("""
+        IF OBJECT_ID('tempdb..#AggReimb') IS NOT NULL DROP TABLE #AggReimb;
+
+        SELECT
+            amazon_order_id,
+            sku,
+            SUM(amount_total) AS total_amount,
+            SUM(quantity_reimbursed_cash) AS qty_cash,
+            SUM(quantity_reimbursed_inventory) AS qty_inv,
+            SUM(quantity_reimbursed_total) AS qty_total,
+            MAX(approval_date) AS approval_date
+        INTO #AggReimb
+        FROM spapi_app_user.FBAReimbursements
+        GROUP BY amazon_order_id, sku;
+    """)
+
+    # 4. Push aggregated reimbursement into OrderItems
+    cursor.execute("""
+        UPDATE O
+        SET 
+            O.Reimbursed = A.total_amount,
+            O.ReimbDate  = A.approval_date
+        FROM OrderItems O
+        JOIN #AggReimb A
+          ON O.AmazonOrderId = A.amazon_order_id
+         AND O.SKU           = A.sku;
+    """)
+
     conn.commit()
     cursor.close()
     conn.close()
 
-    print(f"[FBA-REIMB] Inserted {len(staging)} rows")
+    print(f"[FBA-REIMB] Inserted {len(staging)} rows (raw) and updated OrderItems with aggregated reimbursements")
     return len(staging)
 
 
@@ -265,5 +296,4 @@ def run_reimbursements_import(days=365):
     print("==============================================")
 
 if __name__ == "__main__":
-
     run_reimbursements_import(days=365)

@@ -143,7 +143,7 @@ def fetch_fba_customer_returns(days=365):
 
 
 # ---------------------------------------------------------
-# UPSERT rows into FBACustomerReturns
+# UPSERT + AGGREGATE + UPDATE ORDERITEMS
 # ---------------------------------------------------------
 
 def upsert_fba_customer_returns(rows):
@@ -174,11 +174,11 @@ def upsert_fba_customer_returns(rows):
             clean_str(r.get("reason")),
             clean_str(r.get("license-plate-number")),
             clean_str(r.get("customer-comments")),
-            now_utc_plus_4(),   # created_at
-            now_utc_plus_4(),   # updated_at
+            now_utc_plus_4(),
+            now_utc_plus_4(),
         ))
 
-    # Create temp table (DATETIME, not DATETIMEOFFSET)
+    # Create temp table
     cursor.execute("""
         IF OBJECT_ID('tempdb..#TempReturns') IS NOT NULL DROP TABLE #TempReturns;
         CREATE TABLE #TempReturns (
@@ -206,7 +206,7 @@ def upsert_fba_customer_returns(rows):
     """, staging)
 
     # MERGE UPSERT
-    merge_sql = """
+    cursor.execute("""
         MERGE INTO spapi_app_user.FBACustomerReturns AS target
         USING #TempReturns AS src
         ON target.order_id = src.order_id
@@ -236,27 +236,55 @@ def upsert_fba_customer_returns(rows):
                 src.return_date, src.order_id, src.sku, src.asin, src.fnsku, src.license_plate_number,
                 src.product_name, src.quantity, src.fulfillment_center_id, src.detailed_disposition,
                 src.reason, src.customer_comments, src.created_at, src.updated_at
-            )
+            );
+    """)
 
-        OUTPUT $action;
-    """
+    # ---------------------------------------------------------
+    # AGGREGATE RETURNS → ONE ROW PER ORDERITEMS
+    # ---------------------------------------------------------
+    cursor.execute("""
+        IF OBJECT_ID('tempdb..#AggReturns') IS NOT NULL DROP TABLE #AggReturns;
 
-    cursor.execute(merge_sql)
-    actions = cursor.fetchall()
+        SELECT
+            order_id,
+            sku,
+            SUM(quantity) AS ReturnQty,
+            MAX(return_date) AS ReturnDate,
+            MAX(detailed_disposition) AS ReturnDisposition,
+            MAX(reason) AS ReturnReason,
+            MAX(license_plate_number) AS LicensePlateNumber
+        INTO #AggReturns
+        FROM spapi_app_user.FBACustomerReturns
+        GROUP BY order_id, sku;
+    """)
 
-    updated = sum(1 for a in actions if a[0] == "UPDATE")
-    inserted = sum(1 for a in actions if a[0] == "INSERT")
+    # ---------------------------------------------------------
+    # UPDATE ORDERITEMS WITH CONSOLIDATED RETURN INFO
+    # ---------------------------------------------------------
+    cursor.execute("""
+        UPDATE O
+        SET 
+            O.ReturnQty          = A.ReturnQty,
+            O.ReturnDate         = A.ReturnDate,
+            O.ReturnDisposition  = A.ReturnDisposition,
+            O.ReturnReason       = A.ReturnReason,
+            O.LicensePlateNumber = A.LicensePlateNumber
+        FROM OrderItems O
+        JOIN #AggReturns A
+          ON O.AmazonOrderId = A.order_id
+         AND O.SKU           = A.sku;
+    """)
 
     conn.commit()
     cursor.close()
     conn.close()
 
-    print(f"[FBA-RETURNS] Upsert complete — Inserted: {inserted}, Updated: {updated}")
-    return inserted + updated
+    print("[FBA-RETURNS] Upsert + Aggregation complete")
+    return True
 
 
 # ---------------------------------------------------------
-# Main function
+# Main
 # ---------------------------------------------------------
 
 def run_returns_import(days):

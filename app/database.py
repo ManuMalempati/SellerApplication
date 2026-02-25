@@ -477,22 +477,15 @@ STATUS_RANK = {
     "RELEASED": 2,
 }
 
-
 def update_orderitems_from_temp_financial(cur):
     """
-    Updated Model B:
-    - Shipments:
-        DEFERRED and RELEASED both update Payment.
-        RELEASED overwrites DEFERRED if both exist.
-    - Refunds:
-        DEFERRED and RELEASED both apply to earliest unrefunded row.
-        RELEASED overwrites DEFERRED if both exist.
-    - DEFERRED_RELEASED is ignored.
+    Updated Model B (simplified):
+    - Shipments: update ALL matching rows (DEFERRED + RELEASED)
+    - Refunds:   update ALL matching rows (DEFERRED + RELEASED)
+    - DEFERRED_RELEASED ignored
     """
 
-    # ---------------------------------------------------------
-    # 1. Shipments → Payment (DEFERRED + RELEASED)
-    # ---------------------------------------------------------
+    # Shipments → Payment
     cur.execute("""
     UPDATE O
     SET O.Payment = S.Total
@@ -504,35 +497,18 @@ def update_orderitems_from_temp_financial(cur):
       AND S.TransactionStatus IN ('DEFERRED', 'RELEASED');
     """)
 
-    # ---------------------------------------------------------
-    # 2. Refunds → earliest unrefunded row (DEFERRED + RELEASED)
-    # ---------------------------------------------------------
+    # Refunds → update ALL rows
     cur.execute("""
-    ;WITH RefundSource AS (
-        SELECT
-            S.TransactionId,
-            S.AmazonOrderId,
-            S.SellerSKU,
-            S.Total,
-            S.PostedDate
-        FROM #TempFinancial S
-        WHERE S.TransactionType = 'Refund'
-          AND S.TransactionStatus IN ('DEFERRED', 'RELEASED')
-    )
     UPDATE O
     SET 
-        O.Refund     = R.Total,
-        O.RefundDate = R.PostedDate
-    FROM RefundSource R
-    CROSS APPLY (
-        SELECT TOP 1 O2.*
-        FROM OrderItems O2
-        WHERE O2.AmazonOrderId = R.AmazonOrderId
-          AND O2.SKU           = R.SellerSKU
-        ORDER BY 
-            CASE WHEN O2.Refund IS NULL THEN 0 ELSE 1 END,
-            O2.OrderDate
-    ) O
+        O.Refund     = S.Total,
+        O.RefundDate = S.PostedDate
+    FROM OrderItems O
+    JOIN #TempFinancial S
+      ON O.AmazonOrderId = S.AmazonOrderId
+     AND O.SKU           = S.SellerSKU
+    WHERE S.TransactionType = 'Refund'
+      AND S.TransactionStatus IN ('DEFERRED', 'RELEASED');
     """)
 
 def upsert_financial_transactions(rows):
