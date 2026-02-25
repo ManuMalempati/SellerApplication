@@ -476,7 +476,6 @@ STATUS_RANK = {
     "DEFERRED_RELEASED": 1,
     "RELEASED": 2,
 }
-
 def update_orderitems_from_temp_financial(cur):
     """
     Updated Model B (simplified):
@@ -510,7 +509,6 @@ def update_orderitems_from_temp_financial(cur):
     WHERE S.TransactionType = 'Refund'
       AND S.TransactionStatus IN ('DEFERRED', 'RELEASED');
     """)
-
 def upsert_financial_transactions(rows):
     """
     Lifecycle rules (identity = OrderId + Type + SKU + ASIN + SSKU):
@@ -577,7 +575,7 @@ def upsert_financial_transactions(rows):
             Promotions FLOAT,
             FBAFees FLOAT,
             Commission FLOAT,
-            RefundCommission FLOAT,   -- ⭐ NEW
+            RefundCommission FLOAT,
             FixedClosingFee FLOAT,
             VariableClosingFee FLOAT,
             ShippingChargeback FLOAT,
@@ -603,7 +601,7 @@ def upsert_financial_transactions(rows):
                 float(row["Promotions"]) if row.get("Promotions") is not None else None,
                 float(row["FBAFees"]) if row.get("FBAFees") is not None else None,
                 float(row["Commission"]) if row.get("Commission") is not None else None,
-                float(row["RefundCommission"]) if row.get("RefundCommission") is not None else None,  # ⭐ NEW
+                float(row["RefundCommission"]) if row.get("RefundCommission") is not None else None,
                 float(row["FixedClosingFee"]) if row.get("FixedClosingFee") is not None else None,
                 float(row["VariableClosingFee"]) if row.get("VariableClosingFee") is not None else None,
                 float(row["ShippingChargeback"]) if row.get("ShippingChargeback") is not None else None,
@@ -613,8 +611,9 @@ def upsert_financial_transactions(rows):
 
         cur.fast_executemany = True
         cur.executemany("""
-            INSERT INTO #TempFinancial VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            INSERT INTO #TempFinancial VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, insert_temp)
+        #                ↑ 20 placeholders now correct
 
         # ---------------------------------------------------------
         # 3. Lifecycle delete (lower → higher)
@@ -649,7 +648,7 @@ def upsert_financial_transactions(rows):
         """)
 
         # ---------------------------------------------------------
-        # 5. Insert new rows (CreatedAt/UpdatedAt = UTC+4 naive)
+        # 5. Insert new rows
         # ---------------------------------------------------------
         cur.execute("""
         INSERT INTO spapi_app_user.FinancialTransactions (
@@ -667,7 +666,7 @@ def upsert_financial_transactions(rows):
             Promotions,
             FBAFees,
             Commission,
-            RefundCommission,   -- ⭐ NEW
+            RefundCommission,
             FixedClosingFee,
             VariableClosingFee,
             ShippingChargeback,
@@ -691,7 +690,7 @@ def upsert_financial_transactions(rows):
             Promotions,
             FBAFees,
             Commission,
-            RefundCommission,   -- ⭐ NEW
+            RefundCommission,
             FixedClosingFee,
             VariableClosingFee,
             ShippingChargeback,
@@ -703,7 +702,7 @@ def upsert_financial_transactions(rows):
         """)
 
         # ---------------------------------------------------------
-        # 6. Update OrderItems (Model B)
+        # 6. Update OrderItems
         # ---------------------------------------------------------
         update_orderitems_from_temp_financial(cur)
 
