@@ -15,25 +15,19 @@ from .database import get_product_mapping
 UTC_PLUS_4 = timezone(timedelta(hours=4))
 
 
-def format_as_utc_plus4_no_offset(value):
+def to_utc_plus_4_naive(value: str):
+    """
+    Convert Amazon's UTC Z timestamp into a naive datetime in UTC+4.
+    Example output: 2026-02-24 14:15:34 (no timezone info).
+    """
     if not value:
-        return ""
+        return None
     try:
-        if isinstance(value, str):
-            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        elif isinstance(value, datetime):
-            dt = value
-        else:
-            return str(value)
-
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-
-        dt_utc4 = dt.astimezone(UTC_PLUS_4)
-        return dt_utc4.replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
-
+        dt_utc = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        dt_utc4 = dt_utc.astimezone(UTC_PLUS_4)
+        return dt_utc4.replace(tzinfo=None)
     except Exception:
-        return ""
+        return None
 
 
 # ---------------------------------------------------------
@@ -141,7 +135,7 @@ def retrieve_transactions(params):
 
 
 # ---------------------------------------------------------
-# Extract breakdown values recursively
+# Extract breakdown values
 # ---------------------------------------------------------
 
 def extract_breakdown(breakdowns, target):
@@ -193,13 +187,12 @@ def get_transactions(params, db_cursor):
 
     for tx in txs:
         transaction_id = tx.get("transactionId")
-        posted_date_raw = tx.get("postedDate")
-        posted_date = format_as_utc_plus4_no_offset(posted_date_raw)
-
+        posted_date = to_utc_plus_4_naive(tx.get("postedDate"))
         transaction_type = tx.get("transactionType")
         transaction_status = tx.get("transactionStatus")
 
-        api_total = safe(tx.get("totalAmount", {}).get("currencyAmount"))  # ⭐ ALWAYS USE API TOTAL
+        # ⭐ ALWAYS use API total
+        api_total = safe(tx.get("totalAmount", {}).get("currencyAmount"))
 
         amazon_order_id = None
         for rid in tx.get("relatedIdentifiers") or []:
@@ -211,15 +204,12 @@ def get_transactions(params, db_cursor):
         # ---------------------------------------------------------
 
         if transaction_type == "FBAInventoryReimbursement":
-            sku = None
-            asin = None
-            qty = None
+            sku = asin = qty = None
 
             items = tx.get("items") or []
             if items:
                 item = items[0]
-                contexts = item.get("contexts") or []
-                for ctx in contexts:
+                for ctx in item.get("contexts") or []:
                     if ctx.get("contextType") == "ProductContext":
                         sku = ctx.get("sku")
                         asin = ctx.get("asin")
@@ -245,14 +235,13 @@ def get_transactions(params, db_cursor):
                 "Promotions": 0.0,
 
                 "FBAFees": 0.0,
-                "Commission": 0.0,
                 "RefundCommission": 0.0,
                 "FixedClosingFee": 0.0,
                 "VariableClosingFee": 0.0,
                 "ShippingChargeback": 0.0,
-                "RefFee": 0.0,
 
-                "Total": api_total,   # ⭐ DIRECT FROM API
+                "RefFee": 0.0,
+                "Total": api_total,
             }
 
             rows.append(row)
@@ -262,14 +251,10 @@ def get_transactions(params, db_cursor):
         # NORMAL ORDER / REFUND / OTHER ITEM-BASED PROCESSING
         # ---------------------------------------------------------
 
-        items = tx.get("items") or []
-        for item in items:
-            sku = None
-            asin = None
-            qty = None
+        for item in tx.get("items") or []:
+            sku = asin = qty = None
 
-            contexts = item.get("contexts") or []
-            for ctx in contexts:
+            for ctx in item.get("contexts") or []:
                 if ctx.get("contextType") == "ProductContext":
                     sku = ctx.get("sku")
                     asin = ctx.get("asin")
@@ -295,6 +280,7 @@ def get_transactions(params, db_cursor):
             fixed_closing = 0.0
             variable_closing = 0.0
 
+            # ⭐ RefFee = Commission (referral fee)
             ref_fee = commission + fixed_closing + variable_closing
 
             row = {
@@ -314,14 +300,13 @@ def get_transactions(params, db_cursor):
                 "Promotions": promotions,
 
                 "FBAFees": fba_fees,
-                "Commission": commission,
-                "RefundCommission": refund_commission,
+                "RefundCommission": refund_commission,   # ⭐ NEW
                 "FixedClosingFee": fixed_closing,
                 "VariableClosingFee": variable_closing,
                 "ShippingChargeback": shipping_chargeback,
-                "RefFee": ref_fee,
 
-                "Total": api_total,   # ⭐ DIRECT FROM API
+                "RefFee": ref_fee,                       # ⭐ SAME AS BEFORE
+                "Total": api_total,                      # ⭐ ALWAYS FROM API
             }
 
             rows.append(row)

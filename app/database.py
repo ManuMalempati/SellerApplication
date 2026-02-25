@@ -476,6 +476,7 @@ STATUS_RANK = {
     "DEFERRED_RELEASED": 1,
     "RELEASED": 2,
 }
+
 def update_orderitems_from_temp_financial(cur):
     """
     Updated Model B (simplified):
@@ -509,6 +510,7 @@ def update_orderitems_from_temp_financial(cur):
     WHERE S.TransactionType = 'Refund'
       AND S.TransactionStatus IN ('DEFERRED', 'RELEASED');
     """)
+
 def upsert_financial_transactions(rows):
     """
     Lifecycle rules (identity = OrderId + Type + SKU + ASIN + SSKU):
@@ -517,7 +519,7 @@ def upsert_financial_transactions(rows):
     - If DEFERRED or DEFERRED_RELEASED exists and RELEASED arrives → they are deleted, RELEASED kept.
     - Idempotency is identity-based, NOT TransactionId-based.
     - Multiple rows with the same TransactionId are allowed (different SKUs/items).
-    - All timestamps stored as naive DATETIME in UTC+4 (no timezone suffix).
+    - All timestamps stored as naive DATETIME in UTC+4.
     - Also updates OrderItems.Payment / Refund / RefundDate (Model B).
     """
 
@@ -555,7 +557,7 @@ def upsert_financial_transactions(rows):
             return 0
 
         # ---------------------------------------------------------
-        # 2. Temp table (DATETIME, no offset)
+        # 2. Temp table (RefundCommission added)
         # ---------------------------------------------------------
         cur.execute("""
         IF OBJECT_ID('tempdb..#TempFinancial') IS NOT NULL DROP TABLE #TempFinancial;
@@ -574,8 +576,7 @@ def upsert_financial_transactions(rows):
             ShippingCharges FLOAT,
             Promotions FLOAT,
             FBAFees FLOAT,
-            Commission FLOAT,
-            RefundCommission FLOAT,
+            RefundCommission FLOAT,     -- ⭐ NEW
             FixedClosingFee FLOAT,
             VariableClosingFee FLOAT,
             ShippingChargeback FLOAT,
@@ -584,39 +585,40 @@ def upsert_financial_transactions(rows):
         )
         """)
 
+        # ---------------------------------------------------------
+        # 3. Insert into temp table (19 columns → 19 placeholders)
+        # ---------------------------------------------------------
         insert_temp = []
         for row in rows:
             insert_temp.append((
-                row.get("TransactionId"),
-                row.get("PostedDate"),
-                row.get("TransactionType"),
-                row.get("TransactionStatus"),
-                row.get("AmazonOrderId"),
-                row.get("SellerSKU"),
-                row.get("ASIN"),
-                row.get("SSKU"),
-                row.get("QuantityShipped"),
-                float(row["Principal"]) if row.get("Principal") is not None else None,
-                float(row["ShippingCharges"]) if row.get("ShippingCharges") is not None else None,
-                float(row["Promotions"]) if row.get("Promotions") is not None else None,
-                float(row["FBAFees"]) if row.get("FBAFees") is not None else None,
-                float(row["Commission"]) if row.get("Commission") is not None else None,
-                float(row["RefundCommission"]) if row.get("RefundCommission") is not None else None,
-                float(row["FixedClosingFee"]) if row.get("FixedClosingFee") is not None else None,
-                float(row["VariableClosingFee"]) if row.get("VariableClosingFee") is not None else None,
-                float(row["ShippingChargeback"]) if row.get("ShippingChargeback") is not None else None,
-                float(row["RefFee"]) if row.get("RefFee") is not None else None,
-                float(row["Total"]) if row.get("Total") is not None else None,
+                row["TransactionId"],
+                row["PostedDate"],
+                row["TransactionType"],
+                row["TransactionStatus"],
+                row["AmazonOrderId"],
+                row["SellerSKU"],
+                row["ASIN"],
+                row["SSKU"],
+                row["QuantityShipped"],
+                row["Principal"],
+                row["ShippingCharges"],
+                row["Promotions"],
+                row["FBAFees"],
+                row["RefundCommission"],     # ⭐ NEW
+                row["FixedClosingFee"],
+                row["VariableClosingFee"],
+                row["ShippingChargeback"],
+                row["RefFee"],
+                row["Total"],
             ))
 
         cur.fast_executemany = True
         cur.executemany("""
-            INSERT INTO #TempFinancial VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            INSERT INTO #TempFinancial VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, insert_temp)
-        #                ↑ 20 placeholders now correct
 
         # ---------------------------------------------------------
-        # 3. Lifecycle delete (lower → higher)
+        # 4. Lifecycle delete (lower → higher)
         # ---------------------------------------------------------
         cur.execute("""
         DELETE T
@@ -633,7 +635,7 @@ def upsert_financial_transactions(rows):
         """)
 
         # ---------------------------------------------------------
-        # 4. Idempotency: delete same-status duplicates
+        # 5. Idempotency delete
         # ---------------------------------------------------------
         cur.execute("""
         DELETE T
@@ -648,7 +650,7 @@ def upsert_financial_transactions(rows):
         """)
 
         # ---------------------------------------------------------
-        # 5. Insert new rows
+        # 6. Insert into final table (RefundCommission added)
         # ---------------------------------------------------------
         cur.execute("""
         INSERT INTO spapi_app_user.FinancialTransactions (
@@ -665,8 +667,7 @@ def upsert_financial_transactions(rows):
             ShippingCharges,
             Promotions,
             FBAFees,
-            Commission,
-            RefundCommission,
+            RefundCommission,       -- ⭐ NEW
             FixedClosingFee,
             VariableClosingFee,
             ShippingChargeback,
@@ -689,20 +690,19 @@ def upsert_financial_transactions(rows):
             ShippingCharges,
             Promotions,
             FBAFees,
-            Commission,
-            RefundCommission,
+            RefundCommission,       -- ⭐ NEW
             FixedClosingFee,
             VariableClosingFee,
             ShippingChargeback,
             RefFee,
             Total,
-            CONVERT(DATETIME, DATEADD(HOUR,4,GETUTCDATE())),
-            CONVERT(DATETIME, DATEADD(HOUR,4,GETUTCDATE()))
+            DATEADD(HOUR,4,GETUTCDATE()),
+            DATEADD(HOUR,4,GETUTCDATE())
         FROM #TempFinancial
         """)
 
         # ---------------------------------------------------------
-        # 6. Update OrderItems
+        # 7. Update OrderItems (Model B)
         # ---------------------------------------------------------
         update_orderitems_from_temp_financial(cur)
 
