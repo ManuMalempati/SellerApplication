@@ -12,72 +12,11 @@ import requests
 
 from ..database import connect_database
 from ..auth import spapi_request
+from .utils import clean_str, safe_int, safe_float, safe_dt, now_utc_plus_4
 
 load_dotenv()
 
 MARKETPLACE_ID = os.getenv("MARKETPLACE_ID")
-
-
-# ---------------------------------------------------------
-# Sanitizers
-# ---------------------------------------------------------
-
-def clean_str(x):
-    if x is None:
-        return None
-    x = str(x).strip()
-    return x if x != "" else None
-
-
-def safe_int(x):
-    try:
-        x = str(x).strip()
-        if x in ("", " ", "-", "--", "N/A", "NA", "None", "null"):
-            return 0
-        return int(x)
-    except:
-        return 0
-
-
-def safe_float(x):
-    try:
-        x = str(x).strip()
-        if x in ("", " ", "-", "--", "N/A", "NA", "None", "null"):
-            return 0.0
-        return float(x)
-    except:
-        return 0.0
-
-
-def safe_dt(x):
-    """
-    Convert ISO8601 → UTC+4 naive datetime
-    """
-    if not x:
-        return None
-
-    x = str(x).strip()
-    if x in ("", " ", "N/A", "NA", "-", "--", "0000-00-00T00:00:00+00:00"):
-        return None
-
-    try:
-        if x.endswith("Z"):
-            x = x.replace("Z", "+00:00")
-
-        dt_utc = datetime.fromisoformat(x)
-        if dt_utc.tzinfo is None:
-            dt_utc = dt_utc.replace(tzinfo=timezone.utc)
-
-        dt_utc4 = dt_utc.astimezone(timezone(timedelta(hours=4)))
-        return dt_utc4.replace(tzinfo=None)
-
-    except:
-        return None
-
-
-def now_utc_plus_4():
-    dt = datetime.now(timezone.utc) + timedelta(hours=4)
-    return dt.replace(tzinfo=None)
 
 
 # ---------------------------------------------------------

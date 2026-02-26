@@ -511,16 +511,19 @@ def update_orderitems_from_temp_financial(cur):
       AND S.TransactionStatus IN ('DEFERRED', 'RELEASED');
     """)
 
+
+
 def upsert_financial_transactions(rows):
     """
-    Lifecycle rules (identity = OrderId + Type + SKU + ASIN + SSKU):
+    NEW MODEL (Option A):
+    Identity = (AmazonOrderId, TransactionType, SellerSKU, TransactionStatus)
 
-    - If DEFERRED exists and DEFERRED_RELEASED arrives → DEFERRED is deleted, DEFERRED_RELEASED kept.
-    - If DEFERRED or DEFERRED_RELEASED exists and RELEASED arrives → they are deleted, RELEASED kept.
-    - Idempotency is identity-based, NOT TransactionId-based.
-    - Multiple rows with the same TransactionId are allowed (different SKUs/items).
-    - All timestamps stored as naive DATETIME in UTC+4.
-    - Also updates OrderItems.Payment / Refund / RefundDate (Model B).
+    Rules:
+    - Aggregate BEFORE inserting.
+    - DEFERRED → DEFERRED_RELEASED → RELEASED hierarchy.
+    - RELEASED replaces DEFERRED/DEFERRED_RELEASED.
+    - No TransactionId stored.
+    - One row per identity.
     """
 
     if not rows:
@@ -532,38 +535,66 @@ def upsert_financial_transactions(rows):
 
     try:
         # ---------------------------------------------------------
-        # 1. Collapse batch by identity, keeping highest status
+        # 1. Aggregate rows by new identity
         # ---------------------------------------------------------
-        collapsed = {}
-        for r in rows:
-            status = r.get("TransactionStatus")
-            rank = STATUS_RANK.get(status, -1)
+        aggregated = {}
 
+        for r in rows:
             key = (
-                r.get("AmazonOrderId"),
-                r.get("TransactionType"),
-                r.get("SellerSKU"),
-                r.get("ASIN"),
-                r.get("SSKU"),
+                r["AmazonOrderId"],
+                r["TransactionType"],
+                r["SellerSKU"],
+                r["TransactionStatus"],   # ⭐ part of identity
             )
 
-            existing = collapsed.get(key)
-            if not existing or rank > STATUS_RANK.get(existing.get("TransactionStatus"), -1):
-                collapsed[key] = r
+            if key not in aggregated:
+                aggregated[key] = {
+                    "PostedDate": r["PostedDate"],
+                    "AmazonOrderId": r["AmazonOrderId"],
+                    "TransactionType": r["TransactionType"],
+                    "TransactionStatus": r["TransactionStatus"],
+                    "SellerSKU": r["SellerSKU"],
+                    "ASIN": r["ASIN"],
+                    "SSKU": r["SSKU"],
 
-        rows = list(collapsed.values())
-        if not rows:
-            conn.commit()
-            return 0
+                    # numeric fields start at zero
+                    "QuantityShipped": 0,
+                    "Principal": 0.0,
+                    "ShippingCharges": 0.0,
+                    "Promotions": 0.0,
+                    "FBAFees": 0.0,
+                    "RefundCommission": 0.0,
+                    "FixedClosingFee": 0.0,
+                    "VariableClosingFee": 0.0,
+                    "ShippingChargeback": 0.0,
+                    "RefFee": 0.0,
+                    "Total": 0.0,
+                }
+
+            agg = aggregated[key]
+
+            # SUM numeric fields
+            agg["QuantityShipped"] += r["QuantityShipped"] or 0
+            agg["Principal"] += r["Principal"] or 0
+            agg["ShippingCharges"] += r["ShippingCharges"] or 0
+            agg["Promotions"] += r["Promotions"] or 0
+            agg["FBAFees"] += r["FBAFees"] or 0
+            agg["RefundCommission"] += r["RefundCommission"] or 0
+            agg["FixedClosingFee"] += r["FixedClosingFee"] or 0
+            agg["VariableClosingFee"] += r["VariableClosingFee"] or 0
+            agg["ShippingChargeback"] += r["ShippingChargeback"] or 0
+            agg["RefFee"] += r["RefFee"] or 0
+            agg["Total"] += r["Total"] or 0
+
+        rows = list(aggregated.values())
 
         # ---------------------------------------------------------
-        # 2. Temp table (RefundCommission added)
+        # 2. Temp table (NO TransactionId)
         # ---------------------------------------------------------
         cur.execute("""
         IF OBJECT_ID('tempdb..#TempFinancial') IS NOT NULL DROP TABLE #TempFinancial;
 
         CREATE TABLE #TempFinancial(
-            TransactionId NVARCHAR(100),
             PostedDate DATETIME,
             TransactionType NVARCHAR(50),
             TransactionStatus NVARCHAR(50),
@@ -576,7 +607,7 @@ def upsert_financial_transactions(rows):
             ShippingCharges FLOAT,
             Promotions FLOAT,
             FBAFees FLOAT,
-            RefundCommission FLOAT,     -- ⭐ NEW
+            RefundCommission FLOAT,
             FixedClosingFee FLOAT,
             VariableClosingFee FLOAT,
             ShippingChargeback FLOAT,
@@ -585,40 +616,37 @@ def upsert_financial_transactions(rows):
         )
         """)
 
-        # ---------------------------------------------------------
-        # 3. Insert into temp table (19 columns → 19 placeholders)
-        # ---------------------------------------------------------
+        # Insert aggregated rows
         insert_temp = []
-        for row in rows:
+        for r in rows:
             insert_temp.append((
-                row["TransactionId"],
-                row["PostedDate"],
-                row["TransactionType"],
-                row["TransactionStatus"],
-                row["AmazonOrderId"],
-                row["SellerSKU"],
-                row["ASIN"],
-                row["SSKU"],
-                row["QuantityShipped"],
-                row["Principal"],
-                row["ShippingCharges"],
-                row["Promotions"],
-                row["FBAFees"],
-                row["RefundCommission"],     # ⭐ NEW
-                row["FixedClosingFee"],
-                row["VariableClosingFee"],
-                row["ShippingChargeback"],
-                row["RefFee"],
-                row["Total"],
+                r["PostedDate"],
+                r["TransactionType"],
+                r["TransactionStatus"],
+                r["AmazonOrderId"],
+                r["SellerSKU"],
+                r["ASIN"],
+                r["SSKU"],
+                r["QuantityShipped"],
+                r["Principal"],
+                r["ShippingCharges"],
+                r["Promotions"],
+                r["FBAFees"],
+                r["RefundCommission"],
+                r["FixedClosingFee"],
+                r["VariableClosingFee"],
+                r["ShippingChargeback"],
+                r["RefFee"],
+                r["Total"],
             ))
 
         cur.fast_executemany = True
         cur.executemany("""
-            INSERT INTO #TempFinancial VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            INSERT INTO #TempFinancial VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, insert_temp)
 
         # ---------------------------------------------------------
-        # 4. Lifecycle delete (lower → higher)
+        # 3. Lifecycle delete (DEFERRED → DEFERRED_RELEASED → RELEASED)
         # ---------------------------------------------------------
         cur.execute("""
         DELETE T
@@ -627,34 +655,29 @@ def upsert_financial_transactions(rows):
           ON T.AmazonOrderId   = S.AmazonOrderId
          AND T.TransactionType = S.TransactionType
          AND T.SellerSKU       = S.SellerSKU
-         AND ISNULL(T.ASIN,'') = ISNULL(S.ASIN,'')
-         AND ISNULL(T.SSKU,'') = ISNULL(S.SSKU,'')
         WHERE
             (S.TransactionStatus = 'DEFERRED_RELEASED' AND T.TransactionStatus = 'DEFERRED')
          OR (S.TransactionStatus = 'RELEASED' AND T.TransactionStatus IN ('DEFERRED','DEFERRED_RELEASED'));
         """)
 
         # ---------------------------------------------------------
-        # 5. Idempotency delete
+        # 4. Idempotency delete (same identity)
         # ---------------------------------------------------------
         cur.execute("""
         DELETE T
         FROM spapi_app_user.FinancialTransactions T
         JOIN #TempFinancial S
-          ON T.AmazonOrderId   = S.AmazonOrderId
-         AND T.TransactionType = S.TransactionType
-         AND T.SellerSKU       = S.SellerSKU
-         AND ISNULL(T.ASIN,'') = ISNULL(S.ASIN,'')
-         AND ISNULL(T.SSKU,'') = ISNULL(S.SSKU,'')
-         AND T.TransactionStatus = S.TransactionStatus;
+          ON T.AmazonOrderId      = S.AmazonOrderId
+         AND T.TransactionType    = S.TransactionType
+         AND T.SellerSKU          = S.SellerSKU
+         AND T.TransactionStatus  = S.TransactionStatus;
         """)
 
         # ---------------------------------------------------------
-        # 6. Insert into final table (RefundCommission added)
+        # 5. Insert final aggregated rows
         # ---------------------------------------------------------
         cur.execute("""
         INSERT INTO spapi_app_user.FinancialTransactions (
-            TransactionId,
             PostedDate,
             TransactionType,
             TransactionStatus,
@@ -667,7 +690,7 @@ def upsert_financial_transactions(rows):
             ShippingCharges,
             Promotions,
             FBAFees,
-            RefundCommission,       -- ⭐ NEW
+            RefundCommission,
             FixedClosingFee,
             VariableClosingFee,
             ShippingChargeback,
@@ -677,7 +700,6 @@ def upsert_financial_transactions(rows):
             UpdatedAt
         )
         SELECT
-            TransactionId,
             PostedDate,
             TransactionType,
             TransactionStatus,
@@ -690,7 +712,7 @@ def upsert_financial_transactions(rows):
             ShippingCharges,
             Promotions,
             FBAFees,
-            RefundCommission,       -- ⭐ NEW
+            RefundCommission,
             FixedClosingFee,
             VariableClosingFee,
             ShippingChargeback,
@@ -702,7 +724,7 @@ def upsert_financial_transactions(rows):
         """)
 
         # ---------------------------------------------------------
-        # 7. Update OrderItems (Model B)
+        # 6. Update OrderItems
         # ---------------------------------------------------------
         update_orderitems_from_temp_financial(cur)
 

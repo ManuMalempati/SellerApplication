@@ -471,7 +471,7 @@ def get_raw_refund_transactions_last_3_days():
 
     now_utc = datetime.now(timezone.utc)
 
-    posted_after = (now_utc - timedelta(days=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    posted_after = (now_utc - timedelta(days=50)).strftime("%Y-%m-%dT%H:%M:%SZ")
     posted_before = (now_utc - timedelta(minutes=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     params = {
@@ -495,4 +495,87 @@ def get_raw_refund_transactions_last_3_days():
         "posted_after": posted_after,
         "posted_before": posted_before,
         "raw_response": raw
+    }
+
+@router.get("/transactions/raw-by-order-id")
+def get_raw_transactions_by_order_id():
+    """
+    Fetch RAW Amazon SP‑API financial transactions (2024‑06‑19 API)
+    for a specific AmazonOrderId using the official filtering:
+
+        relatedIdentifierName=ORDER_ID
+        relatedIdentifierValue=<orderId>
+
+    This returns ALL transaction types for that order:
+        - Shipment
+        - Refund
+        - Deferred
+        - Released
+        - Adjustments
+        - etc.
+
+    Pagination is handled via nextToken.
+    """
+
+    target_order_id = "171-2725958-2910742"
+
+    now_utc = datetime.now(timezone.utc)
+    posted_after = (now_utc - timedelta(days=50)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    posted_before = (now_utc - timedelta(minutes=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    print("Fetching RAW transactions for specific OrderId...")
+    print("OrderId:", target_order_id)
+    print("PostedAfter:", posted_after)
+    print("PostedBefore:", posted_before)
+
+    # ---------------------------------------------------------
+    # 1. Initial request using ORDER_ID filter
+    # ---------------------------------------------------------
+    params = {
+        "postedAfter": posted_after,
+        "postedBefore": posted_before,
+        "relatedIdentifierName": "ORDER_ID",
+        "relatedIdentifierValue": target_order_id,
+        "pageSize": 100
+    }
+
+    response = spapi_request(
+        method="GET",
+        path="/finances/2024-06-19/transactions",
+        params=params
+    )
+
+    all_pages = [response]
+    next_token = (response.get("payload") or {}).get("nextToken")
+
+    # ---------------------------------------------------------
+    # 2. Paginate until nextToken is gone
+    # ---------------------------------------------------------
+    while next_token:
+        page = spapi_request(
+            method="GET",
+            path="/finances/2024-06-19/transactions",
+            params={"nextToken": next_token}
+        )
+
+        all_pages.append(page)
+        next_token = (page.get("payload") or {}).get("nextToken")
+
+    # ---------------------------------------------------------
+    # 3. Extract all transactions (no filtering needed)
+    #    ORDER_ID filter already restricts results
+    # ---------------------------------------------------------
+    matching = []
+    for page in all_pages:
+        txs = (page.get("payload") or {}).get("transactions") or []
+        matching.extend(txs)
+
+    return {
+        "order_id": target_order_id,
+        "posted_after": posted_after,
+        "posted_before": posted_before,
+        "total_pages": len(all_pages),
+        "matching_count": len(matching),
+        "transactions": matching,
+        "raw_pages": all_pages
     }
