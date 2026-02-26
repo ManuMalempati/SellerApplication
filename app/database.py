@@ -477,6 +477,40 @@ STATUS_RANK = {
     "RELEASED": 2,
 }
 
+def update_orderitems_from_temp_financial(cur):
+    """
+    Updated Model B (simplified):
+    - Shipments: update ALL matching rows (DEFERRED + RELEASED)
+    - Refunds:   update ALL matching rows (DEFERRED + RELEASED)
+    - DEFERRED_RELEASED ignored
+    """
+
+    # Shipments → Payment
+    cur.execute("""
+    UPDATE O
+    SET O.Payment = S.Total
+    FROM OrderItems O
+    JOIN #TempFinancial S
+      ON O.AmazonOrderId = S.AmazonOrderId
+     AND O.SKU           = S.SellerSKU
+    WHERE S.TransactionType = 'Shipment'
+      AND S.TransactionStatus IN ('DEFERRED', 'RELEASED');
+    """)
+
+    # Refunds → update ALL rows
+    cur.execute("""
+    UPDATE O
+    SET 
+        O.Refund     = S.Total,
+        O.RefundDate = S.PostedDate
+    FROM OrderItems O
+    JOIN #TempFinancial S
+      ON O.AmazonOrderId = S.AmazonOrderId
+     AND O.SKU           = S.SellerSKU
+    WHERE S.TransactionType = 'Refund'
+      AND S.TransactionStatus IN ('DEFERRED', 'RELEASED');
+    """)
+
 def upsert_financial_transactions(rows):
     """
     NEW MODEL (Option A):

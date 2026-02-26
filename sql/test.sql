@@ -1,2 +1,2 @@
-SELECT * FROM FinancialTransactions
-WHERE TransactionStatus = 'DEFERRED_RELEASED'
+TRUNCATE TABLE FinancialTransactions
+-- WHERE TransactionStatus = 'DEFERRED_RELEASED'
