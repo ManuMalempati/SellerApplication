@@ -477,53 +477,20 @@ STATUS_RANK = {
     "RELEASED": 2,
 }
 
-def update_orderitems_from_temp_financial(cur):
-    """
-    Updated Model B (simplified):
-    - Shipments: update ALL matching rows (DEFERRED + RELEASED)
-    - Refunds:   update ALL matching rows (DEFERRED + RELEASED)
-    - DEFERRED_RELEASED ignored
-    """
-
-    # Shipments → Payment
-    cur.execute("""
-    UPDATE O
-    SET O.Payment = S.Total
-    FROM OrderItems O
-    JOIN #TempFinancial S
-      ON O.AmazonOrderId = S.AmazonOrderId
-     AND O.SKU           = S.SellerSKU
-    WHERE S.TransactionType = 'Shipment'
-      AND S.TransactionStatus IN ('DEFERRED', 'RELEASED');
-    """)
-
-    # Refunds → update ALL rows
-    cur.execute("""
-    UPDATE O
-    SET 
-        O.Refund     = S.Total,
-        O.RefundDate = S.PostedDate
-    FROM OrderItems O
-    JOIN #TempFinancial S
-      ON O.AmazonOrderId = S.AmazonOrderId
-     AND O.SKU           = S.SellerSKU
-    WHERE S.TransactionType = 'Refund'
-      AND S.TransactionStatus IN ('DEFERRED', 'RELEASED');
-    """)
-
-
-
 def upsert_financial_transactions(rows):
     """
     NEW MODEL (Option A):
-    Identity = (AmazonOrderId, TransactionType, SellerSKU, TransactionStatus)
+
+    Identity in table = (AmazonOrderId, TransactionType, SellerSKU, TransactionStatus)
 
     Rules:
-    - Aggregate BEFORE inserting.
-    - DEFERRED → DEFERRED_RELEASED → RELEASED hierarchy.
-    - RELEASED replaces DEFERRED/DEFERRED_RELEASED.
+    - Aggregate BEFORE inserting by (OrderId, Type, SKU, Status).
+    - Hierarchy per (OrderId, Type, SKU):
+        DEFERRED < DEFERRED_RELEASED < RELEASED
+      Higher status replaces lower ones.
     - No TransactionId stored.
-    - One row per identity.
+    - One row per identity in FinancialTransactions.
+    - Also updates OrderItems.Payment / Refund / RefundDate (Model B).
     """
 
     if not rows:
@@ -535,7 +502,7 @@ def upsert_financial_transactions(rows):
 
     try:
         # ---------------------------------------------------------
-        # 1. Aggregate rows by new identity
+        # 1. Aggregate by (OrderId, Type, SKU, Status)
         # ---------------------------------------------------------
         aggregated = {}
 
@@ -544,7 +511,7 @@ def upsert_financial_transactions(rows):
                 r["AmazonOrderId"],
                 r["TransactionType"],
                 r["SellerSKU"],
-                r["TransactionStatus"],   # ⭐ part of identity
+                r["TransactionStatus"],
             )
 
             if key not in aggregated:
@@ -557,7 +524,6 @@ def upsert_financial_transactions(rows):
                     "ASIN": r["ASIN"],
                     "SSKU": r["SSKU"],
 
-                    # numeric fields start at zero
                     "QuantityShipped": 0,
                     "Principal": 0.0,
                     "ShippingCharges": 0.0,
@@ -573,7 +539,6 @@ def upsert_financial_transactions(rows):
 
             agg = aggregated[key]
 
-            # SUM numeric fields
             agg["QuantityShipped"] += r["QuantityShipped"] or 0
             agg["Principal"] += r["Principal"] or 0
             agg["ShippingCharges"] += r["ShippingCharges"] or 0
@@ -587,6 +552,9 @@ def upsert_financial_transactions(rows):
             agg["Total"] += r["Total"] or 0
 
         rows = list(aggregated.values())
+        if not rows:
+            conn.commit()
+            return 0
 
         # ---------------------------------------------------------
         # 2. Temp table (NO TransactionId)
@@ -616,7 +584,6 @@ def upsert_financial_transactions(rows):
         )
         """)
 
-        # Insert aggregated rows
         insert_temp = []
         for r in rows:
             insert_temp.append((
@@ -647,6 +614,7 @@ def upsert_financial_transactions(rows):
 
         # ---------------------------------------------------------
         # 3. Lifecycle delete (DEFERRED → DEFERRED_RELEASED → RELEASED)
+        #    Per (OrderId, Type, SKU)
         # ---------------------------------------------------------
         cur.execute("""
         DELETE T
@@ -662,6 +630,7 @@ def upsert_financial_transactions(rows):
 
         # ---------------------------------------------------------
         # 4. Idempotency delete (same identity)
+        #    Ensures we replace existing row with same status
         # ---------------------------------------------------------
         cur.execute("""
         DELETE T
@@ -724,7 +693,7 @@ def upsert_financial_transactions(rows):
         """)
 
         # ---------------------------------------------------------
-        # 6. Update OrderItems
+        # 6. Update OrderItems (Model B)
         # ---------------------------------------------------------
         update_orderitems_from_temp_financial(cur)
 

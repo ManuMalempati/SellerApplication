@@ -1,2 +1,3 @@
-SELECT * FROM FBAReimbursements
-WHERE amazon_order_id = '408-5513385-7553161'
+UPDATE spapi_app_user.SyncState
+SET LastSuccessfulSyncUtc = DATEADD(DAY, -2, LastSuccessfulSyncUtc)
+WHERE SyncKey = 'TRANSACTIONS_LIVE_SYNC';

@@ -186,12 +186,11 @@ def get_transactions(params, db_cursor):
     rows = []
 
     for tx in txs:
-        transaction_id = tx.get("transactionId")
         posted_date = to_utc_plus_4_naive(tx.get("postedDate"))
         transaction_type = tx.get("transactionType")
         transaction_status = tx.get("transactionStatus")
 
-        # ⭐ ALWAYS use API total
+        # ALWAYS use API total
         api_total = safe(tx.get("totalAmount", {}).get("currencyAmount"))
 
         amazon_order_id = None
@@ -202,7 +201,6 @@ def get_transactions(params, db_cursor):
         # ---------------------------------------------------------
         # SPECIAL CASE: FBAInventoryReimbursement
         # ---------------------------------------------------------
-
         if transaction_type == "FBAInventoryReimbursement":
             sku = asin = qty = None
 
@@ -219,7 +217,6 @@ def get_transactions(params, db_cursor):
             ssku = mapping.get("ssku")
 
             row = {
-                "TransactionId": transaction_id,
                 "PostedDate": posted_date,
                 "TransactionStatus": transaction_status,
                 "TransactionType": transaction_type,
@@ -250,7 +247,6 @@ def get_transactions(params, db_cursor):
         # ---------------------------------------------------------
         # NORMAL ORDER / REFUND / OTHER ITEM-BASED PROCESSING
         # ---------------------------------------------------------
-
         for item in tx.get("items") or []:
             sku = asin = qty = None
 
@@ -280,11 +276,9 @@ def get_transactions(params, db_cursor):
             fixed_closing = 0.0
             variable_closing = 0.0
 
-            # ⭐ RefFee = Commission (referral fee)
             ref_fee = commission + fixed_closing + variable_closing
 
             row = {
-                "TransactionId": transaction_id,
                 "PostedDate": posted_date,
                 "TransactionStatus": transaction_status,
                 "TransactionType": transaction_type,
@@ -300,13 +294,13 @@ def get_transactions(params, db_cursor):
                 "Promotions": promotions,
 
                 "FBAFees": fba_fees,
-                "RefundCommission": refund_commission,   # ⭐ NEW
+                "RefundCommission": refund_commission,
                 "FixedClosingFee": fixed_closing,
                 "VariableClosingFee": variable_closing,
                 "ShippingChargeback": shipping_chargeback,
 
-                "RefFee": ref_fee,                       # ⭐ SAME AS BEFORE
-                "Total": api_total,                      # ⭐ ALWAYS FROM API
+                "RefFee": ref_fee,
+                "Total": api_total,
             }
 
             rows.append(row)

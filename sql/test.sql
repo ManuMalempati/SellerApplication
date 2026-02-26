@@ -1,2 +1,2 @@
-SELECT * FROM OrderItems
-WHERE AmazonOrderId = '408-5513385-7553161'
+SELECT * FROM FinancialTransactions
+WHERE TransactionStatus = 'DEFERRED_RELEASED'
