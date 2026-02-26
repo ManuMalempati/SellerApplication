@@ -190,9 +190,6 @@ def get_transactions(params, db_cursor):
         transaction_type = tx.get("transactionType")
         transaction_status = tx.get("transactionStatus")
 
-        # ALWAYS use API total
-        api_total = safe(tx.get("totalAmount", {}).get("currencyAmount"))
-
         amazon_order_id = None
         for rid in tx.get("relatedIdentifiers") or []:
             if rid.get("relatedIdentifierName") == "ORDER_ID":
@@ -215,6 +212,10 @@ def get_transactions(params, db_cursor):
 
             mapping = product_mapping.get(sku, {}) if sku else {}
             ssku = mapping.get("ssku")
+
+            # For reimbursements, Amazon gives only transaction-level totals.
+            # We keep using that because item-level totals do not exist.
+            api_total = safe(tx.get("totalAmount", {}).get("currencyAmount"))
 
             row = {
                 "PostedDate": posted_date,
@@ -278,6 +279,9 @@ def get_transactions(params, db_cursor):
 
             ref_fee = commission + fixed_closing + variable_closing
 
+            # ⭐ ITEM-LEVEL TOTAL (NEW RULE)
+            item_total = safe(item.get("totalAmount", {}).get("currencyAmount"))
+
             row = {
                 "PostedDate": posted_date,
                 "TransactionStatus": transaction_status,
@@ -300,7 +304,7 @@ def get_transactions(params, db_cursor):
                 "ShippingChargeback": shipping_chargeback,
 
                 "RefFee": ref_fee,
-                "Total": api_total,
+                "Total": item_total,   # ⭐ ITEM-LEVEL TOTAL
             }
 
             rows.append(row)

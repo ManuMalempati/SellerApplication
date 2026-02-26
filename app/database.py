@@ -568,7 +568,7 @@ def upsert_financial_transactions(rows):
                     "VariableClosingFee": 0.0,
                     "ShippingChargeback": 0.0,
                     "RefFee": 0.0,
-                    "Total": 0.0,
+                    "Total": 0.0,   # item-level totals aggregated
                 }
 
             agg = aggregated[key]
@@ -583,7 +583,7 @@ def upsert_financial_transactions(rows):
             agg["VariableClosingFee"] += r["VariableClosingFee"] or 0
             agg["ShippingChargeback"] += r["ShippingChargeback"] or 0
             agg["RefFee"] += r["RefFee"] or 0
-            agg["Total"] += r["Total"] or 0
+            agg["Total"] += r["Total"] or 0   # item-level total
 
         rows = list(aggregated.values())
         if not rows:
@@ -648,7 +648,6 @@ def upsert_financial_transactions(rows):
 
         # ---------------------------------------------------------
         # 3. Lifecycle delete (DEFERRED → DEFERRED_RELEASED → RELEASED)
-        #    Per (OrderId, Type, SKU)
         # ---------------------------------------------------------
         cur.execute("""
         DELETE T
@@ -664,7 +663,6 @@ def upsert_financial_transactions(rows):
 
         # ---------------------------------------------------------
         # 4. Idempotency delete (same identity)
-        #    Ensures we replace existing row with same status
         # ---------------------------------------------------------
         cur.execute("""
         DELETE T
