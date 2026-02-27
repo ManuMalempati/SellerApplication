@@ -476,13 +476,12 @@ STATUS_RANK = {
     "DEFERRED_RELEASED": 1,
     "RELEASED": 2,
 }
-
 def update_orderitems_from_temp_financial(cur):
     """
     Updated Model B (simplified):
     - Shipments: update ALL matching rows (DEFERRED + RELEASED)
     - Refunds:   update ALL matching rows (DEFERRED + RELEASED)
-    - DEFERRED_RELEASED ignored
+    - DEFERRED_RELEASED ignored for OrderItems
     """
 
     # Shipments → Payment
@@ -511,19 +510,27 @@ def update_orderitems_from_temp_financial(cur):
       AND S.TransactionStatus IN ('DEFERRED', 'RELEASED');
     """)
 
+
+STATUS_RANK = {
+    "DEFERRED": 1,
+    "DEFERRED_RELEASED": 2,
+    "RELEASED": 3,
+}
+
+
 def upsert_financial_transactions(rows):
     """
     NEW MODEL (Option A):
 
-    Identity in table = (AmazonOrderId, TransactionType, SellerSKU, TransactionStatus)
+    Identity for lifecycle = (AmazonOrderId, TransactionType, SellerSKU)
 
     Rules:
-    - Aggregate BEFORE inserting by (OrderId, Type, SKU, Status).
-    - Hierarchy per (OrderId, Type, SKU):
+    - Aggregate BEFORE inserting by (OrderId, Type, SKU), keeping ONLY the HIGHEST status:
         DEFERRED < DEFERRED_RELEASED < RELEASED
-      Higher status replaces lower ones.
+    - Within that highest status, aggregate all item-level amounts.
     - No TransactionId stored.
-    - One row per identity in FinancialTransactions.
+    - At most ONE row per (OrderId, Type, SKU) in #TempFinancial, with its highest status.
+    - When a higher status appears in the batch, delete lower statuses already in DB.
     - Also updates OrderItems.Payment / Refund / RefundDate (Model B).
     """
 
@@ -536,24 +543,29 @@ def upsert_financial_transactions(rows):
 
     try:
         # ---------------------------------------------------------
-        # 1. Aggregate by (OrderId, Type, SKU, Status)
+        # 1. Aggregate by (OrderId, Type, SKU) with status hierarchy
         # ---------------------------------------------------------
         aggregated = {}
 
         for r in rows:
-            key = (
+            base_key = (
                 r["AmazonOrderId"],
                 r["TransactionType"],
                 r["SellerSKU"],
-                r["TransactionStatus"],
             )
 
-            if key not in aggregated:
-                aggregated[key] = {
+            status = r["TransactionStatus"]
+            rank = STATUS_RANK.get(status, 0)
+
+            existing = aggregated.get(base_key)
+
+            if not existing or rank > STATUS_RANK.get(existing["TransactionStatus"], 0):
+                # Start a new accumulator for this higher status
+                aggregated[base_key] = {
                     "PostedDate": r["PostedDate"],
                     "AmazonOrderId": r["AmazonOrderId"],
                     "TransactionType": r["TransactionType"],
-                    "TransactionStatus": r["TransactionStatus"],
+                    "TransactionStatus": status,
                     "SellerSKU": r["SellerSKU"],
                     "ASIN": r["ASIN"],
                     "SSKU": r["SSKU"],
@@ -571,19 +583,20 @@ def upsert_financial_transactions(rows):
                     "Total": 0.0,   # item-level totals aggregated
                 }
 
-            agg = aggregated[key]
-
-            agg["QuantityShipped"] += r["QuantityShipped"] or 0
-            agg["Principal"] += r["Principal"] or 0
-            agg["ShippingCharges"] += r["ShippingCharges"] or 0
-            agg["Promotions"] += r["Promotions"] or 0
-            agg["FBAFees"] += r["FBAFees"] or 0
-            agg["RefundCommission"] += r["RefundCommission"] or 0
-            agg["FixedClosingFee"] += r["FixedClosingFee"] or 0
-            agg["VariableClosingFee"] += r["VariableClosingFee"] or 0
-            agg["ShippingChargeback"] += r["ShippingChargeback"] or 0
-            agg["RefFee"] += r["RefFee"] or 0
-            agg["Total"] += r["Total"] or 0   # item-level total
+            # Only aggregate into the chosen (highest-status) row
+            agg = aggregated[base_key]
+            if status == agg["TransactionStatus"]:
+                agg["QuantityShipped"] += r["QuantityShipped"] or 0
+                agg["Principal"] += r["Principal"] or 0
+                agg["ShippingCharges"] += r["ShippingCharges"] or 0
+                agg["Promotions"] += r["Promotions"] or 0
+                agg["FBAFees"] += r["FBAFees"] or 0
+                agg["RefundCommission"] += r["RefundCommission"] or 0
+                agg["FixedClosingFee"] += r["FixedClosingFee"] or 0
+                agg["VariableClosingFee"] += r["VariableClosingFee"] or 0
+                agg["ShippingChargeback"] += r["ShippingChargeback"] or 0
+                agg["RefFee"] += r["RefFee"] or 0
+                agg["Total"] += r["Total"] or 0   # item-level total
 
         rows = list(aggregated.values())
         if not rows:
@@ -649,6 +662,7 @@ def upsert_financial_transactions(rows):
         # ---------------------------------------------------------
         # 3. Lifecycle delete (DEFERRED → DEFERRED_RELEASED → RELEASED)
         #    Per (OrderId, Type, SKU) — ASIN/SSKU NOT part of lifecycle identity
+        #    This compares the batch (S) against existing DB rows (T).
         # ---------------------------------------------------------
         cur.execute("""
         DELETE T
@@ -663,7 +677,8 @@ def upsert_financial_transactions(rows):
         """)
 
         # ---------------------------------------------------------
-        # 4. Idempotency delete (same identity)
+        # 4. Idempotency delete (same identity & same status)
+        #    Ensures we replace existing row with same status.
         # ---------------------------------------------------------
         cur.execute("""
         DELETE T
