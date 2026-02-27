@@ -66,7 +66,15 @@ def estimate_fees_for_item(sku, asin, price, counters):
 
     def _fetch():
         fees_rate_limiter.acquire()
-        return get_fees_estimate(sku, asin, price)
+        resp = get_fees_estimate(sku, asin, price)
+
+        # Permanent error -> return safe empty fee
+        if isinstance(resp, dict) and "errors" in resp:
+            codes = [e.get("code") for e in resp["errors"]]
+            if not any(c in ("QuotaExceeded", "RequestThrottled") for c in codes):
+                return {"net": {}}  # safe fallback for permanent errors
+
+        return resp
 
     return retry_call(_fetch)
 

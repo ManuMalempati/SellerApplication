@@ -5,10 +5,15 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_resul
 # ---------------------------------------------------------
 
 def _should_retry(result):
-    if isinstance(result, dict) and "errors" in result:
-        codes = [e.get("code") for e in result["errors"]]
-        return "QuotaExceeded" in codes or "RequestThrottled" in codes
-    return False
+    if not isinstance(result, dict):
+        return False
+
+    errors = result.get("errors")
+    if not errors:
+        return False
+
+    retryable = {"QuotaExceeded", "RequestThrottled"}
+    return any(e.get("code") in retryable for e in errors)
 
 
 @retry(
