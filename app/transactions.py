@@ -6,6 +6,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_resul
 
 from .auth import spapi_request
 from .database import get_product_mapping
+from .rate_limiter import TokenBucketRateLimiter
 
 
 # ---------------------------------------------------------
@@ -33,31 +34,6 @@ def to_utc_plus_4_naive(value: str):
 # ---------------------------------------------------------
 # Rate Limiter
 # ---------------------------------------------------------
-
-class TokenBucketRateLimiter:
-    def __init__(self, rate: float, burst: int):
-        self.rate = rate
-        self.burst = burst
-        self.tokens = burst
-        self.last_update = time.time()
-        self.lock = threading.Lock()
-
-    def acquire(self):
-        while True:
-            with self.lock:
-                now = time.time()
-                elapsed = now - self.last_update
-                self.tokens = min(self.burst, self.tokens + elapsed * self.rate)
-                self.last_update = now
-
-                if self.tokens >= 1:
-                    self.tokens -= 1
-                    return
-
-                wait_time = (1 - self.tokens) / self.rate
-
-            time.sleep(wait_time)
-
 
 transactions_rate_limiter = TokenBucketRateLimiter(rate=0.5, burst=10)
 

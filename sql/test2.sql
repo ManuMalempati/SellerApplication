@@ -1,3 +1,3 @@
 UPDATE spapi_app_user.SyncState
-SET LastSuccessfulSyncUtc = DATEADD(DAY, -2, LastSuccessfulSyncUtc)
-WHERE SyncKey = 'TRANSACTIONS_LIVE_SYNC';
+SET LastSuccessfulSyncUtc = DATEADD(HOUR, -10, LastSuccessfulSyncUtc)
+WHERE SyncKey = 'ORDERS_LIVE_SYNC';
