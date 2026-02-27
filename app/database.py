@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
 import pyodbc
-from datetime import datetime, timezone, timedelta
 import os
 from dotenv import load_dotenv
-import json
-import time
-import datetime as dt
 
 load_dotenv()
 
