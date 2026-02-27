@@ -4,8 +4,6 @@ import time
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Any, Optional
-import threading
 import csv
 import io
 
@@ -18,6 +16,7 @@ from .database import (
 )
 from .estimates import get_fees_estimate
 from .rate_limiter import TokenBucketRateLimiter
+from .apputils import retry_call
 
 # -------------------------------------------------------------------
 # Environment
@@ -62,25 +61,6 @@ fees_rate_limiter = TokenBucketRateLimiter(rate=1.0, burst=2)
 # Retry wrapper
 # -------------------------------------------------------------------
 
-def retry_api_call(func, *args, max_retries=MAX_RETRIES, initial_delay=INITIAL_RETRY_DELAY, **kwargs):
-    delay = initial_delay
-    for attempt in range(max_retries):
-        result = func(*args, **kwargs)
-
-        if isinstance(result, dict) and "errors" in result:
-            codes = [err.get("code") for err in result.get("errors", [])]
-            if "QuotaExceeded" in codes or "RequestThrottled" in codes:
-                if attempt < max_retries - 1:
-                    print(f"Rate limit hit - Retry {attempt + 1}/{max_retries} after {delay:.1f}s")
-                    time.sleep(delay)
-                    delay *= 2
-                    continue
-
-        return result
-
-    return result
-
-
 def estimate_fees_for_item(sku, asin, price, counters):
     counters["sp_calls"] += 1
 
@@ -88,7 +68,7 @@ def estimate_fees_for_item(sku, asin, price, counters):
         fees_rate_limiter.acquire()
         return get_fees_estimate(sku, asin, price)
 
-    return retry_api_call(_fetch)
+    return retry_call(_fetch)
 
 # -------------------------------------------------------------------
 # PATCH: Updated wait_for_report
