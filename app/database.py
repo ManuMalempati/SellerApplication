@@ -648,6 +648,7 @@ def upsert_financial_transactions(rows):
 
         # ---------------------------------------------------------
         # 3. Lifecycle delete (DEFERRED → DEFERRED_RELEASED → RELEASED)
+        #    Per (OrderId, Type, SKU) — ASIN/SSKU NOT part of lifecycle identity
         # ---------------------------------------------------------
         cur.execute("""
         DELETE T
