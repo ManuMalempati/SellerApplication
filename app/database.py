@@ -2,6 +2,7 @@
 import pyodbc
 import os
 from dotenv import load_dotenv
+from .utils import now_utc_plus_offset_naive
 
 load_dotenv()
 
@@ -10,6 +11,7 @@ def connect_database():
     """Establish connection to the SQL Server database"""
     try:
         connection = pyodbc.connect(os.getenv("SQLSERVER_CONNECTION_STRING"))
+        return connection
         return connection
     except pyodbc.Error as e:
         sqlstate = e.args[0]
@@ -384,7 +386,7 @@ def bulk_upsert_fba_data(cursor, fba_rows):
                 target.[Est-VAT] = src.Est_VAT,
                 target.[Est-Net] = src.Est_Net,
                 target.Profit = src.Profit,
-                target.fba_updated_at = DATEADD(HOUR, 4, GETUTCDATE())
+                target.fba_updated_at = ?
 
         WHEN NOT MATCHED BY TARGET THEN
             INSERT (
@@ -400,7 +402,7 @@ def bulk_upsert_fba_data(cursor, fba_rows):
                 src.Title, src.COG, src.Brand, src.Category,
                 src.TotalOrderItems_L30, src.OrderedProductSales_L30, src.UnitsRefunded_L30, src.BuyBoxPercentage_L30,
                 src.Sale_Price, src.Charges, src.Est_VAT, src.Est_Net, src.Profit,
-                DATEADD(HOUR, 4, GETUTCDATE())
+                ?
             )
 
         OUTPUT $action;
@@ -408,7 +410,7 @@ def bulk_upsert_fba_data(cursor, fba_rows):
         DROP TABLE #TempFBA;
     """
 
-    cursor.execute(merge_sql)
+    cursor.execute(merge_sql, (now_utc_plus_offset_naive(), now_utc_plus_offset_naive()))
     actions = cursor.fetchall()
 
     updated = sum(1 for a in actions if a[0] == "UPDATE")
@@ -731,10 +733,9 @@ def upsert_financial_transactions(rows):
             ShippingChargeback,
             RefFee,
             Total,
-            DATEADD(HOUR,4,GETUTCDATE()),
-            DATEADD(HOUR,4,GETUTCDATE())
+            ?, ?
         FROM #TempFinancial
-        """)
+        """, (now_utc_plus_offset_naive(), now_utc_plus_offset_naive()))
 
         # ---------------------------------------------------------
         # 6. Update OrderItems (Model B)
@@ -751,4 +752,5 @@ def upsert_financial_transactions(rows):
 
     finally:
         cur.close()
+        conn.close()
         conn.close()

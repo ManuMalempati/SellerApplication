@@ -1,31 +1,7 @@
-from datetime import datetime, timezone, timedelta
-
 from .auth import spapi_request
 from .database import get_product_mapping
 from .rate_limiter import TokenBucketRateLimiter
-from .apputils import retry_call
-
-
-# ---------------------------------------------------------
-# Timezone helpers
-# ---------------------------------------------------------
-
-UTC_PLUS_4 = timezone(timedelta(hours=4))
-
-
-def to_utc_plus_4_naive(value: str):
-    """
-    Convert Amazon's UTC Z timestamp into a naive datetime in UTC+4.
-    Example output: 2026-02-24 14:15:34 (no timezone info).
-    """
-    if not value:
-        return None
-    try:
-        dt_utc = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        dt_utc4 = dt_utc.astimezone(UTC_PLUS_4)
-        return dt_utc4.replace(tzinfo=None)
-    except Exception:
-        return None
+from .utils import retry_call, to_utc_plus_offset_naive
 
 
 # ---------------------------------------------------------
@@ -138,7 +114,7 @@ def get_transactions(params, db_cursor):
     rows = []
 
     for tx in txs:
-        posted_date = to_utc_plus_4_naive(tx.get("postedDate"))
+        posted_date = to_utc_plus_offset_naive(tx.get("postedDate"))
         transaction_type = tx.get("transactionType")
         transaction_status = tx.get("transactionStatus")
 

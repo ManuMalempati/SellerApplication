@@ -11,7 +11,7 @@ import requests
 
 from ..database import connect_database
 from ..auth import spapi_request
-from .utils import clean_str, safe_int, safe_dt, now_utc_plus_4
+from ..utils import clean_str, safe_int, safe_dt, now_utc_plus_offset_naive
 
 load_dotenv()
 
@@ -137,8 +137,8 @@ def upsert_fba_removal_shipments(rows):
             safe_int(r.get("shipped-quantity")),
             clean_str(r.get("carrier")),
             clean_str(r.get("removal-order-type")),
-            now_utc_plus_4(),   # created_at
-            now_utc_plus_4(),   # updated_at
+            now_utc_plus_offset_naive,   # created_at
+            now_utc_plus_offset_naive,   # updated_at
         ))
 
     cursor.fast_executemany = True

@@ -41,7 +41,7 @@ def get_now_iso_string_with_custom_utc_offset():
      a timezone-aware ISO8601 string for logging.
     """
     # Fallback to 4 if the environment variable is missing
-    offset_hours = int(os.getenv("LOG_UTC_OFFSET", "4"))
+    offset_hours = int(os.getenv("UTC_OFFSET", "4"))
     
     # Create the specific timezone object (e.g., UTC+4)
     custom_tz = timezone(timedelta(hours=offset_hours))

@@ -12,7 +12,7 @@ import requests
 
 from ..database import connect_database
 from ..auth import spapi_request
-from .utils import clean_str, safe_int, safe_float, safe_dt, now_utc_plus_4
+from ..utils import clean_str, safe_int, safe_float, safe_dt, now_utc_plus_offset_naive
 
 load_dotenv()
 
@@ -149,8 +149,8 @@ def upsert_fba_reimbursements(rows):
             safe_int(r.get("quantity-reimbursed-total")),
             clean_str(r.get("original-reimbursement-id")),
             clean_str(r.get("original-reimbursement-type")),
-            now_utc_plus_4(),
-            now_utc_plus_4(),
+            now_utc_plus_offset_naive,
+            now_utc_plus_offset_naive,
         ))
 
     cursor.fast_executemany = True

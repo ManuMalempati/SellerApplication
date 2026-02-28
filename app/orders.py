@@ -16,7 +16,7 @@ from .database import (
 )
 from .estimates import get_fees_estimate
 from .rate_limiter import TokenBucketRateLimiter
-from .apputils import retry_call
+from .utils import retry_call, to_utc_plus_offset_naive, now_utc_plus_offset_naive, convert_utc_to_utcz_string
 
 # -------------------------------------------------------------------
 # Environment
@@ -32,21 +32,6 @@ BASE_CURRENCY_CODE = os.getenv("BASE_CURRENCY_CODE", "AED")
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", "10"))
 AMAZON_VAT_MULTIPLIER = float(os.getenv("FEES_ESTIMATE_VAT_MULTIPLIER", "1.0"))
 MARKETPLACE_ID = os.getenv("MARKETPLACE_ID")
-
-# -------------------------------------------------------------------
-# We show time values in GMT+4
-# -------------------------------------------------------------------
-
-GST = timezone(timedelta(hours=4))
-
-def to_gst(dt_str):
-    if not dt_str:
-        return None
-    try:
-        dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
-        return dt.astimezone(GST).replace(tzinfo=None)  # store naive GST
-    except:
-        return None
 
 # -------------------------------------------------------------------
 # Rate Limiter
@@ -180,8 +165,8 @@ async def get_orders_async(params):
         path="/reports/2021-06-30/reports",
         body={
             "reportType": report_type,
-            "dataStartTime": start_dt.isoformat(),
-            "dataEndTime": end_dt.isoformat(),
+            "dataStartTime": convert_utc_to_utcz_string(start_dt),
+            "dataEndTime": convert_utc_to_utcz_string(end_dt),
             "marketplaceIds": [MARKETPLACE_ID],
         }
     )
@@ -396,7 +381,7 @@ async def get_orders_async(params):
 
         output.append({
             "AmazonOrderId": order_id,
-            "OrderDate": to_gst(r.get("purchase-date") or r.get("OrderDate")),
+            "OrderDate": to_utc_plus_offset_naive(r.get("purchase-date") or r.get("OrderDate")),
             "SKU": sku,
             "ASIN": asin,
             "SSKU": ssku,
@@ -428,9 +413,9 @@ async def get_orders_async(params):
             "RemovalTracking": None,
             "RemovalDelivery": None,
             "OrderStatus": r.get("order-status") or r.get("OrderStatus"),
-            "LastUpdateDate": to_gst(r.get("last-updated-date") or r.get("LastUpdateDate")),
-            "FirstSeenAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-            "LastSeenAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            "LastUpdateDate": to_utc_plus_offset_naive(r.get("last-updated-date") or r.get("LastUpdateDate")),
+            "FirstSeenAt": now_utc_plus_offset_naive(),
+            "LastSeenAt": now_utc_plus_offset_naive(),
         })
 
     print(f"SUMMARY\nOrderItems rows: {len(output)}\nTime: {(time.time() - start_time) / 60:.1f}m")
