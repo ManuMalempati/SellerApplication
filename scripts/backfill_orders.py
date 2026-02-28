@@ -9,7 +9,7 @@ config.load_env()
 
 from app.orders import get_orders
 from app.database import connect_database, replace_order_items_for_order
-from config import convert_utc_to_utcz_string
+from .config import convert_utc_to_utcz_string
 
 # -------------------------------------------------------------------
 # Environment (from config)

@@ -4,7 +4,7 @@ import re
 import time
 import sys
 import os
-from config import get_now_iso_string_with_custom_utc_offset
+from .config import get_now_iso_string_with_custom_utc_offset
 from typing import Any, Iterable, List, Tuple
 
 # Use centralized config

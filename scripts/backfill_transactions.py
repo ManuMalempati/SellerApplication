@@ -9,7 +9,7 @@ config.load_env()
 
 from app.transactions import get_transactions
 from app.database import connect_database, upsert_financial_transactions
-from config import convert_utc_to_utcz_string
+from .config import convert_utc_to_utcz_string
 
 # ---------------------------------------------------------
 # Configuration

@@ -11,7 +11,7 @@ from app.transactions import get_transactions
 from app.database import connect_database, upsert_financial_transactions
 
 # Standardized helpers from your config
-from config import (
+from .config import (
     convert_utc_to_utcz_string, 
     get_now_iso_string_with_custom_utc_offset
 )
