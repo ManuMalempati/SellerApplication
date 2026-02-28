@@ -6,12 +6,12 @@ from .utils import now_utc_plus_offset_naive
 
 load_dotenv()
 
+# ALL THE DATETIMES BEING STORED IN THE DATABASE TABLES ARE IN UTC + OFFSET FORMAT AS DEFINED IN ENV
 
 def connect_database():
     """Establish connection to the SQL Server database"""
     try:
         connection = pyodbc.connect(os.getenv("SQLSERVER_CONNECTION_STRING"))
-        return connection
         return connection
     except pyodbc.Error as e:
         sqlstate = e.args[0]
