@@ -87,6 +87,15 @@ def convert_utc_to_utcz_string(dt: datetime) -> str:
           .replace("+00:00", "Z")
     )
 
+def get_now_iso_string_with_custom_utc_offset():
+    """
+    Returns a timezone-aware ISO8601 string in UTC+<offset> for logging.
+    Offset is read from environment variable UTC_OFFSET (default +4).
+    """
+    dt_utc = datetime.now(timezone.utc)
+    dt_local = dt_utc.astimezone(UTC_DYNAMIC)
+    return dt_local.replace(microsecond=0).isoformat()
+
 # =========================================================
 # Sanitizers
 # =========================================================
