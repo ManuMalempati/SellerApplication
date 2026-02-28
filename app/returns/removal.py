@@ -144,8 +144,8 @@ def upsert_fba_removal_orders(rows):
             safe_int(r.get("in-process-quantity")),
             safe_float(r.get("removal-fee")),
             clean_str(r.get("currency")),
-            now_utc_plus_offset_naive,   # created_at
-            now_utc_plus_offset_naive,   # updated_at
+            now_utc_plus_offset_naive(),   # created_at
+            now_utc_plus_offset_naive(),   # updated_at
         ))
 
     cursor.fast_executemany = True
