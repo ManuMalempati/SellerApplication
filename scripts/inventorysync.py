@@ -4,7 +4,7 @@ import re
 import time
 import sys
 import os
-from datetime import datetime, timezone
+from config import get_now_iso_string_with_custom_utc_offset
 from typing import Any, Iterable, List, Tuple
 
 # Use centralized config
@@ -179,7 +179,7 @@ def stream_inventory_rows(read_cursor, select_sql: str, batch_size: int = 1000) 
             yield r
 
 def build_insert_tuples(rows: Iterable[Tuple]) -> List[Tuple]:
-    now = datetime.now(timezone.utc).replace(microsecond=0).replace(tzinfo=None)
+    now = get_now_iso_string_with_custom_utc_offset()
     out = []
     for r in rows:
         # SELECT_SQL returns: PartNumber, Cost, Brand, Category, Quantity, ItemName, TotalStock
@@ -363,7 +363,7 @@ def run_sync():
             pass
 
 def main():
-    logger.info("Starting inventory sync: %s", datetime.now(timezone.utc).isoformat() + "Z")
+    logger.info("Starting inventory sync: %s", get_now_iso_string_with_custom_utc_offset())
     if not acquire_lock():
         logger.info("Another instance is running; exiting.")
         return 0
@@ -372,7 +372,7 @@ def main():
         return result
     finally:
         release_lock()
-        logger.info("Done: %s", datetime.now(timezone.utc).isoformat() + "Z")
+        logger.info("Done: %s", get_now_iso_string_with_custom_utc_offset())
 
 if __name__ == "__main__":
     try:

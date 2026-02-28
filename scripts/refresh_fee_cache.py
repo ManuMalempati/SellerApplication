@@ -14,6 +14,8 @@ from app.fba.helpers import request_report, wait_for_report, download_report
 from app.fba.config import GOVT_VAT_RATE
 from app.auth import spapi_request
 
+# Standardized helper from your config
+from config import get_now_iso_string_with_custom_utc_offset
 
 MARKETPLACE_ID = os.getenv("MARKETPLACE_ID")
 BASE_CURRENCY_CODE = os.getenv("BASE_CURRENCY_CODE", "USD")
@@ -226,7 +228,7 @@ async def fetch_active_listings_report():
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
-            print(f"[Active Listings] Attempt {attempt}/{MAX_ATTEMPTS}")
+            print(f"[{get_now_iso_string_with_custom_utc_offset()}] [Active Listings] Attempt {attempt}/{MAX_ATTEMPTS}")
 
             report_id = request_report(
                 "GET_MERCHANT_LISTINGS_DATA",
@@ -241,9 +243,9 @@ async def fetch_active_listings_report():
             return text
 
         except Exception as e:
-            print(f"[Active Listings] Error: {e}")
+            print(f"[{get_now_iso_string_with_custom_utc_offset()}] [Active Listings] Error: {e}")
             if attempt < MAX_ATTEMPTS:
-                print("Waiting 60 seconds before retrying...")
+                print(f"[{get_now_iso_string_with_custom_utc_offset()}] Waiting 60 seconds before retrying...")
                 time.sleep(60)
             else:
                 raise RuntimeError("Failed to retrieve Active Listings report after retries")
@@ -253,7 +255,7 @@ async def fetch_active_listings_report():
 # Main: refresh fee cache
 # ---------------------------------------------------------
 async def refresh_fee_cache():
-    print("=== FeeEstimatesCache Refresh Started ===")
+    print(f"[{get_now_iso_string_with_custom_utc_offset()}] === FeeEstimatesCache Refresh Started ===")
 
     listings_text = await fetch_active_listings_report()
 
@@ -272,13 +274,13 @@ async def refresh_fee_cache():
             active_items.append((sku, asin, price))
             asin_list.add(asin)
 
-    print(f"Loaded {len(active_items)} active SKUs")
+    print(f"[{get_now_iso_string_with_custom_utc_offset()}] Loaded {len(active_items)} active SKUs")
 
     if not active_items:
-        print("No active listings found — aborting.")
+        print(f"[{get_now_iso_string_with_custom_utc_offset()}] No active listings found — aborting.")
         return
 
-    print("Loading product details...")
+    print(f"[{get_now_iso_string_with_custom_utc_offset()}] Loading product details...")
     conn = connect_database()
     cursor = conn.cursor()
     product_details = get_product_details_by_asin(cursor, list(asin_list)) or {}
@@ -293,29 +295,29 @@ async def refresh_fee_cache():
         if cog is not None:
             items_with_cog.append((sku, asin, price, cog))
 
-    print(f"{len(items_with_cog)} SKUs have valid COG")
+    print(f"[{get_now_iso_string_with_custom_utc_offset()}] {len(items_with_cog)} SKUs have valid COG")
 
     if not items_with_cog:
-        print("No SKUs with COG — aborting.")
+        print(f"[{get_now_iso_string_with_custom_utc_offset()}] No SKUs with COG — aborting.")
         return
 
-    print(f"Estimating fees for {len(items_with_cog)} SKUs...")
+    print(f"[{get_now_iso_string_with_custom_utc_offset()}] Estimating fees for {len(items_with_cog)} SKUs...")
 
     fees = {}
     total = len(items_with_cog)
 
     for idx, (sku, asin, price, _) in enumerate(items_with_cog, start=1):
         if idx % 50 == 0 or idx == 1:
-            print(f"  Progress: {idx}/{total}")
+            print(f"[{get_now_iso_string_with_custom_utc_offset()}]   Progress: {idx}/{total}")
 
         try:
             result = get_fees_estimate_local(sku, asin, price)
             fees[(sku, asin, price)] = result
         except Exception as e:
-            print(f"[ERROR] Fee estimate failed for {sku}: {e}")
+            print(f"[{get_now_iso_string_with_custom_utc_offset()}] [ERROR] Fee estimate failed for {sku}: {e}")
             fees[(sku, asin, price)] = {}
 
-    print("Computing financials...")
+    print(f"[{get_now_iso_string_with_custom_utc_offset()}] Computing financials...")
     cache_rows = []
 
     for (sku, asin, price, cog) in items_with_cog:
@@ -343,9 +345,9 @@ async def refresh_fee_cache():
             profit
         ))
 
-    print(f"Prepared {len(cache_rows)} rows for DB")
+    print(f"[{get_now_iso_string_with_custom_utc_offset()}] Prepared {len(cache_rows)} rows for DB")
 
-    print("Saving to FeeEstimatesCache...")
+    print(f"[{get_now_iso_string_with_custom_utc_offset()}] Saving to FeeEstimatesCache...")
     conn = connect_database()
     cursor = conn.cursor()
     cursor.fast_executemany = True
@@ -377,7 +379,7 @@ async def refresh_fee_cache():
     cursor.close()
     conn.close()
 
-    print("=== FeeEstimatesCache Refresh Complete ===")
+    print(f"[{get_now_iso_string_with_custom_utc_offset()}] === FeeEstimatesCache Refresh Complete ===")
 
 
 if __name__ == "__main__":

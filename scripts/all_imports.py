@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import sys
-from datetime import datetime, timezone, timedelta
 import os
 
 # Import your individual pipelines
@@ -8,19 +7,15 @@ from app.returns.returns import run_returns_import
 from app.returns.reimbursements import run_reimbursements_import
 from app.returns.removal import run_removal_orders_import
 from app.returns.removalshipments import run_removal_shipments_import
+from config import get_now_iso_string_with_custom_utc_offset
 
 # Default days (environment override supported)
 days = int(os.getenv("RETURNS_DATA_DAYS", 35))
 
-def now_utc_plus_4():
-    """Return timezone-aware datetime in UTC+4."""
-    return (datetime.now(timezone.utc) + timedelta(hours=4)).isoformat()
-
-
 def run_all_imports(days=365):
     print("==============================================")
     print(f"RUNNING ALL FBA IMPORTS FOR LAST {days} DAYS")
-    print(f"START TIME: {now_utc_plus_4()}")
+    print(f"START TIME: {get_now_iso_string_with_custom_utc_offset()}")
     print("==============================================\n")
 
     try:
@@ -49,7 +44,7 @@ def run_all_imports(days=365):
 
     print("==============================================")
     print("ALL IMPORTS COMPLETED SUCCESSFULLY")
-    print(f"END TIME: {now_utc_plus_4()}")
+    print(f"END TIME: {get_now_iso_string_with_custom_utc_offset()}")
     print("==============================================")
     sys.exit(0)
 

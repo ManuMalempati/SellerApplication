@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 from typing import Optional
+from datetime import datetime, timezone, timedelta
 
 try:
     from dotenv import load_dotenv as _load_dotenv
@@ -34,6 +35,35 @@ def get_float(key: str, default: float) -> float:
     except Exception:
         return default
     
+def get_now_iso_string_with_custom_utc_offset():
+    """
+    Fetches the UTC offset from environment variables and returns 
+     a timezone-aware ISO8601 string for logging.
+    """
+    # Fallback to 4 if the environment variable is missing
+    offset_hours = int(os.getenv("LOG_UTC_OFFSET", "4"))
+    
+    # Create the specific timezone object (e.g., UTC+4)
+    custom_tz = timezone(timedelta(hours=offset_hours))
+    
+    # Get current time, strip microseconds for cleaner logs, and convert to string
+    return datetime.now(custom_tz).replace(microsecond=0).isoformat()
+
+def convert_utc_to_utcz_string(dt: datetime) -> str:
+    """
+    Format datetime as ISO8601 Zulu for SP-API.
+    Always output UTC Z timestamps.
+    Use this function before calling SP-API
+    """
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return (
+        dt.astimezone(timezone.utc)
+          .replace(microsecond=0)
+          .isoformat()
+          .replace("+00:00", "Z")
+    )
+    
 _divisor_raw = os.getenv("GOVT_VAT_RATE_DIVISOR")
 if _divisor_raw:
     try:
@@ -48,12 +78,8 @@ else:
 # Sync orders
 SYNC_OVERLAP_HOURS = get_int("SYNC_OVERLAP_HOURS", 2)
 
-# Backfill orders
+# In what time intervals should backfill orders process 
 BACKFILL_CHUNK_DAYS = get_int("BACKFILL_CHUNK_DAYS", 1)
-ORDERS_RETRIES = get_int("ORDERS_RETRIES", 8)
-ORDERS_BACKOFF_SECONDS = get_float("ORDERS_BACKOFF_SECONDS", 4.0)
-ORDERS_BACKOFF_MULTIPLIER = get_float("ORDERS_BACKOFF_MULTIPLIER", 2.5)
-ORDERS_BACKOFF_JITTER = get_float("ORDERS_BACKOFF_JITTER", 1.0)
 
 # Inventory sync defaults
 INVENTORY_REPORT_TABLE = get_env("INVENTORY_REPORT_TABLE") or "dbo.InventoryReport"

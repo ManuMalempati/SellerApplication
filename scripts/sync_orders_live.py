@@ -10,9 +10,17 @@ config.load_env()
 from app.orders import get_orders
 from app.database import connect_database, replace_order_items_for_order
 
+# Standardized helpers from your config
+from config import (
+    convert_utc_to_utcz_string, 
+    get_now_iso_string_with_custom_utc_offset
+)
 
 SYNC_KEY = "ORDERS_LIVE_SYNC"
 
+# -------------------------------------------------------------------
+# Sync State Helpers
+# -------------------------------------------------------------------
 
 def get_last_sync(cursor) -> dt.datetime:
     cursor.execute(
@@ -26,7 +34,6 @@ def get_last_sync(cursor) -> dt.datetime:
         return default
 
     val = row[0]
-
     if isinstance(val, str):
         cleaned = val.strip().replace("\u200b", "").replace("\ufeff", "")
         try:
@@ -44,8 +51,8 @@ def get_last_sync(cursor) -> dt.datetime:
 
     return default
 
-
 def update_last_sync_at(ts: dt.datetime):
+    """Saves the sync timestamp back to DB as naive UTC."""
     ts_utc = ts.astimezone(dt.timezone.utc)
     ts_naive = ts_utc.replace(tzinfo=None)
 
@@ -66,8 +73,12 @@ def update_last_sync_at(ts: dt.datetime):
         cur.close()
         conn.close()
 
+# -------------------------------------------------------------------
+# Main Logic
+# -------------------------------------------------------------------
 
 async def fetch_and_upsert():
+    # 1. Fetch current sync state
     conn = connect_database()
     cur = conn.cursor()
     try:
@@ -76,13 +87,14 @@ async def fetch_and_upsert():
         cur.close()
         conn.close()
 
+    # 2. Determine time range
     overlap_hours = config.SYNC_OVERLAP_HOURS
-
-    effective_from = (last_sync - dt.timedelta(hours=overlap_hours)).replace(microsecond=0)
-    last_updated_after = effective_from.strftime("%Y-%m-%dT%H:%M:%SZ")
-
+    effective_from = last_sync - dt.timedelta(hours=overlap_hours)
     end_dt = dt.datetime.now(dt.timezone.utc)
-    last_updated_before = end_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # Using standardized Zulu converter
+    last_updated_after = convert_utc_to_utcz_string(effective_from)
+    last_updated_before = convert_utc_to_utcz_string(end_dt)
 
     params = {
         "LastUpdatedAfter": last_updated_after,
@@ -90,29 +102,37 @@ async def fetch_and_upsert():
     }
 
     print("------------------------------------------------------------")
-    print("Starting LIVE sync (Orders)")
-    print(f"LastSuccessfulSyncUtc: {last_sync.isoformat()}")
-    print(f"EffectiveFrom (UTC):   {last_updated_after}")
-    print(f"EffectiveTo (UTC):     {last_updated_before}")
+    # Using standardized local logging string
+    log_ts = get_now_iso_string_with_custom_utc_offset()
+    print(f"[{log_ts}] Starting LIVE sync (Orders)")
+    print(f"Last Sync (UTC):       {last_sync.isoformat()}")
+    print(f"Range Start (UTC Z):   {last_updated_after}")
+    print(f"Range End (UTC Z):     {last_updated_before}")
     print("------------------------------------------------------------")
 
+    # 3. API Fetch
     print("Calling get_orders...")
     items = await get_orders(params=params)
     print(f"get_orders returned {len(items) if items else 0} rows")
 
+    # 4. Handle results
     if not items:
         update_last_sync_at(end_dt)
+        log_ts = get_now_iso_string_with_custom_utc_offset()
+        print(f"[{log_ts}] No new items. Updated sync state.")
         return 0
 
+    # Group by Order ID for the replace-and-insert logic
     grouped = {}
     for row in items:
         oid = row["AmazonOrderId"]
         grouped.setdefault(oid, []).append(row)
 
-    print(f"Upserting {len(grouped)} orders...")
+    print(f"Upserting {len(grouped)} unique orders...")
 
+    # 5. DB Write
     conn = connect_database()
-    conn.autocommit = False
+    conn.autocommit = False # Using transaction for safety
     cur = conn.cursor()
 
     try:
@@ -121,22 +141,23 @@ async def fetch_and_upsert():
         conn.commit()
     except Exception as exc:
         conn.rollback()
-        print("ERROR during UPSERT:", exc)
-        raise
+        log_ts = get_now_iso_string_with_custom_utc_offset()
+        print(f"[{log_ts}] FATAL: Database error during upsert.")
+        raise exc # Crash the script as requested
     finally:
         cur.close()
         conn.close()
 
+    # 6. Finalize
     update_last_sync_at(end_dt)
-    print("Order sync completed successfully.")
+    log_ts = get_now_iso_string_with_custom_utc_offset()
+    print(f"[{log_ts}] Order sync completed successfully.")
     print("------------------------------------------------------------")
 
     return len(items)
 
-
 def main():
     asyncio.run(fetch_and_upsert())
-
 
 if __name__ == "__main__":
     main()

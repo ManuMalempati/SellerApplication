@@ -8,7 +8,7 @@ Designed to be run periodically (e.g., every 1 hour) via task scheduler.
 import asyncio
 import sys
 import os
-from datetime import datetime
+from config import get_now_iso_string_with_custom_utc_offset
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -25,14 +25,14 @@ async def run_fba_update():
     Fetches all FBA data and saves it to the ProductMapping table.
     """
     print("=" * 60)
-    print(f"FBA DATA UPDATE - Started at {datetime.now().isoformat()}")
+    print(f"FBA DATA UPDATE - Started at {get_now_iso_string_with_custom_utc_offset()}")
     print("=" * 60)
     
     try:
         rows = await fba_report(save_to_db=True)
         
         print("=" * 60)
-        print(f"FBA DATA UPDATE - Completed at {datetime.now().isoformat()}")
+        print(f"FBA DATA UPDATE - Completed at {get_now_iso_string_with_custom_utc_offset()}")
         print(f"Total rows processed: {len(rows)}")
         print("=" * 60)
         
@@ -40,7 +40,7 @@ async def run_fba_update():
         
     except Exception as e:
         print("=" * 60)
-        print(f"FBA DATA UPDATE - FAILED at {datetime.now().isoformat()}")
+        print(f"FBA DATA UPDATE - FAILED at {get_now_iso_string_with_custom_utc_offset()}")
         print(f"Error: {e}")
         print("=" * 60)
         raise

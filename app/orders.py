@@ -33,9 +33,6 @@ MAX_WORKERS = int(os.getenv("MAX_WORKERS", "10"))
 AMAZON_VAT_MULTIPLIER = float(os.getenv("FEES_ESTIMATE_VAT_MULTIPLIER", "1.0"))
 MARKETPLACE_ID = os.getenv("MARKETPLACE_ID")
 
-MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
-INITIAL_RETRY_DELAY = float(os.getenv("INITIAL_RETRY_DELAY", "5.0"))
-
 # -------------------------------------------------------------------
 # We show time values in GMT+4
 # -------------------------------------------------------------------
