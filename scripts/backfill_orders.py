@@ -17,7 +17,6 @@ from app.utils import convert_utc_to_utcz_string
 BACKFILL_CHUNK_DAYS = config.BACKFILL_CHUNK_DAYS
 SYNC_OVERLAP_HOURS = config.SYNC_OVERLAP_HOURS
 
-
 # -------------------------------------------------------------------
 # Backfill Logic
 # -------------------------------------------------------------------

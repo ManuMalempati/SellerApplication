@@ -4,18 +4,16 @@ import re
 import time
 import sys
 import os
+from app.utils import get_now_iso_string_with_custom_utc_offset
 from typing import Any, Iterable, List, Tuple
 
 # Use centralized config
 import config
-# Ensure repo root is on sys.path
+# Ensure repo root is on sys.path (preserve previous behavior)
 REPO_ROOT = config.REPO_ROOT
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 config.load_env()
-
-# Fixed Import: Using absolute import because REPO_ROOT is in sys.path
-from app.utils import get_now_iso_string_with_custom_utc_offset
 
 # fail-fast required envs
 REQUIRED_ENVS = ["SQLSERVER_CONNECTION_STRING"]
@@ -23,8 +21,8 @@ missing_envs = [k for k in REQUIRED_ENVS if not os.getenv(k)]
 if missing_envs:
     raise RuntimeError("Missing required env vars: " + ", ".join(missing_envs))
 
-# Config sourced from config.py
-SRC_SCHEMA_TABLE = config.INVENTORY_REPORT_TABLE 
+# Config (can be overridden via env) - sourced from config.py
+SRC_SCHEMA_TABLE = config.INVENTORY_REPORT_TABLE  # e.g. dbo.InventoryReport
 STAGING_TABLE = config.INVENTORY_STAGING_TABLE
 TARGET_TABLE = config.INVENTORY_TARGET_TABLE
 BATCH_SIZE = config.INVENTORY_SYNC_BATCH_SIZE
@@ -54,13 +52,17 @@ console_handler = logging.StreamHandler()
 console_handler.setFormatter(file_formatter)
 logger.addHandler(console_handler)
 
-# import DB connector
+# import DB connector from the project
 try:
-    from app.database import connect_database
-except ImportError:
-    raise RuntimeError("Could not import connect_database from app.database. Ensure script is run from repo root.")
+    from app.database import connect_database  # type: ignore
+except Exception:
+    try:
+        from database import connect_database  # type: ignore
+    except Exception:
+        raise RuntimeError("Could not import connect_database from app.database or database.py. Run this script from repo root or adjust imports.")
 
 # SQL snippets
+# Note: staging now includes ItemName so we can MERGE Title/Name into InventoryReportCopy
 CREATE_STAGING_SQL = f"""
 IF OBJECT_ID(N'{STAGING_TABLE}', 'U') IS NULL
 BEGIN
@@ -102,6 +104,7 @@ WHEN NOT MATCHED BY TARGET THEN
 ;
 """
 
+# Select includes ItemName and TotalStock if present in source table
 SELECT_SQL = f"""
 SELECT
     LTRIM(RTRIM(PartNumber)) AS PartNumber,
@@ -116,33 +119,50 @@ FROM {SRC_SCHEMA_TABLE}
 
 # helpers
 def normalize_partnumber(val: Any) -> str:
-    if val is None: return None
+    if val is None:
+        return None
     s = str(val).strip()
     return s if s != "" else None
 
 def normalize_cost(val: Any):
-    if val is None: return None
-    if isinstance(val, (int, float)): return float(val)
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return float(val)
     s = str(val).strip()
-    if not s or s.lower() in ("not available", "na", "n/a"): return None
+    if not s or s.lower() in ("not available", "na", "n/a"):
+        return None
     cleaned = _cost_re.sub("", s)
-    if cleaned == "" or cleaned == ".": return None
-    try: return float(cleaned)
-    except: return None
+    if cleaned == "" or cleaned == ".":
+        return None
+    try:
+        return float(cleaned)
+    except Exception:
+        return None
 
 def normalize_text(val: Any) -> Any:
-    if val is None: return None
+    if val is None:
+        return None
     s = str(val).strip()
-    if s == "" or s.lower() in ("not available", "na", "n/a"): return None
+    if s == "":
+        return None
+    if s.lower() in ("not available", "na", "n/a"):
+        return None
     return s
 
 def normalize_quantity(val: Any):
-    if val is None: return None
-    try: return int(val)
-    except:
+    if val is None:
+        return None
+    try:
+        return int(val)
+    except Exception:
         s = str(val).strip()
-        try: return int(float(s)) if s != "" else None
-        except: return None
+        if s == "":
+            return None
+        try:
+            return int(float(s))
+        except Exception:
+            return None
 
 # DB streaming / insertion
 def stream_inventory_rows(read_cursor, select_sql: str, batch_size: int = 1000) -> Iterable[Tuple]:
@@ -153,29 +173,32 @@ def stream_inventory_rows(read_cursor, select_sql: str, batch_size: int = 1000) 
     read_cursor.execute(select_sql)
     while True:
         rows = read_cursor.fetchmany(batch_size)
-        if not rows: break
-        for r in rows: yield r
+        if not rows:
+            break
+        for r in rows:
+            yield r
 
 def build_insert_tuples(rows: Iterable[Tuple]) -> List[Tuple]:
-    # Use your custom logger timestamp for the snapshot record
     now = get_now_iso_string_with_custom_utc_offset()
     out = []
     for r in rows:
+        # SELECT_SQL returns: PartNumber, Cost, Brand, Category, Quantity, ItemName, TotalStock
         partnum = normalize_partnumber(r[0])
-        if partnum is None: continue
-        
+        if partnum is None:
+            continue
         cost = normalize_cost(r[1])
         brand = normalize_text(r[2])
         category = normalize_text(r[3])
         qty = normalize_quantity(r[4])
+        # ItemName is optional in source; index 5 per SELECT_SQL
         item_name = normalize_text(r[5]) if len(r) > 5 else None
+        # TotalStock is index 6
         total_stock = normalize_quantity(r[6]) if len(r) > 6 else None
         is_ful = None
         source = "InventoryReport"
-        
-        # SQL Server DATETIME2 accepts ISO strings automatically
         snapshot_at = now
-        
+        # Match CREATE_STAGING_SQL column order:
+        # PartNumber, Cost, Brand, Category, ItemName, Quantity, TotalStock, IsFulfillable, Source, SnapshotAt
         out.append((partnum, cost, brand, category, item_name, qty, total_stock, is_ful, source, snapshot_at))
     return out
 
@@ -186,11 +209,16 @@ def insert_into_staging(write_cursor, tuples: List[Tuple]):
     """
     try:
         write_cursor.fast_executemany = True
-    except: pass
+    except Exception:
+        pass
     write_cursor.executemany(insert_sql, tuples)
 
 # Lockfile helpers
 def _acquire_lockfile(path: str, timeout_seconds: int = None) -> bool:
+    """
+    Create a lockfile atomically. Return True if acquired, False if exists.
+    If timeout_seconds is provided and lock exists but is older than timeout, remove it and retry.
+    """
     try:
         flags = os.O_CREAT | os.O_EXCL | os.O_RDWR
         fd = os.open(path, flags)
@@ -205,12 +233,18 @@ def _acquire_lockfile(path: str, timeout_seconds: int = None) -> bool:
                 age = time.time() - st.st_mtime
                 if age > timeout_seconds:
                     logger.warning("Lockfile %s stale (age %.0f s). Removing.", path, age)
-                    try: os.remove(path)
-                    except: return False
+                    try:
+                        os.remove(path)
+                    except Exception:
+                        logger.exception("Failed to remove stale lockfile %s", path)
+                        return False
                     return _acquire_lockfile(path, timeout_seconds)
-            except: pass
+            except Exception:
+                logger.exception("Error inspecting lockfile %s", path)
         return False
-    except: return False
+    except Exception:
+        logger.exception("Error creating lockfile %s", path)
+        return False
 
 def acquire_lock() -> bool:
     return _acquire_lockfile(LOCKFILE, LOCK_TIMEOUT_SECONDS)
@@ -220,89 +254,122 @@ def release_lock():
         if os.path.exists(LOCKFILE):
             os.remove(LOCKFILE)
             logger.info("Released lock: %s", LOCKFILE)
-    except: pass
+    except Exception:
+        logger.exception("Failed to remove lockfile on exit")
 
+# Wait for backfill lock presence: inventory sync will wait a short time before giving up
 def wait_for_backfill_clear(max_wait: int) -> bool:
+    """
+    If backfill lock exists, wait until it's gone or until max_wait seconds elapse.
+    Returns True if clear (no backfill lock), False if still present after timeout.
+    """
     if not os.path.exists(BACKFILL_LOCKFILE):
         return True
-    logger.info("Backfill lock present. Waiting up to %d seconds...", max_wait)
+    logger.info("Backfill lock present (%s). Waiting up to %d seconds for it to clear...", BACKFILL_LOCKFILE, max_wait)
     start = time.time()
     while time.time() - start < max_wait:
-        if not os.path.exists(BACKFILL_LOCKFILE): return True
+        if not os.path.exists(BACKFILL_LOCKFILE):
+            logger.info("Backfill lock cleared; proceeding.")
+            return True
         time.sleep(5)
+    logger.warning("Backfill lock still present after %d seconds; skipping inventory run to avoid interference.", max_wait)
     return False
 
 # Main sync flow
 def run_sync():
+    # If a backfill is running, wait briefly then skip if still running
     if not wait_for_backfill_clear(WAIT_FOR_BACKFILL_SECONDS):
-        logger.warning("Backfill lock still present; skipping run.")
         return 0
 
     read_conn = connect_database()
     write_conn = connect_database()
     if read_conn is None or write_conn is None:
         raise RuntimeError("Database connection(s) failed")
-    
     write_conn.autocommit = False
+
     read_cursor = read_conn.cursor()
     write_cursor = write_conn.cursor()
 
     try:
-        logger.info("Ensuring staging table exists...")
+        logger.info("Ensuring staging table exists (if missing)...")
         write_cursor.execute(CREATE_STAGING_SQL)
         write_conn.commit()
 
-        logger.info("Truncating staging...")
+        logger.info("Truncating staging table...")
         write_cursor.execute(TRUNCATE_STAGING_SQL)
         write_conn.commit()
 
+        logger.info("Streaming rows from source (read-only) using a dedicated connection...")
         inserted_rows = 0
+        batch_inserts = 0
+
         stream = stream_inventory_rows(read_cursor, SELECT_SQL, batch_size=BATCH_SIZE)
-        buffer = []
+        buffer: List[Tuple] = []
         for src_row in stream:
             buffer.append(src_row)
             if len(buffer) >= BATCH_SIZE:
                 tuples = build_insert_tuples(buffer)
                 if tuples:
+                    logger.info("Inserting batch of %d rows into staging...", len(tuples))
                     insert_into_staging(write_cursor, tuples)
+                    batch_inserts += 1
                     inserted_rows += len(tuples)
                 buffer = []
         if buffer:
             tuples = build_insert_tuples(buffer)
             if tuples:
+                logger.info("Inserting final batch of %d rows into staging...", len(tuples))
                 insert_into_staging(write_cursor, tuples)
+                batch_inserts += 1
                 inserted_rows += len(tuples)
 
         write_conn.commit()
-        logger.info("Staging complete. Inserted %d rows.", inserted_rows)
+        logger.info("Inserted total %d rows into staging across %d batches.", inserted_rows, batch_inserts)
 
-        logger.info("Running MERGE into Target...")
+        logger.info("Running MERGE into InventoryReportCopy...")
         start = time.time()
         write_cursor.execute(MERGE_SQL)
+        try:
+            affected = write_cursor.rowcount
+        except Exception:
+            affected = None
         write_conn.commit()
-        logger.info("MERGE completed in %.2fs.", time.time() - start)
+        elapsed = time.time() - start
+        logger.info("MERGE completed in %.2fs. @@ROWCOUNT (approx): %s", elapsed, affected)
 
+        logger.info("Truncating staging table (cleanup)...")
         write_cursor.execute(TRUNCATE_STAGING_SQL)
         write_conn.commit()
 
+        logger.info("Inventory sync finished successfully.")
         return inserted_rows
     except Exception as e:
-        write_conn.rollback()
-        logger.error("Error during sync: %s", e)
+        try:
+            write_conn.rollback()
+        except Exception:
+            logger.exception("Failed to rollback write connection")
+        logger.exception("Error during inventory sync: %s", e)
         raise
     finally:
-        read_conn.close()
-        write_conn.close()
+        try:
+            read_cursor.close()
+            read_conn.close()
+        except Exception:
+            pass
+        try:
+            write_cursor.close()
+            write_conn.close()
+        except Exception:
+            pass
 
 def main():
-    current_ts = get_now_iso_string_with_custom_utc_offset()
-    logger.info("Starting sync: %s", current_ts)
-    
+    logger.info("Starting inventory sync: %s", get_now_iso_string_with_custom_utc_offset())
     if not acquire_lock():
         logger.info("Another instance is running; exiting.")
         return 0
     try:
-        return run_sync()
+        result = run_sync()
+        return result
     finally:
         release_lock()
         logger.info("Done: %s", get_now_iso_string_with_custom_utc_offset())
@@ -310,6 +377,8 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+        # explicit successful exit code for Task Scheduler
         sys.exit(0)
     except Exception:
+        logger.exception("Fatal error in inventorysync")
         sys.exit(1)
