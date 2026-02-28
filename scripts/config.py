@@ -35,35 +35,6 @@ def get_float(key: str, default: float) -> float:
     except Exception:
         return default
     
-def get_now_iso_string_with_custom_utc_offset():
-    """
-    Fetches the UTC offset from environment variables and returns 
-     a timezone-aware ISO8601 string for logging.
-    """
-    # Fallback to 4 if the environment variable is missing
-    offset_hours = int(os.getenv("UTC_OFFSET", "4"))
-    
-    # Create the specific timezone object (e.g., UTC+4)
-    custom_tz = timezone(timedelta(hours=offset_hours))
-    
-    # Get current time, strip microseconds for cleaner logs, and convert to string
-    return datetime.now(custom_tz).replace(microsecond=0).isoformat()
-
-def convert_utc_to_utcz_string(dt: datetime) -> str:
-    """
-    Format datetime as ISO8601 Zulu for SP-API.
-    Always output UTC Z timestamps.
-    Use this function before calling SP-API
-    """
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return (
-        dt.astimezone(timezone.utc)
-          .replace(microsecond=0)
-          .isoformat()
-          .replace("+00:00", "Z")
-    )
-    
 _divisor_raw = os.getenv("GOVT_VAT_RATE_DIVISOR")
 if _divisor_raw:
     try:

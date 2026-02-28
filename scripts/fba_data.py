@@ -8,7 +8,7 @@ Designed to be run periodically (e.g., every 1 hour) via task scheduler.
 import asyncio
 import sys
 import os
-from .config import get_now_iso_string_with_custom_utc_offset
+from app.utils import get_now_iso_string_with_custom_utc_offset
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

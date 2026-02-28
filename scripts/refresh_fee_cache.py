@@ -14,8 +14,8 @@ from app.fba.helpers import request_report, wait_for_report, download_report
 from app.fba.config import GOVT_VAT_RATE
 from app.auth import spapi_request
 
-# Standardized helper from your config
-from .config import get_now_iso_string_with_custom_utc_offset
+# Standardized helper from utils
+from app.utils import get_now_iso_string_with_custom_utc_offset
 
 MARKETPLACE_ID = os.getenv("MARKETPLACE_ID")
 BASE_CURRENCY_CODE = os.getenv("BASE_CURRENCY_CODE", "USD")
