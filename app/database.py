@@ -753,4 +753,3 @@ def upsert_financial_transactions(rows):
     finally:
         cur.close()
         conn.close()
-        conn.close()
