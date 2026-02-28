@@ -123,8 +123,8 @@ def upsert_fba_customer_returns(rows):
             clean_str(r.get("reason")),
             clean_str(r.get("license-plate-number")),
             clean_str(r.get("customer-comments")),
-            now_utc_plus_4(),
-            now_utc_plus_4(),
+            now_utc_plus_offset_naive(),
+            now_utc_plus_offset_naive(),
         ))
 
     # Create temp table

@@ -3,44 +3,22 @@ import time
 import os
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
+
 from ..database import connect_database
 from ..auth import spapi_request
 from .store_name_scraper import get_seller_name
+from ..utils import (
+    clean_str,
+    safe_float,
+    safe_int,
+    now_utc_plus_offset_naive,
+)
 
 load_dotenv()
 
 MARKETPLACE_ID = os.getenv("MARKETPLACE_ID")
 SELLER_ID = os.getenv("SELLER_ID")
 
-# ---------------------------------------------------------
-# Helpers & Sanitizers
-# ---------------------------------------------------------
-
-def now_utc_plus_4():
-    """Return a naive UTC+4 datetime (no timezone info)."""
-    dt = datetime.now(timezone.utc) + timedelta(hours=4)
-    return dt.replace(tzinfo=None)
-
-def clean_str(x):
-    return str(x).strip() if x else None
-
-def safe_float(x):
-    try:
-        x_str = str(x).strip()
-        if not x_str or x_str.lower() in ("n/a", "na", "none", "null", "-", "--"):
-            return None
-        return float(x_str)
-    except (ValueError, TypeError):
-        return None
-
-def safe_int(x):
-    try:
-        x_str = str(x).strip()
-        if not x_str or x_str.lower() in ("n/a", "na", "none", "null", "-", "--"):
-            return None
-        return int(x_str)
-    except (ValueError, TypeError):
-        return None
 
 # ---------------------------------------------------------
 # Models
@@ -64,6 +42,7 @@ class OfferData:
         if self.listing_price is None:
             return None
         return self.listing_price + (self.shipping_cost or 0)
+
 
 # ---------------------------------------------------------
 # BuyBox Analyzer
@@ -100,20 +79,34 @@ class BuyBoxAnalysis:
                 "error": None
             }
         except Exception as e:
-            return {"asin": asin, "product_name": title, "summary": {}, "offers": [], "error": str(e)}
+            return {
+                "asin": asin,
+                "product_name": title,
+                "summary": {},
+                "offers": [],
+                "error": str(e)
+            }
 
     def analyze(self, asin, product_name, summary, offers_raw):
         offers = [OfferData(o) for o in offers_raw]
         winner = next((o for o in offers if o.is_buy_box_winner), None)
-        
-        winner_store_name = get_seller_name(winner.seller_id) if winner and winner.seller_id else None
+
+        winner_store_name = (
+            get_seller_name(winner.seller_id)
+            if winner and winner.seller_id
+            else None
+        )
+
         my_offer = next((o for o in offers if o.seller_id == SELLER_ID), None)
 
         bb_prices = summary.get("BuyBoxPrices", [])
-        summary_bb_price = safe_float(bb_prices[0]["LandedPrice"]["Amount"]) if bb_prices else None
+        summary_bb_price = safe_float(
+            bb_prices[0]["LandedPrice"]["Amount"]
+        ) if bb_prices else None
 
         lowest_amazon = None
         lowest_merchant = None
+
         for lp in summary.get("LowestPrices", []):
             if lp.get("fulfillmentChannel") == "Amazon":
                 lowest_amazon = safe_float(lp["LandedPrice"]["Amount"])
@@ -134,15 +127,17 @@ class BuyBoxAnalysis:
             "summary_buybox_price": summary_bb_price,
             "lowest_price_amazon": lowest_amazon,
             "lowest_price_merchant": lowest_merchant,
-            "analysis_timestamp": now_utc_plus_4()
+            "analysis_timestamp": now_utc_plus_offset_naive(),
         }
 
     def save_result(self, result):
         conn = connect_database()
         cursor = conn.cursor()
-        
-        # Fixed: Tuple for parameter
-        cursor.execute("DELETE FROM spapi_app_user.FBABuyBoxAnalysis WHERE asin=?", (result["asin"],))
+
+        cursor.execute(
+            "DELETE FROM spapi_app_user.FBABuyBoxAnalysis WHERE asin=?",
+            (result["asin"],)
+        )
 
         cursor.execute("""
             INSERT INTO spapi_app_user.FBABuyBoxAnalysis (
@@ -153,11 +148,15 @@ class BuyBoxAnalysis:
             )
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
-            result["asin"], result["product_name"], result["winner_seller_id"], result["winner_store_name"],
-            result["winner_price"], result["winner_total_price"], result["my_price"], result["my_shipping"],
-            result["my_total"], result["my_is_buybox"], result["summary_buybox_price"], result["lowest_price_amazon"],
-            result["lowest_price_merchant"], result["analysis_timestamp"], now_utc_plus_4(), now_utc_plus_4()
+            result["asin"], result["product_name"], result["winner_seller_id"],
+            result["winner_store_name"], result["winner_price"],
+            result["winner_total_price"], result["my_price"],
+            result["my_shipping"], result["my_total"], result["my_is_buybox"],
+            result["summary_buybox_price"], result["lowest_price_amazon"],
+            result["lowest_price_merchant"], result["analysis_timestamp"],
+            now_utc_plus_offset_naive(), now_utc_plus_offset_naive()
         ))
+
         conn.commit()
         cursor.close()
         conn.close()
@@ -165,31 +164,32 @@ class BuyBoxAnalysis:
     def run(self):
         asin_data = self.get_asins()
         total = len(asin_data)
-        
+
         if total == 0:
             print("No ASINs to process")
             return
 
         print(f"Starting analysis for {total} ASINs...")
-        
-        # Calculate step for 10% increments
+
         step = max(1, total // 10)
-        
+
         for i, item in enumerate(asin_data, 1):
-            # Print at 10% steps, or start/end
             if i == 1 or i % step == 0 or i == total:
                 pct = int((i / total) * 100)
                 print(f"[{pct}%] {i}/{total} : {item['asin']}")
-            
+
             data = self.fetch_data(item["asin"], item["title"])
-            result = self.analyze(data["asin"], data["product_name"], data["summary"], data["offers"])
+            result = self.analyze(
+                data["asin"], data["product_name"],
+                data["summary"], data["offers"]
+            )
             self.save_result(result)
-            
-            # API respect (0.2s = 5 calls/sec, well within Pricing API limits)
+
             time.sleep(0.2)
 
         print("-" * 30)
         print("Analysis successfully completed.")
+
 
 if __name__ == "__main__":
     BuyBoxAnalysis().run()
