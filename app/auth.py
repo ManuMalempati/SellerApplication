@@ -4,19 +4,15 @@ Provides a cached LWA access token (with a small safety margin before expiry)
 and a helper to call SP-API endpoints, ensuring MarketplaceIds are present for GETs.
 """
 import requests
-import os
-from urllib.parse import quote
-from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
-
-load_dotenv()
-
-LWA_TOKEN_URL = os.getenv("LWA_TOKEN_URL", "https://api.amazon.com/auth/o2/token")
-CLIENT_ID = os.getenv("LWA_CLIENT_ID")
-CLIENT_SECRET = os.getenv("LWA_CLIENT_SECRET")
-REFRESH_TOKEN = os.getenv("LWA_REFRESH_TOKEN")
-SPAPI_ENDPOINT = os.getenv("SPAPI_ENDPOINT")
-MARKETPLACE_ID = os.getenv("MARKETPLACE_ID")
+from config import (
+    LWA_TOKEN_URL,
+    LWA_CLIENT_ID,
+    LWA_CLIENT_SECRET,
+    LWA_REFRESH_TOKEN,
+    SPAPI_ENDPOINT,
+    MARKETPLACE_ID,
+)
 
 # Cached token and its expiry (timezone-aware)
 _cached_token = None
@@ -34,9 +30,9 @@ def get_lwa_access_token():
        LWA_TOKEN_URL,
        data={
            "grant_type": "refresh_token",
-           "refresh_token": REFRESH_TOKEN,
-           "client_id": CLIENT_ID,
-           "client_secret": CLIENT_SECRET,
+           "refresh_token": LWA_REFRESH_TOKEN,
+           "client_id": LWA_CLIENT_ID,
+           "client_secret": LWA_CLIENT_SECRET,
        },
    )
    data = response.json()

@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import time
-import os
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 
@@ -13,11 +12,12 @@ from ..utils import (
     safe_int,
     now_utc_plus_offset_naive,
 )
+from ... import config
 
 load_dotenv()
 
-MARKETPLACE_ID = os.getenv("MARKETPLACE_ID")
-SELLER_ID = os.getenv("SELLER_ID")
+MARKETPLACE_ID = config.MARKETPLACE_ID
+SELLER_ID = config.SELLER_ID
 
 
 # ---------------------------------------------------------

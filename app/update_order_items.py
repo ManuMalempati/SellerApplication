@@ -4,29 +4,18 @@ recalculate_items.py — Recalculate COG + Profit for specific SKUs
 without touching existing fee fields.
 """
 
-import os
 import sys
+import os
 
 # Add project root to path if running standalone
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from dotenv import load_dotenv
-load_dotenv()
-
+from config import GOVT_VAT_RATE, BASE_CURRENCY_CODE
 from app.database import connect_database, parse_cost
 
-# Environment
-GOVT_VAT_RATE = (
-    1 / float(os.getenv("GOVT_VAT_RATE_DIVISOR", "21"))
-    if os.getenv("GOVT_VAT_RATE_DIVISOR")
-    else 0.0
-)
-AMAZON_VAT_MULTIPLIER = float(os.getenv("FEES_ESTIMATE_VAT_MULTIPLIER", "1.05"))
-BASE_CURRENCY_CODE = os.getenv("BASE_CURRENCY_CODE", "AED")
-
-# SKUs to recalc
+# SKUs to recalculate
 SKUS_TO_RECALCULATE = [
     "STKL2000404",
 ]

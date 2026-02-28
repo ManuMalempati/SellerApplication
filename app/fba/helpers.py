@@ -4,7 +4,7 @@ import requests
 import gzip
 
 from ..auth import spapi_request
-from .config import MARKETPLACE_ID, MAX_RETRIES, INITIAL_RETRY_DELAY, SELLER_ID, MAX_WORKERS
+from ...config import MARKETPLACE_ID, MAX_RETRIES, INITIAL_RETRY_DELAY, SELLER_ID, MAX_WORKERS
 
 progress_lock = threading.Lock()
 pricing_progress = {"done": 0, "total": 0}

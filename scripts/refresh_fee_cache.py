@@ -6,7 +6,7 @@ from io import StringIO
 from urllib.parse import quote
 import os
 
-from . import config
+from .. import config
 config.load_env()
 
 from app.database import connect_database, parse_cost, get_product_details_by_asin

@@ -1,7 +1,6 @@
 from fastapi import APIRouter
 from datetime import datetime, timedelta, timezone
 from .auth import spapi_request
-import os
 import time
 import gzip
 import csv
@@ -11,10 +10,9 @@ import asyncio
 from bs4 import BeautifulSoup
 from .database import connect_database
 from .transactions import get_transactions
+from config import MARKETPLACE_ID
 
 router = APIRouter()
-
-MARKETPLACE_ID = os.getenv("MARKETPLACE_ID")
 
 def format_dt_z(d: datetime) -> str:
     """Return canonical UTC Z timestamp like 2026-01-26T05:48:16Z."""
@@ -47,7 +45,7 @@ async def test_get_pricing(item_type: str = "Asin"):
     test_skus = ["SDSSDE61-2T00-G25", "STKM2000400"]
 
     params = {
-        "MarketplaceId": os.getenv("MARKETPLACE_ID"),
+        "MarketplaceId": MARKETPLACE_ID,
         "ItemType": item_type,
     }
 
@@ -61,12 +59,11 @@ async def test_get_pricing(item_type: str = "Asin"):
 @router.get("/test-fees")
 async def test_get_fees():
     asin = "B0842P5GBQ"
-    marketplace_id = os.getenv("MARKETPLACE_ID")
     currency_code = os.getenv("BASE_CURRENCY_CODE", "AED")
 
     body = {
         "FeesEstimateRequest": {
-            "MarketplaceId": marketplace_id,
+            "MarketplaceId": MARKETPLACE_ID,
             "IsAmazonFulfilled": True,
             "PriceToEstimateFees": {
                 "ListingPrice": {

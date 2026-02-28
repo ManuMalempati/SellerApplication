@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-import os
 import time
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import csv
 import io
-
+from tenacity import RetryError
 from .auth import spapi_request
 from .database import (
     get_product_mapping,
@@ -17,21 +16,13 @@ from .database import (
 from .estimates import get_fees_estimate
 from .rate_limiter import TokenBucketRateLimiter
 from .utils import retry_call, to_utc_plus_offset_naive, now_utc_plus_offset_naive, convert_utc_to_utcz_string
-
-# -------------------------------------------------------------------
-# Environment
-# -------------------------------------------------------------------
-
-GOVT_VAT_RATE = (
-    1 / float(os.getenv("GOVT_VAT_RATE_DIVISOR", "1"))
-    if os.getenv("GOVT_VAT_RATE_DIVISOR")
-    else 0.0
+from config import (
+    GOVT_VAT_RATE,
+    BASE_CURRENCY_CODE,
+    MAX_WORKERS,
+    FEES_ESTIMATE_VAT_MULTIPLIER,
+    MARKETPLACE_ID,
 )
-
-BASE_CURRENCY_CODE = os.getenv("BASE_CURRENCY_CODE", "AED")
-MAX_WORKERS = int(os.getenv("MAX_WORKERS", "10"))
-AMAZON_VAT_MULTIPLIER = float(os.getenv("FEES_ESTIMATE_VAT_MULTIPLIER", "1.0"))
-MARKETPLACE_ID = os.getenv("MARKETPLACE_ID")
 
 # -------------------------------------------------------------------
 # Rate Limiter
@@ -58,7 +49,11 @@ def estimate_fees_for_item(sku, asin, price, counters):
 
         return resp
 
-    return retry_call(_fetch)
+    try:
+        return retry_call(_fetch)
+    except RetryError as e:
+        # Throttling persisted after all retries → degrade gracefully
+        return {"net": {}}
 
 # -------------------------------------------------------------------
 # PATCH: Updated wait_for_report
@@ -286,6 +281,24 @@ async def get_orders_async(params):
     fees_by_key = dict(zip(unique_items, estimates))
 
     # ---------------------------------------------------------------
+    # Fee estimation summary
+    # ---------------------------------------------------------------
+    total_items = len(unique_items)
+    got_fee = 0
+    no_fee = 0
+
+    for est in estimates:
+        if isinstance(est, dict) and est.get("net"):
+            got_fee += 1
+        else:
+            no_fee += 1
+
+    print(f"[FEES] Estimated fees for {total_items} unique items")
+    print(f"[FEES]   Successful fee responses: {got_fee}")
+    print(f"[FEES]   Missing/empty fee responses: {no_fee}")
+    print(f"[FEES]   SP-API calls made: {counters['sp_calls']}")
+
+    # ---------------------------------------------------------------
     # 8. Build output rows
     # ---------------------------------------------------------------
     output = []
@@ -334,8 +347,8 @@ async def get_orders_async(params):
             referral_per_unit = float(f_net.get("ReferralFees", 0.0)) if f_net else 0.0
             fba_per_unit = float(f_net.get("FBAFees", 0.0)) if f_net else 0.0
 
-            ref_total = referral_per_unit * AMAZON_VAT_MULTIPLIER * qty
-            fba_total = fba_per_unit * AMAZON_VAT_MULTIPLIER * qty
+            ref_total = referral_per_unit * FEES_ESTIMATE_VAT_MULTIPLIER * qty
+            fba_total = fba_per_unit * FEES_ESTIMATE_VAT_MULTIPLIER * qty
             total_fee_val = ref_total + fba_total
 
             fee_incl = -ref_total if ref_total else None
@@ -351,8 +364,8 @@ async def get_orders_async(params):
             subtotal_val = unit_price * qty
             vat_total = subtotal_val * GOVT_VAT_RATE if subtotal_val is not None else None
             rvat_total = (
-                (referral_per_unit + fba_per_unit) * (AMAZON_VAT_MULTIPLIER - 1.0) * qty
-                if AMAZON_VAT_MULTIPLIER > 1.0
+                (referral_per_unit + fba_per_unit) * (FEES_ESTIMATE_VAT_MULTIPLIER - 1.0) * qty
+                if FEES_ESTIMATE_VAT_MULTIPLIER > 1.0
                 else 0.0
             )
 

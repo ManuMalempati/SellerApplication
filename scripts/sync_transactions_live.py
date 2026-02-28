@@ -2,7 +2,7 @@
 import asyncio
 import datetime as dt
 
-from . import config
+from .. import config
 config.load_env()
 
 from app.transactions import get_transactions

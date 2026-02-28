@@ -1,34 +1,12 @@
 #!/usr/bin/env python3
 import pyodbc
-import os
-import time
-import random
 from dotenv import load_dotenv
-from .utils import now_utc_plus_offset_naive
+from .utils import now_utc_plus_offset_naive, retry_deadlock
+from config import SQLSERVER_CONNECTION_STRING
 
 load_dotenv()
 
 # ALL THE DATETIMES BEING STORED IN THE DATABASE TABLES ARE IN UTC + OFFSET FORMAT AS DEFINED IN ENV
-
-# ============================================================
-# DEADLOCK RETRY HELPER
-# ============================================================
-
-def retry_deadlock(fn, max_attempts=5, label=""):
-    for attempt in range(1, max_attempts + 1):
-        try:
-            return fn()
-        except pyodbc.Error as e:
-            msg = str(e)
-            sqlstate = e.args[0] if e.args else ""
-            if "1205" in msg or sqlstate == "40001":
-                wait = random.uniform(0.05, 0.25)
-                print(f"[DEADLOCK] {label} attempt {attempt}/{max_attempts}, retrying in {wait:.2f}s...")
-                time.sleep(wait)
-                continue
-            raise
-    raise RuntimeError(f"[DEADLOCK] {label} failed after {max_attempts} attempts")
-
 
 # ============================================================
 # DB CONNECTION
@@ -37,7 +15,7 @@ def retry_deadlock(fn, max_attempts=5, label=""):
 def connect_database():
     """Establish connection to the SQL Server database"""
     try:
-        connection = pyodbc.connect(os.getenv("SQLSERVER_CONNECTION_STRING"))
+        connection = pyodbc.connect(SQLSERVER_CONNECTION_STRING)
         return connection
     except pyodbc.Error as e:
         sqlstate = e.args[0]

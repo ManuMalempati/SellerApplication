@@ -1,6 +1,10 @@
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_result
 from datetime import datetime, timezone, timedelta
 import os
+import time
+import random
+import pyodbc
+from config import UTC_OFFSET
 
 # =========================================================
 # Retry Logic (Only retry throttling)
@@ -39,9 +43,6 @@ def retry_call(func, *args, **kwargs):
 # Dynamic Timezone Helpers (UTC + offset)
 # =========================================================
 
-# Offset from environment (default +4)
-UTC_OFFSET = float(os.getenv("UTC_OFFSET", "4"))
-
 # Build timezone dynamically (supports fractional offsets)
 UTC_DYNAMIC = timezone(timedelta(hours=UTC_OFFSET))
 
@@ -49,7 +50,7 @@ UTC_DYNAMIC = timezone(timedelta(hours=UTC_OFFSET))
 def to_utc_plus_offset_naive(value: str):
     """
     Convert Amazon's UTC Z timestamp into a naive datetime in UTC+<offset>.
-    Offset is read from environment variable UTC_OFFSET.
+    Offset is read from config.UTC_OFFSET.
     """
     if not value:
         return None
@@ -65,7 +66,7 @@ def to_utc_plus_offset_naive(value: str):
 def now_utc_plus_offset_naive():
     """
     Current time as a naive datetime in UTC+<offset>.
-    Offset is read from the environment variable UTC_OFFSET.
+    Offset is read from config.UTC_OFFSET.
     """
     dt_utc = datetime.now(timezone.utc)
     dt_local = dt_utc.astimezone(UTC_DYNAMIC)
@@ -90,7 +91,7 @@ def convert_utc_to_utcz_string(dt: datetime) -> str:
 def get_now_iso_string_with_custom_utc_offset():
     """
     Returns a timezone-aware ISO8601 string in UTC+<offset> for logging.
-    Offset is read from environment variable UTC_OFFSET (default +4).
+    Offset is read from config.UTC_OFFSET.
     """
     dt_utc = datetime.now(timezone.utc)
     dt_local = dt_utc.astimezone(UTC_DYNAMIC)
@@ -162,3 +163,22 @@ def safe_dt(x):
 
     except:
         return None
+    
+# ============================================================
+# DEADLOCK RETRY HELPER
+# ============================================================
+
+def retry_deadlock(fn, max_attempts=5, label=""):
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return fn()
+        except pyodbc.Error as e:
+            msg = str(e)
+            sqlstate = e.args[0] if e.args else ""
+            if "1205" in msg or sqlstate == "40001":
+                wait = random.uniform(0.05, 0.25)
+                print(f"[DEADLOCK] {label} attempt {attempt}/{max_attempts}, retrying in {wait:.2f}s...")
+                time.sleep(wait)
+                continue
+            raise
+    raise RuntimeError(f"[DEADLOCK] {label} failed after {max_attempts} attempts")

@@ -4,12 +4,9 @@ estimates.py — clean production version with retry on NULL-fee cases
 """
 
 from urllib.parse import quote
-import os
 from typing import Any, Dict, Optional
 from .auth import spapi_request
-
-MARKETPLACE_ID = os.getenv("MARKETPLACE_ID")
-BASE_CURRENCY_CODE = os.getenv("BASE_CURRENCY_CODE", "USD")
+from config import MARKETPLACE_ID, BASE_CURRENCY_CODE
 
 # How many times to retry when Amazon returns NULL fees
 FEE_RETRY_ATTEMPTS = 2

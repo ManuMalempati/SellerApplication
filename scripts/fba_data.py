@@ -13,7 +13,7 @@ from app.utils import get_now_iso_string_with_custom_utc_offset
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from . import config
+from .. import config
 config.load_env()
 
 from app.fba.main import fba_report

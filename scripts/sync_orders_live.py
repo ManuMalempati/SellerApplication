@@ -4,7 +4,7 @@ import os
 import asyncio
 import datetime as dt
 
-from . import config
+from .. import config
 config.load_env()
 
 from app.orders import get_orders

@@ -4,7 +4,7 @@ import time
 import asyncio
 from datetime import datetime, timedelta, timezone
 
-from . import config
+from .. import config
 config.load_env()
 
 from app.orders import get_orders
