@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 import time
-from dotenv import load_dotenv
-
 from ..database import connect_database
 from ..auth import spapi_request
 from .store_name_scraper import get_seller_name
@@ -11,9 +9,7 @@ from ..utils import (
     safe_int,
     now_utc_plus_offset_naive,
 )
-from ... import config
-
-load_dotenv()
+import config
 
 MARKETPLACE_ID = config.MARKETPLACE_ID
 SELLER_ID = config.SELLER_ID

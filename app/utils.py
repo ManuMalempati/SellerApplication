@@ -4,7 +4,7 @@ import os
 import time
 import random
 import pyodbc
-from config import UTC_OFFSET
+import config
 
 # =========================================================
 # Retry Logic (Only retry throttling)
@@ -44,7 +44,7 @@ def retry_call(func, *args, **kwargs):
 # =========================================================
 
 # Build timezone dynamically (supports fractional offsets)
-UTC_DYNAMIC = timezone(timedelta(hours=UTC_OFFSET))
+UTC_DYNAMIC = timezone(timedelta(hours=config.UTC_OFFSET))
 
 
 def to_utc_plus_offset_naive(value: str):

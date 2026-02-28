@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
-import sys
-import os
 import asyncio
 import datetime as dt
-
-from .. import config
-config.load_env()
+import config
 
 from app.orders import get_orders
 from app.database import connect_database, replace_order_items_for_order

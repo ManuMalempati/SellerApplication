@@ -3,10 +3,7 @@ import os
 import time
 import asyncio
 from datetime import datetime, timedelta, timezone
-
-from .. import config
-config.load_env()
-
+import config
 from app.orders import get_orders
 from app.database import connect_database, replace_order_items_for_order
 from app.utils import convert_utc_to_utcz_string

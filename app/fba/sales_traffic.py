@@ -2,7 +2,7 @@ import time
 from datetime import datetime, timedelta
 
 from ..auth import spapi_request
-from ...config import MARKETPLACE_ID
+from config import MARKETPLACE_ID
 from .helpers import throttle, download_report
 
 

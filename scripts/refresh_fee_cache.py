@@ -4,21 +4,14 @@ import csv
 import time
 from io import StringIO
 from urllib.parse import quote
-import os
-
-from .. import config
-config.load_env()
-
+import config
 from app.database import connect_database, parse_cost, get_product_details_by_asin
 from app.fba.helpers import request_report, wait_for_report, download_report
-from config import GOVT_VAT_RATE
 from app.auth import spapi_request
 
 # Standardized helper from utils
 from app.utils import get_now_iso_string_with_custom_utc_offset
 
-MARKETPLACE_ID = os.getenv("MARKETPLACE_ID")
-BASE_CURRENCY_CODE = os.getenv("BASE_CURRENCY_CODE", "USD")
 FEE_RETRY_ATTEMPTS = 2
 
 
@@ -136,11 +129,11 @@ def _request_fees(sku, asin, price):
             safe_sku = quote(sku, safe="")
             body = {
                 "FeesEstimateRequest": {
-                    "MarketplaceId": MARKETPLACE_ID or "",
+                    "MarketplaceId": config.MARKETPLACE_ID or "",
                     "IsAmazonFulfilled": True,
                     "PriceToEstimateFees": {
                         "ListingPrice": {
-                            "CurrencyCode": BASE_CURRENCY_CODE,
+                            "CurrencyCode": config.BASE_CURRENCY_CODE,
                             "Amount": price,
                         }
                     },
@@ -166,11 +159,11 @@ def _request_fees(sku, asin, price):
         try:
             body = {
                 "FeesEstimateRequest": {
-                    "MarketplaceId": MARKETPLACE_ID or "",
+                    "MarketplaceId": config.MARKETPLACE_ID or "",
                     "IsAmazonFulfilled": True,
                     "PriceToEstimateFees": {
                         "ListingPrice": {
-                            "CurrencyCode": BASE_CURRENCY_CODE,
+                            "CurrencyCode": config.BASE_CURRENCY_CODE,
                             "Amount": price,
                         }
                     },
@@ -328,7 +321,7 @@ async def refresh_fee_cache():
         fba = float(net_block.get("FBAFees", 0) or 0)
 
         charges = ref + fba
-        vat = price * GOVT_VAT_RATE
+        vat = price * config.GOVT_VAT_RATE
         net = price - charges - vat
         profit = net - cog
 

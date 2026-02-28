@@ -2,11 +2,6 @@ from fastapi import APIRouter
 from datetime import datetime, timedelta, timezone
 from .auth import spapi_request
 import time
-import gzip
-import csv
-import requests
-import io
-import asyncio
 from bs4 import BeautifulSoup
 from .database import connect_database
 from .transactions import get_transactions

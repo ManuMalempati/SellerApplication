@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
 import asyncio
 import datetime as dt
-
-from .. import config
-config.load_env()
-
+import config
 from app.transactions import get_transactions
 from app.database import connect_database, upsert_financial_transactions
 

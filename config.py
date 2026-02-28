@@ -68,7 +68,8 @@ LWA_CLIENT_ID = os.getenv("LWA_CLIENT_ID")
 LWA_CLIENT_SECRET = os.getenv("LWA_CLIENT_SECRET")
 LWA_REFRESH_TOKEN = os.getenv("LWA_REFRESH_TOKEN")
 SPAPI_ENDPOINT = os.getenv("SPAPI_ENDPOINT")
-MARKETPLACE_ID = os.getenv("MARKETPLACE_ID")
+MARKETPLACE_ID = os.getenv("MARKETPLACE_ID", "A2VIGQ35RCS4UG")
+SELLER_ID = os.getenv("SELLER_ID")
 
 # -------------------------------------------------
 # Base Currency & Fees

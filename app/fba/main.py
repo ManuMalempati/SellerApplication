@@ -11,7 +11,7 @@ from ..database import (
     bulk_upsert_fba_data,
     get_cached_fees,
 )
-from .config import GOVT_VAT_RATE
+from config import GOVT_VAT_RATE
 from .helpers import request_report, wait_for_report, download_report
 from .sales_traffic import fetch_l30_sales_traffic
 

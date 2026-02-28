@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import sys
-import os
+import config
 
 # Import your individual pipelines
 from app.returns.returns import run_returns_import
@@ -10,7 +10,7 @@ from app.returns.removalshipments import run_removal_shipments_import
 from app.utils import get_now_iso_string_with_custom_utc_offset
 
 # Default days (environment override supported)
-days = int(os.getenv("RETURNS_DATA_DAYS", 35))
+days = int(config.RETURNS_DATA_DAYS)
 
 def run_all_imports(days=365):
     print("==============================================")
