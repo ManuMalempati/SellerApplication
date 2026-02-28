@@ -14,7 +14,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 config.load_env()
 
-from app.utils import get_now_iso_string_with_custom_utc_offset
+from app.utils import now_utc_plus_offset_naive
 
 # fail-fast required envs
 REQUIRED_ENVS = ["SQLSERVER_CONNECTION_STRING"]
@@ -180,26 +180,28 @@ def stream_inventory_rows(read_cursor, select_sql: str, batch_size: int = 1000) 
             yield r
 
 def build_insert_tuples(rows: Iterable[Tuple]) -> List[Tuple]:
-    now = get_now_iso_string_with_custom_utc_offset()
+    # Use your existing helper! 
+    # This returns a naive datetime object (e.g., 2026-02-28 14:30:00)
+    # No "+04:00" string suffix to cause truncation.
+    snapshot_at = now_utc_plus_offset_naive()
+    
     out = []
     for r in rows:
         # SELECT_SQL returns: PartNumber, Cost, Brand, Category, Quantity, ItemName, TotalStock
         partnum = normalize_partnumber(r[0])
         if partnum is None:
             continue
+            
         cost = normalize_cost(r[1])
         brand = normalize_text(r[2])
         category = normalize_text(r[3])
         qty = normalize_quantity(r[4])
-        # ItemName is optional in source; index 5 per SELECT_SQL
         item_name = normalize_text(r[5]) if len(r) > 5 else None
-        # TotalStock is index 6
         total_stock = normalize_quantity(r[6]) if len(r) > 6 else None
         is_ful = None
         source = "InventoryReport"
-        snapshot_at = now
-        # Match CREATE_STAGING_SQL column order:
-        # PartNumber, Cost, Brand, Category, ItemName, Quantity, TotalStock, IsFulfillable, Source, SnapshotAt
+        
+        # snapshot_at is now a datetime object, perfectly compatible with DATETIME2(0)
         out.append((partnum, cost, brand, category, item_name, qty, total_stock, is_ful, source, snapshot_at))
     return out
 
@@ -364,7 +366,7 @@ def run_sync():
             pass
 
 def main():
-    logger.info("Starting inventory sync: %s", get_now_iso_string_with_custom_utc_offset())
+    logger.info("Starting inventory sync: %s", now_utc_plus_offset_naive())
     if not acquire_lock():
         logger.info("Another instance is running; exiting.")
         return 0
@@ -373,7 +375,7 @@ def main():
         return result
     finally:
         release_lock()
-        logger.info("Done: %s", get_now_iso_string_with_custom_utc_offset())
+        logger.info("Done: %s", now_utc_plus_offset_naive())
 
 if __name__ == "__main__":
     try:
