@@ -4,7 +4,6 @@ import re
 import time
 import sys
 import os
-from app.utils import get_now_iso_string_with_custom_utc_offset
 from typing import Any, Iterable, List, Tuple
 
 # Use centralized config
@@ -14,6 +13,8 @@ REPO_ROOT = config.REPO_ROOT
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 config.load_env()
+
+from app.utils import get_now_iso_string_with_custom_utc_offset
 
 # fail-fast required envs
 REQUIRED_ENVS = ["SQLSERVER_CONNECTION_STRING"]
