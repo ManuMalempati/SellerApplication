@@ -8,11 +8,6 @@ from typing import Any, Iterable, List, Tuple
 
 # Use centralized config
 import config
-# Ensure repo root is on sys.path (preserve previous behavior)
-REPO_ROOT = config.REPO_ROOT
-if REPO_ROOT not in sys.path:
-    sys.path.insert(0, REPO_ROOT)
-config.load_env()
 
 from app.utils import now_utc_plus_offset_naive
 
