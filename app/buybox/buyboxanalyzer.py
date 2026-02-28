@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import time
-from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 
 from ..database import connect_database

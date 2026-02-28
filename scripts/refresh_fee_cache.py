@@ -11,7 +11,7 @@ config.load_env()
 
 from app.database import connect_database, parse_cost, get_product_details_by_asin
 from app.fba.helpers import request_report, wait_for_report, download_report
-from app.fba.config import GOVT_VAT_RATE
+from config import GOVT_VAT_RATE
 from app.auth import spapi_request
 
 # Standardized helper from utils

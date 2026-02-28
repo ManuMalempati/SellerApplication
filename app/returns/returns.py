@@ -5,17 +5,12 @@ import io
 import time
 from datetime import datetime, timedelta, timezone
 
-import os
-from dotenv import load_dotenv
 import requests
 
 from ..database import connect_database
 from ..auth import spapi_request
 from ..utils import clean_str, safe_int, safe_dt, now_utc_plus_offset_naive
-
-load_dotenv()
-
-MARKETPLACE_ID = os.getenv("MARKETPLACE_ID")
+from ...config import MARKETPLACE_ID
 
 
 # ---------------------------------------------------------
