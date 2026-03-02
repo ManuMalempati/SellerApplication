@@ -110,7 +110,7 @@ def _call_single_fee_api(id_value, id_type, price):
       - TokenBucketRateLimiter (0.5 RPS)
       - Tenacity retry_call for throttling errors
     """
-    body = {{
+    body = {
         "FeesEstimateRequest": {
             "MarketplaceId": config.MARKETPLACE_ID,
             "IsAmazonFulfilled": True,
@@ -124,7 +124,7 @@ def _call_single_fee_api(id_value, id_type, price):
                 }
             },
         }
-    }}
+    }
 
     if id_type == "SellerSKU":
         path = f"/products/fees/v0/listings/{quote(id_value)}/feesEstimate"
