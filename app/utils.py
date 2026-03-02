@@ -1,9 +1,5 @@
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_result
 from datetime import datetime, timezone, timedelta
-import os
-import time
-import random
-import pyodbc
 import config
 
 # =========================================================
@@ -163,22 +159,3 @@ def safe_dt(x):
 
     except:
         return None
-    
-# ============================================================
-# DEADLOCK RETRY HELPER
-# ============================================================
-
-def retry_deadlock(fn, max_attempts=5, label=""):
-    for attempt in range(1, max_attempts + 1):
-        try:
-            return fn()
-        except pyodbc.Error as e:
-            msg = str(e)
-            sqlstate = e.args[0] if e.args else ""
-            if "1205" in msg or sqlstate == "40001":
-                wait = random.uniform(0.05, 0.25)
-                print(f"[DEADLOCK] {label} attempt {attempt}/{max_attempts}, retrying in {wait:.2f}s...")
-                time.sleep(wait)
-                continue
-            raise
-    raise RuntimeError(f"[DEADLOCK] {label} failed after {max_attempts} attempts")

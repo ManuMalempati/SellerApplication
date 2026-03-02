@@ -3,14 +3,15 @@ import time
 import csv
 from io import StringIO
 
-from ..database import (
+from app.database import (
     connect_database,
     get_all_product_mapping,
     get_product_details_by_asin,
     parse_cost,
-    bulk_upsert_fba_data,
     get_cached_fees,
 )
+
+from app.fba.database_fba import bulk_upsert_fba_data
 from config import GOVT_VAT_RATE
 from .helpers import request_report, wait_for_report, download_report
 from .sales_traffic import fetch_l30_sales_traffic

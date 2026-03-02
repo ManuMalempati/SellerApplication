@@ -3,8 +3,9 @@ import asyncio
 import datetime as dt
 import config
 
-from app.orders import get_orders
-from app.database import connect_database, replace_order_items_for_order
+from app.orders.orders import get_orders
+from app.database import connect_database
+from app.orders.database_orders import replace_order_items_for_order
 
 # Standardized helpers from utils
 from app.utils import (

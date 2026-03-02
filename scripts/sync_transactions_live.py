@@ -2,8 +2,9 @@
 import asyncio
 import datetime as dt
 import config
-from app.transactions import get_transactions
-from app.database import connect_database, upsert_financial_transactions
+from app.transactions.transactions import get_transactions
+from app.database import connect_database
+from app.transactions.database_transactions import upsert_financial_transactions
 
 # Standardized helpers from utils
 from app.utils import (

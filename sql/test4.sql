@@ -1,1 +1,1 @@
-SELECT * FROM OrderItems WHERE AmazonOrderId = '402-7301898-8997933'
+SELECT * FROM OrderItems

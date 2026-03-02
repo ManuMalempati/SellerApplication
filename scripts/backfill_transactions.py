@@ -4,8 +4,9 @@ import time
 import asyncio
 from datetime import datetime, timedelta, timezone
 import config
-from app.transactions import get_transactions
-from app.database import connect_database, upsert_financial_transactions
+from app.transactions.transactions import get_transactions
+from app.database import connect_database
+from app.transactions.database_transactions import upsert_financial_transactions
 from app.utils import convert_utc_to_utcz_string
 
 # ---------------------------------------------------------

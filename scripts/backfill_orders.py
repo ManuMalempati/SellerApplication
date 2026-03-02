@@ -4,8 +4,9 @@ import time
 import asyncio
 from datetime import datetime, timedelta, timezone
 import config
-from app.orders import get_orders
-from app.database import connect_database, replace_order_items_for_order
+from app.orders.orders import get_orders
+from app.database import connect_database
+from app.orders.database_orders import replace_order_items_for_order
 from app.utils import convert_utc_to_utcz_string
 
 # -------------------------------------------------------------------
