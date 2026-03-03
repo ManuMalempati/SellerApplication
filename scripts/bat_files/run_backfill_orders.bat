@@ -15,13 +15,13 @@ REM Ensure logs directory exists
 if not exist logs mkdir logs
 
 REM Timestamp start of run for easy debugging
-echo === Started %date% %time% === >> logs\backfill_log.txt 2>&1
+echo === Started %date% %time% === >> logs\orders_backfill_log.txt 2>&1
 
 REM Run the backfill script with unbuffered output, capturing all output in the log (both stdout and stderr)
-"%VENV_PATH%\Scripts\python.exe" -u -m scripts.backfill_orders >> logs\backfill_log.txt 2>&1
+"%VENV_PATH%\Scripts\python.exe" -u -m scripts.backfill_orders >> logs\orders_backfill_log.txt 2>&1
 
 REM Timestamp end of run for easy debugging
-echo === Ended %date% %time% === >> logs\backfill_log.txt 2>&1
+echo === Ended %date% %time% === >> logs\orders_backfill_log.txt 2>&1
 
 REM Optionally, keep window open on manual run for debugging
 pause
