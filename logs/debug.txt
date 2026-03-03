@@ -1,2 +1,0 @@
-C:\Users\Manu\SellerAPIApplication\venv_win\Scripts\python.exe
-pyodbc OK
