@@ -1,7 +1,5 @@
 # RESPONSIBLE FOR FBAProductSummary Table
 import time
-import csv
-from io import StringIO
 
 from app.database import (
     connect_database,
@@ -13,7 +11,7 @@ from app.database import (
 
 from app.fba.database_fba import bulk_upsert_fba_data
 from config import GOVT_VAT_RATE
-from app.utilities.fetch_report import fetch_spapi_report   # <-- unified fetcher
+from app.utilities.fetch_report import fetch_spapi_report
 from .sales_traffic import fetch_l30_sales_traffic
 
 
@@ -31,33 +29,34 @@ async def fba_report(save_to_db=True):
     conn.close()
 
     # ---------------------------------------------------------
-    # 2. Request and download FBA inventory report (RAW TEXT)
+    # 2. Fetch FBA Inventory Report (TSV)
     # ---------------------------------------------------------
     print("Requesting FBA Inventory Report...")
-    raw_text = fetch_spapi_report(
+
+    rows_tsv = fetch_spapi_report(
         report_type="GET_AFN_INVENTORY_DATA",
-        output_type="raw"
+        output_type="tsv"
     )
 
     # ---------------------------------------------------------
-    # 3. Parse inventory report and aggregate by FNSKU
+    # 3. Aggregate by FNSKU
     # ---------------------------------------------------------
     fnsku_data = {}
-    reader = csv.DictReader(StringIO(raw_text), delimiter="\t")
     total_raw_rows = 0
 
-    for line in reader:
+    for line in rows_tsv:
         total_raw_rows += 1
+
         sku = (line.get("seller-sku") or "").strip()
         asin = (line.get("asin") or "").strip()
         qty = (line.get("Quantity Available") or "").strip()
         fnsku = (line.get("fulfillment-channel-sku") or "").strip()
-        warehouse_condition = (line.get("Warehouse-Condition-code") or "").strip()
+        condition = (line.get("Warehouse-Condition-code") or "").strip()
 
         if not fnsku:
             continue
 
-        qty_int = int(qty) if qty and qty.isdigit() else 0
+        qty_int = int(qty) if qty.isdigit() else 0
 
         ssku = (product_mappings.get(sku) or {}).get("ssku")
         if ssku is not None:
@@ -73,7 +72,7 @@ async def fba_report(save_to_db=True):
                 "Unsellable-Qty": 0,
             }
 
-        if warehouse_condition == "SELLABLE":
+        if condition == "SELLABLE":
             fnsku_data[fnsku]["Sellable-Qty"] += qty_int
         else:
             fnsku_data[fnsku]["Unsellable-Qty"] += qty_int
@@ -105,7 +104,7 @@ async def fba_report(save_to_db=True):
         r["Category"] = d.get("category")
 
     # ---------------------------------------------------------
-    # 7. Fetch L30 sales & traffic data
+    # 5. Fetch L30 sales & traffic data
     # ---------------------------------------------------------
     l30_data = fetch_l30_sales_traffic()
 
@@ -118,26 +117,26 @@ async def fba_report(save_to_db=True):
         r["BuyBoxPercentage_L30"] = l30.get("BuyBoxPercentage_L30")
 
     # ---------------------------------------------------------
-    # 8. Enrich with Active Listings report (RAW TEXT)
+    # 6. Fetch Active Listings (TSV)
     # ---------------------------------------------------------
     print("Requesting Active Listings report to enrich price/title...")
 
-    listings_text = fetch_spapi_report(
+    listings_tsv = fetch_spapi_report(
         report_type="GET_MERCHANT_LISTINGS_DATA",
-        output_type="raw",
+        output_type="tsv",
         params={"reportOptions": {"preferredReportDocumentLocale": "en_US"}}
     )
 
-    reader = csv.DictReader(StringIO(listings_text), delimiter="\t")
-
     listings_map = {}
-    for lr in reader:
+    for lr in listings_tsv:
         sku = (lr.get("seller-sku") or "").strip()
         if not sku:
             continue
+
         title = lr.get("item-name") or None
         raw_price = lr.get("price")
         price = parse_cost(raw_price) if raw_price else None
+
         listings_map[sku] = {"title": title, "price": price}
 
     print(f"Loaded {len(listings_map)} active listings for enrichment")
@@ -153,29 +152,15 @@ async def fba_report(save_to_db=True):
             r["Sale-Price"] = None
 
     # ---------------------------------------------------------
-    # 8.5 FILTER: Keep only ACTIVE SKUs
+    # 7. Filter to ACTIVE SKUs only
     # ---------------------------------------------------------
-    active_rows = [r for r in rows if r["SKU"] in listings_map]
-    print(f"Filtered to {len(active_rows)} ACTIVE SKUs (from {len(rows)} total FNSKUs)")
-    rows = active_rows
+    rows = [r for r in rows if r["SKU"] in listings_map]
+    print(f"Filtered to {len(rows)} ACTIVE SKUs")
 
     # ---------------------------------------------------------
-    # 9. Estimate fees (using cache)
+    # 8. Fee estimation (cached)
     # ---------------------------------------------------------
-    fee_items = []
-    for r in rows:
-        price = r.get("Sale-Price")
-        asin = r.get("ASIN")
-        sku = r.get("SKU")
-
-        if not price or not asin or not sku:
-            r["Charges"] = None
-            r["Est-VAT"] = None
-            r["Est-Net"] = None
-            r["Profit"] = None
-            continue
-
-        fee_items.append((sku, asin, price))
+    fee_items = [(r["SKU"], r["ASIN"], r["Sale-Price"]) for r in rows if r.get("Sale-Price")]
 
     print(f"[DEBUG] Fetching cached fees for {len(fee_items)} items...")
 
@@ -188,7 +173,7 @@ async def fba_report(save_to_db=True):
     print("[DEBUG] Cached fee lookup complete.")
 
     # ---------------------------------------------------------
-    # Apply cached fees
+    # 9. Apply cached fees
     # ---------------------------------------------------------
     for r in rows:
         price = r.get("Sale-Price")

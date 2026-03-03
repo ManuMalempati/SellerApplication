@@ -3,10 +3,7 @@
 import time
 import csv
 import io
-import requests
 from datetime import datetime, timedelta, timezone
-
-from app.auth import spapi_request
 from app.database import (
     get_product_mapping,
     get_product_details_by_asin,
@@ -19,6 +16,7 @@ from app.utilities.utils import (
     now_utc_plus_offset_naive,
     convert_utc_to_utcz_string,
 )
+from app.utilities.fetch_report import fetch_spapi_report   # <-- unified fetcher
 from config import (
     GOVT_VAT_RATE,
     BASE_CURRENCY_CODE,
@@ -28,45 +26,7 @@ from config import (
 
 
 # -------------------------------------------------------------------
-# Report helpers
-# -------------------------------------------------------------------
-
-def request_report(report_type, params=None):
-    time.sleep(0.5)
-    body = {"reportType": report_type, "marketplaceIds": [MARKETPLACE_ID]}
-    if params:
-        body.update(params)
-
-    resp = spapi_request("POST", "/reports/2021-06-30/reports", body=body)
-    report_id = resp.get("reportId")
-    if not report_id:
-        raise Exception(f"Failed to request report: {resp}")
-    return report_id
-
-
-def wait_for_report(report_id, timeout=300):
-    start = time.time()
-    while True:
-        time.sleep(0.5)
-        resp = spapi_request("GET", f"/reports/2021-06-30/reports/{report_id}")
-        status = resp.get("processingStatus")
-
-        if status == "DONE":
-            return resp.get("reportDocumentId")
-
-        if status in ("CANCELLED", "FATAL"):
-            print(f"Report returned {status}. Retrying...")
-            new_report_id = request_report("GET_FLAT_FILE_ALL_ORDERS_DATA_BY_LAST_UPDATE_GENERAL")
-            return wait_for_report(new_report_id, timeout)
-
-        if time.time() - start > timeout:
-            raise TimeoutError("Report generation timed out")
-
-        time.sleep(5)
-
-
-# -------------------------------------------------------------------
-# Main orders logic
+# Main orders logic (using unified fetcher)
 # -------------------------------------------------------------------
 
 async def get_orders_async(params):
@@ -97,57 +57,30 @@ async def get_orders_async(params):
     print(f"Requesting report for {start_dt.isoformat()} to {end_dt.isoformat()}")
 
     # ---------------------------------------------------------------
-    # 2. Request report
+    # 2. Fetch report using unified fetcher
     # ---------------------------------------------------------------
-    create_resp = spapi_request(
-        "POST",
-        "/reports/2021-06-30/reports",
-        body={
-            "reportType": "GET_FLAT_FILE_ALL_ORDERS_DATA_BY_LAST_UPDATE_GENERAL",
+    decoded = fetch_spapi_report(
+        report_type="GET_FLAT_FILE_ALL_ORDERS_DATA_BY_LAST_UPDATE_GENERAL",
+        output_type="raw",
+        params={
             "dataStartTime": convert_utc_to_utcz_string(start_dt),
             "dataEndTime": convert_utc_to_utcz_string(end_dt),
             "marketplaceIds": [MARKETPLACE_ID],
-        },
+        }
     )
 
-    if not create_resp or "reportId" not in create_resp:
-        print("Error: Failed to create report.", create_resp)
-        return []
-
-    report_id = create_resp["reportId"]
-
     # ---------------------------------------------------------------
-    # 3. Wait for report
+    # 3. Parse TSV
     # ---------------------------------------------------------------
-    document_id = wait_for_report(report_id)
-    if not document_id:
-        print("Error: No reportDocumentId found.")
-        return []
-
-    # ---------------------------------------------------------------
-    # 4. Download report
-    # ---------------------------------------------------------------
-    doc_resp = spapi_request("GET", f"/reports/2021-06-30/documents/{document_id}")
-    if not doc_resp or "url" not in doc_resp:
-        print("Error: Failed to get download URL", doc_resp)
-        return []
-
-    raw = requests.get(doc_resp["url"]).content
-
-    if doc_resp.get("compressionAlgorithm") == "GZIP":
-        import gzip
-        decoded = gzip.decompress(raw).decode("utf-8")
-    else:
-        decoded = raw.decode("utf-8")
-
     reader = csv.DictReader(io.StringIO(decoded), delimiter="\t")
     rows = list(reader)
+
     if not rows:
         print("No rows in report.")
         return []
 
     # ---------------------------------------------------------------
-    # 5. Load product mapping + details
+    # 4. Load product mapping + details
     # ---------------------------------------------------------------
     all_skus = list({r.get("sku") or r.get("SKU") for r in rows})
     asin_list = list({r.get("asin") or r.get("ASIN") for r in rows})
@@ -162,7 +95,7 @@ async def get_orders_async(params):
         conn.close()
 
     # ---------------------------------------------------------------
-    # 6. Prepare fee items
+    # 5. Prepare fee items
     # ---------------------------------------------------------------
     items_to_est = []
     report_items = []
@@ -206,19 +139,16 @@ async def get_orders_async(params):
         })
 
     # ---------------------------------------------------------------
-    # 7. Fee estimation using batch estimator (SKU → ASIN fallback)
+    # 6. Fee estimation (batch)
     # ---------------------------------------------------------------
-
     unique_items = list(set(items_to_est))
     print(f"[FEES] Unique items needing fees: {len(unique_items)}")
 
-    # Convert to dict list for batch estimator
     batch_input = [
         {"sku": sku, "asin": asin, "price": price}
         for (sku, asin, price) in unique_items
     ]
 
-    # Call batch estimator
     batch_results = get_my_fee_estimate_batch(batch_input)
 
     fees_by_key = {}
@@ -229,41 +159,29 @@ async def get_orders_async(params):
         result = batch_results.get(key)
 
         if not result:
-            print(f"[FEES] ERROR: No result for {key}")
             fees_by_key[key] = {"ReferralFee": None, "FBAFee": None}
             stats["api_fail"] += 1
             continue
 
-        try:
-            referral = result.get("referral", None)
-            fba = result.get("fba", None)
+        referral = result.get("referral")
+        fba = result.get("fba")
 
-            # Keep None as None, keep 0.0 as 0.0
-            referral = None if referral is None else float(referral)
-            fba = None if fba is None else float(fba)
+        referral = None if referral is None else float(referral)
+        fba = None if fba is None else float(fba)
 
-            fees_by_key[key] = {
-                "ReferralFee": referral,
-                "FBAFee": fba,
-            }
+        fees_by_key[key] = {"ReferralFee": referral, "FBAFee": fba}
 
-            # Success = at least one fee is not None
-            if referral is None and fba is None:
-                stats["api_fail"] += 1
-            else:
-                stats["api_success"] += 1
-
-        except Exception as e:
-            print(f"[FEES] ERROR parsing result for {key}: {e}")
-            fees_by_key[key] = {"ReferralFee": None, "FBAFee": None}
+        if referral is None and fba is None:
             stats["api_fail"] += 1
+        else:
+            stats["api_success"] += 1
 
     print("[FEES] Summary:")
     print(f"  API successes: {stats['api_success']}")
     print(f"  API failures:  {stats['api_fail']}")
 
     # ---------------------------------------------------------------
-    # 8. Build output rows
+    # 7. Build output rows
     # ---------------------------------------------------------------
     output = []
 
@@ -292,9 +210,6 @@ async def get_orders_async(params):
         line_total = item["line_total"]
         subtotal = line_total
 
-        # -----------------------------------------------------------
-        # Fee pipeline
-        # -----------------------------------------------------------
         fee_incl = None
         fee_pct = None
         fba_fees_incl = None
@@ -308,7 +223,6 @@ async def get_orders_async(params):
             key = (sku, asin, round(unit_price, 2))
             fee_block = fees_by_key.get(key) or {}
 
-            # DO NOT convert None → 0.0
             referral_per_unit = fee_block.get("ReferralFee")
             fba_per_unit = fee_block.get("FBAFee")
 
@@ -316,12 +230,10 @@ async def get_orders_async(params):
             vat_total = subtotal_val * GOVT_VAT_RATE if subtotal_val is not None else None
             vat = -vat_total if vat_total is not None else None
 
-            # COG is allowed even when fees are missing
             cost = parse_cost(prod_details.get("cost")) if prod_details else None
             cog_total = cost * qty if cost is not None else None
             cog = -cog_total if cog_total is not None else None
 
-            # If fees missing → stop here (profit stays None)
             if referral_per_unit is None or fba_per_unit is None:
                 fee_incl = None
                 fba_fees_incl = None
@@ -331,7 +243,6 @@ async def get_orders_async(params):
                 profit = None
 
             else:
-                # Normal fee calculations
                 ref_total = referral_per_unit * FEES_ESTIMATE_VAT_MULTIPLIER * qty
                 fba_total = fba_per_unit * FEES_ESTIMATE_VAT_MULTIPLIER * qty
                 total_fee_val = ref_total + fba_total
@@ -354,7 +265,6 @@ async def get_orders_async(params):
                 )
                 rvat = rvat_total if rvat_total is not None else None
 
-                # Profit only if ALL components exist
                 if (
                     subtotal_val is not None
                     and total_fee_val is not None
