@@ -1,88 +1,21 @@
 # RESPONSIBLE FOR FBARemovalOrders Table
 
-import csv
-import gzip
-import io
-import time
-from datetime import datetime, timedelta, timezone
-import requests
 from app.database import connect_database, retry_deadlock
-from app.auth import spapi_request
-from app.utils import clean_str, safe_int, safe_float, safe_dt, now_utc_plus_offset_naive
-from config import MARKETPLACE_ID
-
+from app.utilities.utils import clean_str, safe_int, safe_float, safe_dt, now_utc_plus_offset_naive
+from app.utilities.fetch_report import fetch_spapi_report   # <-- unified fetcher
 
 # ---------------------------------------------------------
-# Fetch FBA Removal Order Detail Report
+# Fetch FBA Removal Order Detail Report (Unified Fetcher)
 # ---------------------------------------------------------
 
 def fetch_fba_removal_orders(days=365):
+    print(f"[FBA-REMOVAL] Fetching removal orders for last {days} days...")
 
-    end_dt = datetime.now(timezone.utc)
-    start_dt = end_dt - timedelta(days=days)
-
-    print(f"[FBA-REMOVAL] Requesting report for {start_dt.isoformat()} -> {end_dt.isoformat()}")
-
-    create_resp = spapi_request(
-        method="POST",
-        path="/reports/2021-06-30/reports",
-        body={
-            "reportType": "GET_FBA_FULFILLMENT_REMOVAL_ORDER_DETAIL_DATA",
-            "dataStartTime": start_dt.isoformat(),
-            "dataEndTime": end_dt.isoformat(),
-            "marketplaceIds": [MARKETPLACE_ID],
-        }
+    rows = fetch_spapi_report(
+        report_type="GET_FBA_FULFILLMENT_REMOVAL_ORDER_DETAIL_DATA",
+        days=days,
+        output_type="tsv"
     )
-
-    if not create_resp or "reportId" not in create_resp:
-        raise RuntimeError(f"Failed to create report: {create_resp}")
-
-    report_id = create_resp["reportId"]
-    print(f"[FBA-REMOVAL] Report requested: {report_id}")
-
-    # Poll
-    for _ in range(60):
-        status_resp = spapi_request(
-            method="GET",
-            path=f"/reports/2021-06-30/reports/{report_id}",
-        )
-        status = status_resp.get("processingStatus")
-        print(f"[FBA-REMOVAL] Polling status: {status}")
-
-        if status in ("DONE", "DONE_NO_DATA"):
-            break
-
-        time.sleep(5)
-    else:
-        raise RuntimeError("Timeout waiting for FBA Removal Order Detail report")
-
-    document_id = status_resp.get("reportDocumentId")
-    if not document_id:
-        raise RuntimeError(f"No reportDocumentId: {status_resp}")
-
-    print(f"[FBA-REMOVAL] Report document ready: {document_id}")
-
-    doc_resp = spapi_request(
-        method="GET",
-        path=f"/reports/2021-06-30/documents/{document_id}"
-    )
-
-    if not doc_resp or "url" not in doc_resp:
-        raise RuntimeError(f"Failed to get document URL: {doc_resp}")
-
-    url = doc_resp["url"]
-    compression = doc_resp.get("compressionAlgorithm")
-
-    print("[FBA-REMOVAL] Downloading document...")
-    raw = requests.get(url).content
-
-    if compression == "GZIP":
-        decoded = gzip.decompress(raw).decode("utf-8", errors="replace")
-    else:
-        decoded = raw.decode("utf-8", errors="replace")
-
-    reader = csv.DictReader(io.StringIO(decoded), delimiter="\t")
-    rows = list(reader)
 
     print(f"[FBA-REMOVAL] Parsed {len(rows)} rows")
     return rows

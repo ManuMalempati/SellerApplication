@@ -1,6 +1,6 @@
 # RESPONSIBLE FOR OrderItems Table
+
 import time
-import asyncio
 import csv
 import io
 import requests
@@ -14,7 +14,7 @@ from app.database import (
     connect_database,
 )
 from app.fee_estimator import get_my_fee_estimate_batch
-from app.utils import (
+from app.utilities.utils import (
     to_utc_plus_offset_naive,
     now_utc_plus_offset_naive,
     convert_utc_to_utcz_string,

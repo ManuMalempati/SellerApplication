@@ -1,5 +1,5 @@
 from app.database import connect_database, retry_deadlock
-from app.utils import now_utc_plus_offset_naive
+from app.utilities.utils import now_utc_plus_offset_naive
 
 STATUS_RANK = {
     "DEFERRED": 1,

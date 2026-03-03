@@ -7,7 +7,7 @@ from app.returns.returns import run_returns_import
 from app.returns.reimbursements import run_reimbursements_import
 from app.returns.removal import run_removal_orders_import
 from app.returns.removalshipments import run_removal_shipments_import
-from app.utils import get_now_iso_string_with_custom_utc_offset
+from app.utilities.utils import get_now_iso_string_with_custom_utc_offset
 
 # Default days (environment override supported)
 days = int(config.RETURNS_DATA_DAYS)

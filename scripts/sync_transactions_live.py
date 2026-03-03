@@ -7,7 +7,7 @@ from app.database import connect_database
 from app.transactions.database_transactions import upsert_financial_transactions
 
 # Standardized helpers from utils
-from app.utils import (
+from app.utilities.utils import (
     convert_utc_to_utcz_string, 
     get_now_iso_string_with_custom_utc_offset
 )

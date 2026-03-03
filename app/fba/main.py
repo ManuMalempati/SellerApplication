@@ -13,8 +13,9 @@ from app.database import (
 
 from app.fba.database_fba import bulk_upsert_fba_data
 from config import GOVT_VAT_RATE
-from .helpers import request_report, wait_for_report, download_report
+from app.utilities.fetch_report import fetch_spapi_report   # <-- unified fetcher
 from .sales_traffic import fetch_l30_sales_traffic
+
 
 async def fba_report(save_to_db=True):
     start_time = time.time()
@@ -30,18 +31,13 @@ async def fba_report(save_to_db=True):
     conn.close()
 
     # ---------------------------------------------------------
-    # 2. Request and download FBA inventory report
+    # 2. Request and download FBA inventory report (RAW TEXT)
     # ---------------------------------------------------------
-    report_id = request_report("GET_AFN_INVENTORY_DATA")
-    print(f"Report requested: {report_id}")
-
-    if not report_id:
-        raise RuntimeError("Failed to request report: no report_id returned")
-
-    document_id = wait_for_report(report_id)
-    print(f"Report ready: {document_id}")
-
-    raw_text = download_report(document_id)
+    print("Requesting FBA Inventory Report...")
+    raw_text = fetch_spapi_report(
+        report_type="GET_AFN_INVENTORY_DATA",
+        output_type="raw"
+    )
 
     # ---------------------------------------------------------
     # 3. Parse inventory report and aggregate by FNSKU
@@ -122,19 +118,16 @@ async def fba_report(save_to_db=True):
         r["BuyBoxPercentage_L30"] = l30.get("BuyBoxPercentage_L30")
 
     # ---------------------------------------------------------
-    # 8. Enrich with Active Listings report
+    # 8. Enrich with Active Listings report (RAW TEXT)
     # ---------------------------------------------------------
     print("Requesting Active Listings report to enrich price/title...")
-    report_id = request_report("GET_MERCHANT_LISTINGS_DATA", params={
-        "reportOptions": {"preferredReportDocumentLocale": "en_US"}
-    })
-    if not report_id:
-        raise RuntimeError("Failed to request Active Listings report")
 
-    doc_id = wait_for_report(report_id)
-    print(f"Active Listings document ready: {doc_id}")
+    listings_text = fetch_spapi_report(
+        report_type="GET_MERCHANT_LISTINGS_DATA",
+        output_type="raw",
+        params={"reportOptions": {"preferredReportDocumentLocale": "en_US"}}
+    )
 
-    listings_text = download_report(doc_id)
     reader = csv.DictReader(StringIO(listings_text), delimiter="\t")
 
     listings_map = {}
@@ -195,7 +188,7 @@ async def fba_report(save_to_db=True):
     print("[DEBUG] Cached fee lookup complete.")
 
     # ---------------------------------------------------------
-    # Apply cached fees (FLOAT → FLOAT)
+    # Apply cached fees
     # ---------------------------------------------------------
     for r in rows:
         price = r.get("Sale-Price")

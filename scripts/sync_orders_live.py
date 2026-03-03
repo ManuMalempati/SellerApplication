@@ -8,7 +8,7 @@ from app.database import connect_database
 from app.orders.database_orders import replace_order_items_for_order
 
 # Standardized helpers from utils
-from app.utils import (
+from app.utilities.utils import (
     convert_utc_to_utcz_string, 
     get_now_iso_string_with_custom_utc_offset
 )

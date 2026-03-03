@@ -7,7 +7,7 @@ Designed to be run periodically (e.g., every 1 hour) via task scheduler.
 
 import asyncio
 import sys
-from app.utils import get_now_iso_string_with_custom_utc_offset
+from app.utilities.utils import get_now_iso_string_with_custom_utc_offset
 from app.fba.main import fba_report
 
 

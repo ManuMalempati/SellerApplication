@@ -5,11 +5,9 @@ import time
 import sys
 import os
 from typing import Any, Iterable, List, Tuple
-
 # Use centralized config
 import config
-
-from app.utils import now_utc_plus_offset_naive
+from app.utilities.utils import now_utc_plus_offset_naive
 
 # fail-fast required envs
 REQUIRED_ENVS = ["SQLSERVER_CONNECTION_STRING"]

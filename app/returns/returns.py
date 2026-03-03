@@ -1,86 +1,29 @@
 # RESPONSIBLE FOR FBACustomerReturns Table
-import csv
-import gzip
-import io
+
 import time
+import csv
+from io import StringIO
 from datetime import datetime, timedelta, timezone
-import requests
+
 from app.database import connect_database, retry_deadlock
-from app.auth import spapi_request
-from app.utils import clean_str, safe_int, safe_dt, now_utc_plus_offset_naive
-from config import MARKETPLACE_ID
+from app.utilities.utils import clean_str, safe_int, safe_dt, now_utc_plus_offset_naive
+from app.utilities.fetch_report import fetch_spapi_report   # <-- unified fetcher
 
 
 # ---------------------------------------------------------
-# Fetch FBA Customer Returns Report
+# Fetch FBA Customer Returns Report (Unified Fetcher)
 # ---------------------------------------------------------
 
 def fetch_fba_customer_returns(days=365):
-    end_dt = datetime.now(timezone.utc)
-    start_dt = end_dt - timedelta(days=days)
+    print(f"[FBA-RETURNS] Fetching customer returns for last {days} days...")
 
-    print(f"[FBA-RETURNS] Requesting report for {start_dt.isoformat()} -> {end_dt.isoformat()}")
-
-    create_resp = spapi_request(
-        method="POST",
-        path="/reports/2021-06-30/reports",
-        body={
-            "reportType": "GET_FBA_FULFILLMENT_CUSTOMER_RETURNS_DATA",
-            "dataStartTime": start_dt.isoformat(),
-            "dataEndTime": end_dt.isoformat(),
-            "marketplaceIds": [MARKETPLACE_ID],
-        }
+    rows = fetch_spapi_report(
+        report_type="GET_FBA_FULFILLMENT_CUSTOMER_RETURNS_DATA",
+        days=days,
+        output_type="tsv"
     )
-
-    if not create_resp or "reportId" not in create_resp:
-        raise RuntimeError(f"Failed to create report: {create_resp}")
-
-    report_id = create_resp["reportId"]
-    print(f"[FBA-RETURNS] Report requested: {report_id}")
-
-    # Poll until DONE
-    for _ in range(60):
-        status_resp = spapi_request(
-            method="GET",
-            path=f"/reports/2021-06-30/reports/{report_id}",
-        )
-        if status_resp and status_resp.get("processingStatus") == "DONE":
-            break
-        time.sleep(5)
-    else:
-        raise RuntimeError("Timeout waiting for FBA Customer Returns report")
-
-    document_id = status_resp.get("reportDocumentId")
-    if not document_id:
-        raise RuntimeError(f"No reportDocumentId: {status_resp}")
-
-    print(f"[FBA-RETURNS] Report document ready: {document_id}")
-
-    # Get download URL
-    doc_resp = spapi_request(
-        method="GET",
-        path=f"/reports/2021-06-30/documents/{document_id}"
-    )
-    if not doc_resp or "url" not in doc_resp:
-        raise RuntimeError(f"Failed to get document URL: {doc_resp}")
-
-    url = doc_resp["url"]
-    compression = doc_resp.get("compressionAlgorithm")
-
-    print("[FBA-RETURNS] Downloading document...")
-
-    raw = requests.get(url).content
-
-    if compression == "GZIP":
-        decoded = gzip.decompress(raw).decode("utf-8", errors="replace")
-    else:
-        decoded = raw.decode("utf-8", errors="replace")
-
-    reader = csv.DictReader(io.StringIO(decoded), delimiter="\t")
-    rows = list(reader)
 
     print(f"[FBA-RETURNS] Parsed {len(rows)} rows")
-
     return rows
 
 
@@ -251,7 +194,7 @@ def upsert_fba_customer_returns(rows):
 # Main
 # ---------------------------------------------------------
 
-def run_returns_import(days):
+def run_returns_import(days=365):
     print("==============================================")
     print("FBA CUSTOMER RETURNS IMPORT - START")
     print("==============================================")

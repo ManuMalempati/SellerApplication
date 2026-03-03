@@ -2,7 +2,7 @@ from fastapi import APIRouter
 from datetime import datetime, timedelta, timezone
 from .auth import spapi_request
 import config
-from .utils import convert_utc_to_utcz_string
+from app.utilities.utils import convert_utc_to_utcz_string
 from urllib.parse import quote
 from config import MARKETPLACE_ID, BASE_CURRENCY_CODE
 import json

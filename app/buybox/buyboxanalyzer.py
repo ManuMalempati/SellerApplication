@@ -3,7 +3,7 @@ import time
 from ..database import connect_database
 from ..auth import spapi_request
 from .store_name_scraper import get_seller_name
-from ..utils import (
+from ..utilities.utils import (
     clean_str,
     safe_float,
     safe_int,

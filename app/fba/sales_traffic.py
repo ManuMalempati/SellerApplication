@@ -1,17 +1,15 @@
 import time
 from datetime import datetime, timedelta
-from ..auth import spapi_request
+from app.utilities.fetch_report import fetch_spapi_report   # <-- unified fetcher
 from config import MARKETPLACE_ID
-from .helpers import throttle, download_report
 
-# Still have to work on this to fetch things from OrderItems table instead. Since this report is not getting enough data
 
 def fetch_l30_sales_traffic():
     """
     Fetch last 30 days sales & traffic data per ASIN.
     Returns dict: {asin: {TotalOrderItems_L30, OrderedProductSales_L30, UnitsRefunded_L30, BuyBoxPercentage_L30}}
     """
-    
+
     # Build L-30 date range
     end = datetime.utcnow()
     start = end - timedelta(days=30)
@@ -19,73 +17,28 @@ def fetch_l30_sales_traffic():
     dataStartTime = start.strftime("%Y-%m-%dT00:00:00Z")
     dataEndTime = end.strftime("%Y-%m-%dT00:00:00Z")
 
-    print(f"Requesting L-30 sales/traffic: {dataStartTime} -> {dataEndTime}")
+    print(f"[L30] Requesting Sales & Traffic: {dataStartTime} -> {dataEndTime}")
 
-    # Request the report
-    throttle()
-    body = {
-        "reportType": "GET_SALES_AND_TRAFFIC_REPORT",
-        "dataStartTime": dataStartTime,
-        "dataEndTime": dataEndTime,
-        "reportOptions": {
-            "dateGranularity": "DAY",
-            "asinGranularity": "CHILD"
-        },
-        "marketplaceIds": [MARKETPLACE_ID]
-    }
+    # ---------------------------------------------------------
+    # Use unified fetcher (JSON mode)
+    # ---------------------------------------------------------
+    data = fetch_spapi_report(
+        report_type="GET_SALES_AND_TRAFFIC_REPORT",
+        output_type="json",
+        params={
+            "reportOptions": {
+                "dateGranularity": "DAY",
+                "asinGranularity": "CHILD"
+            },
+            "dataStartTime": dataStartTime,
+            "dataEndTime": dataEndTime,
+            "marketplaceIds": [MARKETPLACE_ID]
+        }
+    )
 
-    resp = spapi_request(
-        "POST",
-        "/reports/2021-06-30/reports",
-        body=body
-    ) or {}
-
-    report_id = resp.get("reportId")
-    if not report_id:
-        print(f"No reportId for sales/traffic report: {resp}")
-        return {}
-
-    print(f"Sales/Traffic report requested: {report_id}")
-
-    # Poll until DONE
-    document_id = None
-    start_time = time.time()
-    timeout = 300
-
-    while True:
-        throttle()
-        status_resp = spapi_request(
-            "GET",
-            f"/reports/2021-06-30/reports/{report_id}"
-        ) or {}
-
-        status = status_resp.get("processingStatus")
-        print(f"Sales/Traffic status: {status}")
-
-        if status == "DONE":
-            document_id = status_resp.get("reportDocumentId")
-            break
-
-        if status in ("CANCELLED", "FATAL"):
-            print(f"Sales/Traffic report failed: {status}")
-            return {}
-
-        if time.time() - start_time > timeout:
-            print("Sales/Traffic report timed out")
-            return {}
-
-        time.sleep(2)
-
-    if not document_id:
-        print("No document_id for sales/traffic report")
-        return {}
-
-    print(f"Sales/Traffic report ready: {document_id}")
-
-    # Download the JSON report
-    data = download_report(document_id, is_json=True)
-
+    # ---------------------------------------------------------
     # Extract L-30 totals per ASIN
+    # ---------------------------------------------------------
     asin_rows = data.get("salesAndTrafficByAsin", [])
     results = {}
 
@@ -97,7 +50,7 @@ def fetch_l30_sales_traffic():
         sales = row.get("salesByAsin", {})
         traffic = row.get("trafficByAsin", {})
 
-        # Handle orderedProductSales which can be a dict with amount/currencyCode
+        # orderedProductSales may be dict {amount, currencyCode}
         ordered_sales = sales.get("orderedProductSales", 0)
         if isinstance(ordered_sales, dict):
             ordered_sales = ordered_sales.get("amount", 0)
@@ -109,5 +62,5 @@ def fetch_l30_sales_traffic():
             "BuyBoxPercentage_L30": traffic.get("buyBoxPercentage", 0),
         }
 
-    print(f"Extracted L-30 data for {len(results)} ASINs")
+    print(f"[L30] Extracted L-30 data for {len(results)} ASINs")
     return results

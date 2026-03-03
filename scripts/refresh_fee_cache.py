@@ -6,37 +6,38 @@ from io import StringIO
 
 import config
 from app.database import connect_database, parse_cost, get_product_details_by_asin
-from app.fba.helpers import request_report, wait_for_report, download_report
-from app.utils import get_now_iso_string_with_custom_utc_offset
+from app.utilities.fetch_report import fetch_spapi_report   # <-- unified fetcher
+from app.utilities.utils import get_now_iso_string_with_custom_utc_offset
 from app.fee_estimator import get_my_fee_estimate_batch   # <-- batch estimator
 
 
 # ---------------------------------------------------------
-# Fetch Active Listings Report
+# Fetch Active Listings Report (Unified Fetcher)
 # ---------------------------------------------------------
 async def fetch_active_listings_report():
     MAX_ATTEMPTS = 10
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
-            print(f"[{get_now_iso_string_with_custom_utc_offset()}] [Active Listings] Attempt {attempt}/{MAX_ATTEMPTS}")
+            print(f"[{get_now_iso_string_with_custom_utc_offset()}] "
+                  f"[Active Listings] Attempt {attempt}/{MAX_ATTEMPTS}")
 
-            report_id = request_report(
-                "GET_MERCHANT_LISTINGS_DATA",
+            # Use unified fetcher (raw text)
+            text = fetch_spapi_report(
+                report_type="GET_MERCHANT_LISTINGS_DATA",
+                output_type="raw",
                 params={"reportOptions": {"preferredReportDocumentLocale": "en_US"}}
             )
 
-            if not report_id:
-                raise RuntimeError("No reportId returned")
-
-            doc_id = wait_for_report(report_id)
-            text = download_report(doc_id)
             return text
 
         except Exception as e:
-            print(f"[{get_now_iso_string_with_custom_utc_offset()}] [Active Listings] Error: {e}")
+            print(f"[{get_now_iso_string_with_custom_utc_offset()}] "
+                  f"[Active Listings] Error: {e}")
+
             if attempt < MAX_ATTEMPTS:
-                print(f"[{get_now_iso_string_with_custom_utc_offset()}] Waiting 60 seconds before retrying...")
+                print(f"[{get_now_iso_string_with_custom_utc_offset()}] "
+                      f"Waiting 60 seconds before retrying...")
                 time.sleep(60)
             else:
                 raise RuntimeError("Failed to retrieve Active Listings report after retries")
@@ -116,7 +117,6 @@ async def refresh_fee_cache():
         key = (sku, asin, price)
         fr = fee_results.get(key) or {}
 
-        # DO NOT convert None → 0.0
         ref = fr.get("referral")
         fba = fr.get("fba")
 

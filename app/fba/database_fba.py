@@ -1,4 +1,4 @@
-from app.utils import (
+from app.utilities.utils import (
     clean_str as safe_str,
     safe_int,
     safe_float,
