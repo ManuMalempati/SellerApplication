@@ -8,7 +8,7 @@ import config
 from app.database import connect_database, parse_cost, get_product_details_by_asin
 from app.fba.helpers import request_report, wait_for_report, download_report
 from app.utils import get_now_iso_string_with_custom_utc_offset
-from app.fee_estimator_batch import get_my_fee_estimate_batch   # <-- batch estimator
+from app.fee_estimator import get_my_fee_estimate_batch   # <-- batch estimator
 
 
 # ---------------------------------------------------------
