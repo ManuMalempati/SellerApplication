@@ -16,7 +16,9 @@ def bulk_upsert_fba_data(cursor, fba_rows):
     except:
         pass
 
-    # ---------- BUILD STAGING ROWS ----------
+    # ---------------------------------------------------------
+    # Build staging rows (null‑preserving)
+    # ---------------------------------------------------------
     staging_rows = []
     for row in fba_rows:
         sku = row.get("SKU")
@@ -49,11 +51,14 @@ def bulk_upsert_fba_data(cursor, fba_rows):
     if not staging_rows:
         return 0
 
-    # ---------- CREATE TEMP TABLE (DEADLOCK SAFE) ----------
+    # ---------------------------------------------------------
+    # Create temp table (deadlock‑safe)
+    # ---------------------------------------------------------
     retry_deadlock(
         lambda: cursor.execute("""
             SET NOCOUNT ON;
             IF OBJECT_ID('tempdb..#TempFBA') IS NOT NULL DROP TABLE #TempFBA;
+
             CREATE TABLE #TempFBA (
                 SKU NVARCHAR(200),
                 ASIN NVARCHAR(50),
@@ -80,7 +85,9 @@ def bulk_upsert_fba_data(cursor, fba_rows):
         label="CREATE TempFBA"
     )
 
-    # ---------- BULK INSERT INTO TEMP TABLE (DEADLOCK SAFE) ----------
+    # ---------------------------------------------------------
+    # Bulk insert into temp table (deadlock‑safe)
+    # ---------------------------------------------------------
     retry_deadlock(
         lambda: cursor.executemany("""
             INSERT INTO #TempFBA VALUES (
@@ -92,7 +99,9 @@ def bulk_upsert_fba_data(cursor, fba_rows):
 
     print(f"[bulk_upsert_fba_data] Bulk inserted {len(staging_rows)} rows into #TempFBA")
 
-    # ---------- MERGE INTO FINAL TABLE (DEADLOCK SAFE) ----------
+    # ---------------------------------------------------------
+    # MERGE into final table (deadlock‑safe)
+    # ---------------------------------------------------------
     merge_sql = """
         SET NOCOUNT ON;
 

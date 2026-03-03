@@ -2,7 +2,8 @@
 
 from app.database import connect_database, retry_deadlock
 from app.utilities.utils import clean_str, safe_int, safe_float, safe_dt, now_utc_plus_offset_naive
-from app.utilities.fetch_report import fetch_spapi_report   # <-- unified fetcher
+from app.utilities.fetch_report import fetch_spapi_report   # unified fetcher
+
 
 # ---------------------------------------------------------
 # Fetch FBA Removal Order Detail Report (Unified Fetcher)
@@ -34,6 +35,9 @@ def upsert_fba_removal_orders(rows):
     conn = connect_database()
     cursor = conn.cursor()
 
+    # ---------------------------------------------------------
+    # Delete existing rows for these order-ids
+    # ---------------------------------------------------------
     order_ids = sorted({
         clean_str(r.get("order-id"))
         for r in rows
@@ -53,6 +57,9 @@ def upsert_fba_removal_orders(rows):
         )
         conn.commit()
 
+    # ---------------------------------------------------------
+    # Insert fresh rows
+    # ---------------------------------------------------------
     print("[FBA-REMOVAL] Inserting fresh rows...")
 
     staging = []

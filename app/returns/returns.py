@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from app.database import connect_database, retry_deadlock
 from app.utilities.utils import clean_str, safe_int, safe_dt, now_utc_plus_offset_naive
-from app.utilities.fetch_report import fetch_spapi_report   # <-- unified fetcher
+from app.utilities.fetch_report import fetch_spapi_report   # unified fetcher
 
 
 # ---------------------------------------------------------
@@ -141,7 +141,7 @@ def upsert_fba_customer_returns(rows):
     )
 
     # ---------------------------------------------------------
-    # Aggregate returns (deadlock-safe)
+    # AGGREGATE + UPDATE ORDERITEMS (MUST BE ONE BATCH)
     # ---------------------------------------------------------
     retry_deadlock(
         lambda: cursor.execute("""
@@ -158,15 +158,7 @@ def upsert_fba_customer_returns(rows):
             INTO #AggReturns
             FROM spapi_app_user.FBACustomerReturns
             GROUP BY order_id, sku;
-        """),
-        label="AGG FBACustomerReturns"
-    )
 
-    # ---------------------------------------------------------
-    # Update OrderItems (deadlock-safe)
-    # ---------------------------------------------------------
-    retry_deadlock(
-        lambda: cursor.execute("""
             UPDATE O
             SET 
                 O.ReturnQty          = A.ReturnQty,
@@ -179,7 +171,7 @@ def upsert_fba_customer_returns(rows):
               ON O.AmazonOrderId = A.order_id
              AND O.SKU           = A.sku;
         """),
-        label="UPDATE OrderItems Returns"
+        label="AGG+UPDATE FBACustomerReturns"
     )
 
     conn.commit()

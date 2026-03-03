@@ -1,9 +1,9 @@
 # RESPONSIBLE FOR FBAReimbursements Table
 
-from app.database import connect_database
+from app.database import connect_database, retry_deadlock
 from app.utilities.utils import clean_str, safe_int, safe_float, safe_dt, now_utc_plus_offset_naive
-from app.database import retry_deadlock
-from app.utilities.fetch_report import fetch_spapi_report   # <-- unified fetcher
+from app.utilities.fetch_report import fetch_spapi_report   # unified fetcher
+
 
 # ---------------------------------------------------------
 # Fetch FBA Reimbursements Report (using unified fetcher)
@@ -12,7 +12,6 @@ from app.utilities.fetch_report import fetch_spapi_report   # <-- unified fetche
 def fetch_fba_reimbursements(days=365):
     print(f"[FBA-REIMB] Fetching reimbursements for last {days} days...")
 
-    # Use unified fetcher → returns parsed TSV rows
     rows = fetch_spapi_report(
         report_type="GET_FBA_REIMBURSEMENTS_DATA",
         days=days,
@@ -36,6 +35,9 @@ def upsert_fba_reimbursements(rows):
     conn = connect_database()
     cursor = conn.cursor()
 
+    # ---------------------------------------------------------
+    # Delete existing rows for these reimbursement-ids
+    # ---------------------------------------------------------
     reimb_ids = sorted({
         clean_str(r.get("reimbursement-id"))
         for r in rows
@@ -55,6 +57,9 @@ def upsert_fba_reimbursements(rows):
         )
         conn.commit()
 
+    # ---------------------------------------------------------
+    # Insert fresh rows
+    # ---------------------------------------------------------
     print("[FBA-REIMB] Inserting fresh rows...")
 
     staging = []
@@ -113,7 +118,9 @@ def upsert_fba_reimbursements(rows):
         label="INSERT FBAReimbursements"
     )
 
-    # Aggregate reimbursements
+    # ---------------------------------------------------------
+    # AGGREGATE + UPDATE ORDERITEMS (ONE BATCH, DEADLOCK-SAFE)
+    # ---------------------------------------------------------
     retry_deadlock(
         lambda: cursor.execute("""
             IF OBJECT_ID('tempdb..#AggReimb') IS NOT NULL DROP TABLE #AggReimb;
@@ -129,13 +136,7 @@ def upsert_fba_reimbursements(rows):
             INTO #AggReimb
             FROM spapi_app_user.FBAReimbursements
             GROUP BY amazon_order_id, sku;
-        """),
-        label="AGG FBAReimbursements"
-    )
 
-    # Update OrderItems
-    retry_deadlock(
-        lambda: cursor.execute("""
             UPDATE O
             SET 
                 O.Reimbursed = A.total_amount,
@@ -145,7 +146,7 @@ def upsert_fba_reimbursements(rows):
               ON O.AmazonOrderId = A.amazon_order_id
              AND O.SKU           = A.sku;
         """),
-        label="UPDATE OrderItems reimbursements"
+        label="AGG+UPDATE FBAReimbursements"
     )
 
     conn.commit()
