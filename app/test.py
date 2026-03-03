@@ -39,8 +39,8 @@ async def test_fee_estimate(
     """
     Fetch the RAW SP‑API fee estimate response for a given SKU or ASIN.
     Usage:
-      /test-fee-estimate?sku=WDS100T3B0C&price=649
-      /test-fee-estimate?asin=B07H4PR6HN&price=878.0
+      /test-fee-estimate?sku=AD80HW-3&price=384
+      /test-fee-estimate?asin=B08ZDHSKR2&price=384
     """
 
     if not sku and not asin:
@@ -99,7 +99,7 @@ async def test_fee_estimate(
 @router.get("/test_batch_fee_estimate")
 def test_batch_fees():
     skus = [
-        "WDS100T3B0C",
+        "AD80HW-3",
         "SDG4/128GB",
         "SDCZ430-128G-G46",
         "P-SDUX512U3100PRO-GE",
@@ -113,7 +113,7 @@ def test_batch_fees():
         "SDSQUA4-032G-GN6MN"
     ]
 
-    TEST_PRICE = 100.00  # Amazon requires a price
+    TEST_PRICE = 384.00  # Amazon requires a price
 
     # EXACT structure required by getMyFeesEstimates
     requests_list = []

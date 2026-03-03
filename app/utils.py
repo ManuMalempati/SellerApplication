@@ -12,14 +12,23 @@ def _should_retry(result):
     Only retry on throttling-related errors.
     """
     if not isinstance(result, dict):
+        print("[TENACITY][DEBUG] Result is not a dict, will NOT retry:", result)
         return False
 
     errors = result.get("errors")
     if not errors:
+        print("[TENACITY][DEBUG] No 'errors' field, will NOT retry. Raw result:", result)
         return False
 
     retryable = {"QuotaExceeded", "RequestThrottled"}
-    return any(e.get("code") in retryable for e in errors)
+    should = any(e.get("code") in retryable for e in errors)
+
+    if should:
+        print("[TENACITY][DEBUG] Retryable error detected:", errors)
+    else:
+        print("[TENACITY][DEBUG] Non-retryable error:", errors)
+
+    return should
 
 
 @retry(
@@ -32,7 +41,13 @@ def retry_call(func, *args, **kwargs):
     Execute a function with Tenacity retry logic applied.
     Retries only when _should_retry(result) returns True.
     """
-    return func(*args, **kwargs)
+    try:
+        result = func(*args, **kwargs)
+        print("[TENACITY][DEBUG] Call succeeded. Result snippet:", str(result)[:300])
+        return result
+    except Exception as e:
+        print("[TENACITY][ERROR] Exception inside retry_call:", e)
+        raise
 
 
 # =========================================================
