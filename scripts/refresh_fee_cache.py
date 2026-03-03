@@ -106,7 +106,7 @@ async def refresh_fee_cache():
     fee_results = get_my_fee_estimate_batch(batch_input)
 
     # ---------------------------------------------------------
-    # Compute financials
+    # Compute financials (NULL‑propagating)
     # ---------------------------------------------------------
     print(f"[{get_now_iso_string_with_custom_utc_offset()}] Computing financials...")
 
@@ -116,13 +116,21 @@ async def refresh_fee_cache():
         key = (sku, asin, price)
         fr = fee_results.get(key) or {}
 
-        ref = float(fr.get("referral") or 0.0)
-        fba = float(fr.get("fba") or 0.0)
+        # DO NOT convert None → 0.0
+        ref = fr.get("referral")
+        fba = fr.get("fba")
 
-        charges = ref + fba
-        vat = price * config.GOVT_VAT_RATE
-        net = price - charges - vat
-        profit = net - cog
+        # If either fee is None → all downstream values become None
+        if ref is None or fba is None:
+            charges = None
+            vat = None
+            net = None
+            profit = None
+        else:
+            charges = ref + fba
+            vat = price * config.GOVT_VAT_RATE
+            net = price - charges - vat
+            profit = net - cog
 
         cache_rows.append((
             sku,

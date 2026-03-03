@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+# RESPONSIBLE FOR FBAReimbursements Table
 
 import csv
 import gzip
@@ -10,7 +10,6 @@ from app.database import connect_database
 from app.auth import spapi_request
 from app.utils import clean_str, safe_int, safe_float, safe_dt, now_utc_plus_offset_naive
 from config import MARKETPLACE_ID
-
 
 # ---------------------------------------------------------
 # Fetch FBA Reimbursements Report

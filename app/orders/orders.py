@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+# RESPONSIBLE FOR OrderItems Table
 import time
 import asyncio
 import csv
@@ -308,50 +308,63 @@ async def get_orders_async(params):
             key = (sku, asin, round(unit_price, 2))
             fee_block = fees_by_key.get(key) or {}
 
-            referral_per_unit = float(fee_block.get("ReferralFee", 0.0))
-            fba_per_unit = float(fee_block.get("FBAFee", 0.0))
+            # DO NOT convert None → 0.0
+            referral_per_unit = fee_block.get("ReferralFee")
+            fba_per_unit = fee_block.get("FBAFee")
 
-            ref_total = referral_per_unit * FEES_ESTIMATE_VAT_MULTIPLIER * qty
-            fba_total = fba_per_unit * FEES_ESTIMATE_VAT_MULTIPLIER * qty
-            total_fee_val = ref_total + fba_total
+            subtotal_val = unit_price * qty
+            vat_total = subtotal_val * GOVT_VAT_RATE if subtotal_val is not None else None
+            vat = -vat_total if vat_total is not None else None
 
-            fee_incl = -ref_total if ref_total else None
-            fba_fees_incl = -fba_total if fba_total else None
-            total_fee = -total_fee_val if total_fee_val else None
+            # COG is allowed even when fees are missing
+            cost = parse_cost(prod_details.get("cost")) if prod_details else None
+            cog_total = cost * qty if cost is not None else None
+            cog = -cog_total if cog_total is not None else None
 
-            if unit_price:
+            # If fees missing → stop here (profit stays None)
+            if referral_per_unit is None or fba_per_unit is None:
+                fee_incl = None
+                fba_fees_incl = None
+                total_fee = None
+                fee_pct = None
+                rvat = None
+                profit = None
+
+            else:
+                # Normal fee calculations
+                ref_total = referral_per_unit * FEES_ESTIMATE_VAT_MULTIPLIER * qty
+                fba_total = fba_per_unit * FEES_ESTIMATE_VAT_MULTIPLIER * qty
+                total_fee_val = ref_total + fba_total
+
+                fee_incl = -ref_total
+                fba_fees_incl = -fba_total
+                total_fee = -total_fee_val
+
                 try:
                     fee_pct = (referral_per_unit / unit_price) * 100
                 except:
                     fee_pct = None
 
-            subtotal_val = unit_price * qty
-            vat_total = subtotal_val * GOVT_VAT_RATE if subtotal_val is not None else None
-            rvat_total = (
-                (referral_per_unit + fba_per_unit)
-                * (FEES_ESTIMATE_VAT_MULTIPLIER - 1.0)
-                * qty
-                if FEES_ESTIMATE_VAT_MULTIPLIER > 1.0
-                else 0.0
-            )
+                rvat_total = (
+                    (referral_per_unit + fba_per_unit)
+                    * (FEES_ESTIMATE_VAT_MULTIPLIER - 1.0)
+                    * qty
+                    if FEES_ESTIMATE_VAT_MULTIPLIER > 1.0
+                    else 0.0
+                )
+                rvat = rvat_total if rvat_total is not None else None
 
-            vat = -vat_total if vat_total else None
-            rvat = rvat_total if rvat_total else None
-
-            cost = parse_cost(prod_details.get("cost")) if prod_details else None
-            cog_total = cost * qty if cost is not None else None
-            cog = -cog_total if cog_total is not None else None
-
-            if (
-                subtotal_val is not None
-                and total_fee_val is not None
-                and vat_total is not None
-                and rvat_total is not None
-                and cog_total is not None
-            ):
-                profit = subtotal_val - total_fee_val - vat_total + rvat_total - cog_total
-            else:
-                profit = None
+                # Profit only if ALL components exist
+                if (
+                    subtotal_val is not None
+                    and total_fee_val is not None
+                    and vat_total is not None
+                    and rvat_total is not None
+                    and cog_total is not None
+                ):
+                    profit = subtotal_val - total_fee_val - vat_total + rvat_total - cog_total
+                else:
+                    profit = None
 
         currency = r.get("currency") or BASE_CURRENCY_CODE
 

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+# RESPONSIBLE FOR FBAProductSummary Table
 import time
 import csv
 from io import StringIO
@@ -15,7 +15,6 @@ from app.fba.database_fba import bulk_upsert_fba_data
 from config import GOVT_VAT_RATE
 from .helpers import request_report, wait_for_report, download_report
 from .sales_traffic import fetch_l30_sales_traffic
-
 
 async def fba_report(save_to_db=True):
     start_time = time.time()

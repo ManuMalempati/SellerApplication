@@ -1,3 +1,4 @@
+# RESPONSIBLE FOR FinancialTransactions Table
 from app.auth import spapi_request
 from app.database import get_product_mapping
 from app.rate_limiter import TokenBucketRateLimiter

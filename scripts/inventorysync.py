@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+# RESPONSIBLE FOR InventoryReportCopy Table
 from __future__ import annotations
 import re
 import time

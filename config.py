@@ -76,7 +76,6 @@ SELLER_ID = os.getenv("SELLER_ID")
 # -------------------------------------------------
 BASE_CURRENCY_CODE = os.getenv("BASE_CURRENCY_CODE", "AED")
 FEES_ESTIMATE_VAT_MULTIPLIER = float(os.getenv("FEES_ESTIMATE_VAT_MULTIPLIER", "1.05"))
-MAX_WORKERS = int(os.getenv("MAX_WORKERS", "10"))
 
 # -------------------------------------------------
 # Debug Print

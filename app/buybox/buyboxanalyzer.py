@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+# RESPONSIBLE FOR FBABuyBoxAnalysis Table
 import time
 from ..database import connect_database
 from ..auth import spapi_request

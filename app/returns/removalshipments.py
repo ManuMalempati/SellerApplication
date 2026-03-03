@@ -1,12 +1,10 @@
-#!/usr/bin/env python3
+# RESPONSIBLE FOR FBARemovalShipments Table
 import csv
 import gzip
 import io
 import time
 from datetime import datetime, timedelta, timezone
-
 import requests
-
 from app.database import connect_database
 from app.auth import spapi_request
 from app.utils import clean_str, safe_int, safe_dt, now_utc_plus_offset_naive
