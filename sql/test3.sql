@@ -1,2 +1,3 @@
 SELECT * FROM FeeEstimatesCache
 WHERE FBAFee = 0
+-- WHERE ASIN = 'B07NYYSBPQ'

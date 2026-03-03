@@ -99,8 +99,6 @@ def get_my_fee_estimate_batch(items):
         resp = _call_batch_fee_api(chunk)
 
         if not isinstance(resp, list):
-            print(f"[FEES][ERROR][SKU] Response not list. Raw={resp}")
-            print(f"[FEES][ERROR][SKU] Request payload was: {chunk_map}")
             for (s, a, p, _) in chunk_map:
                 failed_for_asin.append((s, a, p))
             continue
@@ -117,25 +115,15 @@ def get_my_fee_estimate_batch(items):
                     break
 
             if sku is None:
-                print(f"[FEES][ERROR][SKU] Could not map entry. RAW={entry}")
-                print(f"[FEES][ERROR][SKU] Request payload was: {chunk_map}")
                 continue
 
             key = (sku, asin, price)
 
-            # Missing FeesEstimate
             if not entry.get("FeesEstimate"):
-                print(f"[FEES][ERROR][SKU] Missing FeesEstimate for {key}")
-                print(f"[FEES][ERROR][SKU] Request payload was: {chunk_map}")
-                print(f"[FEES][ERROR][SKU] Raw Amazon response: {entry}")
                 failed_for_asin.append((sku, asin, price))
                 continue
 
-            # Non-success
             if status != "Success":
-                print(f"[FEES][ERROR][SKU] Non-success status for {key}: {status}")
-                print(f"[FEES][ERROR][SKU] Request payload was: {chunk_map}")
-                print(f"[FEES][ERROR][SKU] Raw Amazon response: {entry}")
                 failed_for_asin.append((sku, asin, price))
                 continue
 
@@ -145,14 +133,14 @@ def get_my_fee_estimate_batch(items):
                 results[key] = {
                     "referral": 0.0,
                     "fba": 0.0,
-                    "debug": {"raw": entry, "note": "real_zero_fees"}
+                    "debug": {"note": "real_zero_fees"}
                 }
                 continue
 
             results[key] = {
                 "referral": ref,
                 "fba": fba,
-                "debug": {"raw": entry}
+                "debug": {}
             }
 
     # ============================
@@ -211,8 +199,6 @@ def get_my_fee_estimate_batch(items):
         resp = _call_batch_fee_api(chunk)
 
         if not isinstance(resp, list):
-            print(f"[FEES][ERROR][ASIN] Response not list. RAW={resp}")
-            print(f"[FEES][ERROR][ASIN] Request payload was: {chunk_map}")
             for (s, a, p, _) in chunk_map:
                 key = (s, a, p)
                 results[key] = {
@@ -235,16 +221,11 @@ def get_my_fee_estimate_batch(items):
                     break
 
             if sku is None:
-                print(f"[FEES][ERROR][ASIN] Could not map entry. RAW={entry}")
-                print(f"[FEES][ERROR][ASIN] Request payload was: {chunk_map}")
                 continue
 
             key = (sku, asin, price)
 
             if not entry.get("FeesEstimate"):
-                print(f"[FEES][ERROR][ASIN] Missing FeesEstimate for {key}")
-                print(f"[FEES][ERROR][ASIN] Request payload was: {chunk_map}")
-                print(f"[FEES][ERROR][ASIN] Raw Amazon response: {entry}")
                 results[key] = {
                     "referral": None,
                     "fba": None,
@@ -254,9 +235,6 @@ def get_my_fee_estimate_batch(items):
                 continue
 
             if status != "Success":
-                print(f"[FEES][ERROR][ASIN] Non-success status for {key}: {status}")
-                print(f"[FEES][ERROR][ASIN] Request payload was: {chunk_map}")
-                print(f"[FEES][ERROR][ASIN] Raw Amazon response: {entry}")
                 results[key] = {
                     "referral": None,
                     "fba": None,
@@ -271,14 +249,14 @@ def get_my_fee_estimate_batch(items):
                 results[key] = {
                     "referral": 0.0,
                     "fba": 0.0,
-                    "debug": {"fallback": "asin_zero_fees", "raw": entry}
+                    "debug": {"fallback": "asin_zero_fees"}
                 }
                 continue
 
             results[key] = {
                 "referral": ref,
                 "fba": fba,
-                "debug": {"fallback": "asin", "raw": entry}
+                "debug": {"fallback": "asin"}
             }
 
     print(f"[FEES][SUMMARY] SKU failures needing ASIN fallback: {len(failed_for_asin)}")

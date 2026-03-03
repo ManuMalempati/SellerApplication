@@ -40,7 +40,7 @@ async def test_fee_estimate(
     Fetch the RAW SP‑API fee estimate response for a given SKU or ASIN.
     Usage:
       /test-fee-estimate?sku=AD80HW-3&price=384
-      /test-fee-estimate?asin=B08ZDHSKR2&price=384
+      /test-fee-estimate?asin=B07MX51R53&price=15.75
     """
 
     if not sku and not asin:

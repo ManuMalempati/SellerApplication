@@ -7,28 +7,22 @@ import config
 # =========================================================
 
 def _should_retry(result):
-    """
-    Retry only when Amazon returns throttling or internal server errors.
-    Handles both batch (list) and single-error (dict) responses.
-    """
-
     # Batch response (list)
     if isinstance(result, list):
         for entry in result:
             err = entry.get("Error", {})
             code = err.get("Code")
-            if code in {"RequestThrottled", "QuotaExceeded", "InternalError"}:
+            if code in {"RequestThrottled", "QuotaExceeded"}:
                 return True
         return False
 
     # Single error dict
     if isinstance(result, dict):
         errors = result.get("errors", [])
-        retryable = {"QuotaExceeded", "RequestThrottled", "InternalError"}
+        retryable = {"QuotaExceeded", "RequestThrottled"}
         return any(e.get("code") in retryable for e in errors)
 
     return False
-
 
 @retry(
     retry=retry_if_result(_should_retry),
