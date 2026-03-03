@@ -14,7 +14,7 @@ DEBUG = False   # Set True for verbose logs
 # Rate limiter (0.5 RPS, burst=1)
 # ============================================================
 
-fees_rate_limiter = TokenBucketRateLimiter(rate=0.5, burst=1)
+fees_rate_limiter = TokenBucketRateLimiter(rate=0.4, burst=1)
 
 # ============================================================
 # Helpers
@@ -129,9 +129,11 @@ def get_my_fee_estimate_batch(items):
     # 2. Execute SKU batch
     # ============================================================
 
-    for i in range(0, len(sku_requests), 20):
-        chunk = sku_requests[i:i+20]
-        chunk_map = sku_index_map[i:i+20]
+    BATCH_SIZE = 15
+
+    for i in range(0, len(sku_requests), BATCH_SIZE):
+        chunk = sku_requests[i:i+BATCH_SIZE]
+        chunk_map = sku_index_map[i:i+BATCH_SIZE]
 
         resp = _call_batch_fee_api(chunk)
 
@@ -233,9 +235,9 @@ def get_my_fee_estimate_batch(items):
         asin_index_map.append((sku, asin, price, str(i)))
 
     # Execute fallback
-    for i in range(0, len(asin_requests), 20):
-        chunk = asin_requests[i:i+20]
-        chunk_map = asin_index_map[i:i+20]
+    for i in range(0, len(asin_requests), BATCH_SIZE):
+        chunk = asin_requests[i:i+BATCH_SIZE]
+        chunk_map = asin_index_map[i:i+BATCH_SIZE]
 
         resp = _call_batch_fee_api(chunk)
 
