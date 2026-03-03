@@ -5,7 +5,7 @@ import io
 import time
 from datetime import datetime, timedelta, timezone
 import requests
-from app.database import connect_database
+from app.database import connect_database, retry_deadlock
 from app.auth import spapi_request
 from app.utils import clean_str, safe_int, safe_dt, now_utc_plus_offset_naive
 from config import MARKETPLACE_ID
@@ -85,7 +85,7 @@ def fetch_fba_customer_returns(days=365):
 
 
 # ---------------------------------------------------------
-# UPSERT + AGGREGATE + UPDATE ORDERITEMS
+# UPSERT + AGGREGATE + UPDATE ORDERITEMS (DEADLOCK SAFE)
 # ---------------------------------------------------------
 
 def upsert_fba_customer_returns(rows):
@@ -120,102 +120,124 @@ def upsert_fba_customer_returns(rows):
             now_utc_plus_offset_naive(),
         ))
 
-    # Create temp table
-    cursor.execute("""
-        IF OBJECT_ID('tempdb..#TempReturns') IS NOT NULL DROP TABLE #TempReturns;
-        CREATE TABLE #TempReturns (
-            return_date DATETIME,
-            order_id NVARCHAR(50),
-            sku NVARCHAR(200),
-            asin NVARCHAR(20),
-            fnsku NVARCHAR(50),
-            product_name NVARCHAR(1000),
-            quantity INT,
-            fulfillment_center_id NVARCHAR(50),
-            detailed_disposition NVARCHAR(200),
-            reason NVARCHAR(500),
-            license_plate_number NVARCHAR(200),
-            customer_comments NVARCHAR(MAX),
-            created_at DATETIME,
-            updated_at DATETIME
-        );
-    """)
-
-    cursor.executemany("""
-        INSERT INTO #TempReturns VALUES (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-        );
-    """, staging)
-
-    # MERGE UPSERT
-    cursor.execute("""
-        MERGE INTO spapi_app_user.FBACustomerReturns AS target
-        USING #TempReturns AS src
-        ON target.order_id = src.order_id
-        AND target.sku = src.sku
-        AND target.asin = src.asin
-        AND target.fnsku = src.fnsku
-        AND target.return_date = src.return_date
-        AND target.license_plate_number = src.license_plate_number
-
-        WHEN MATCHED THEN
-            UPDATE SET
-                target.product_name = src.product_name,
-                target.quantity = src.quantity,
-                target.fulfillment_center_id = src.fulfillment_center_id,
-                target.detailed_disposition = src.detailed_disposition,
-                target.reason = src.reason,
-                target.customer_comments = src.customer_comments,
-                target.updated_at = src.updated_at
-
-        WHEN NOT MATCHED BY TARGET THEN
-            INSERT (
-                return_date, order_id, sku, asin, fnsku, license_plate_number,
-                product_name, quantity, fulfillment_center_id, detailed_disposition,
-                reason, customer_comments, created_at, updated_at
-            )
-            VALUES (
-                src.return_date, src.order_id, src.sku, src.asin, src.fnsku, src.license_plate_number,
-                src.product_name, src.quantity, src.fulfillment_center_id, src.detailed_disposition,
-                src.reason, src.customer_comments, src.created_at, src.updated_at
+    # ---------------------------------------------------------
+    # Create temp table (deadlock-safe)
+    # ---------------------------------------------------------
+    retry_deadlock(
+        lambda: cursor.execute("""
+            IF OBJECT_ID('tempdb..#TempReturns') IS NOT NULL DROP TABLE #TempReturns;
+            CREATE TABLE #TempReturns (
+                return_date DATETIME,
+                order_id NVARCHAR(50),
+                sku NVARCHAR(200),
+                asin NVARCHAR(20),
+                fnsku NVARCHAR(50),
+                product_name NVARCHAR(1000),
+                quantity INT,
+                fulfillment_center_id NVARCHAR(50),
+                detailed_disposition NVARCHAR(200),
+                reason NVARCHAR(500),
+                license_plate_number NVARCHAR(200),
+                customer_comments NVARCHAR(MAX),
+                created_at DATETIME,
+                updated_at DATETIME
             );
-    """)
+        """),
+        label="CREATE TEMP TABLE FBACustomerReturns"
+    )
 
     # ---------------------------------------------------------
-    # AGGREGATE RETURNS → ONE ROW PER ORDERITEMS
+    # Insert into temp table (deadlock-safe)
     # ---------------------------------------------------------
-    cursor.execute("""
-        IF OBJECT_ID('tempdb..#AggReturns') IS NOT NULL DROP TABLE #AggReturns;
-
-        SELECT
-            order_id,
-            sku,
-            SUM(quantity) AS ReturnQty,
-            MAX(return_date) AS ReturnDate,
-            MAX(detailed_disposition) AS ReturnDisposition,
-            MAX(reason) AS ReturnReason,
-            MAX(license_plate_number) AS LicensePlateNumber
-        INTO #AggReturns
-        FROM spapi_app_user.FBACustomerReturns
-        GROUP BY order_id, sku;
-    """)
+    retry_deadlock(
+        lambda: cursor.executemany("""
+            INSERT INTO #TempReturns VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            );
+        """, staging),
+        label="INSERT TempReturns"
+    )
 
     # ---------------------------------------------------------
-    # UPDATE ORDERITEMS WITH CONSOLIDATED RETURN INFO
+    # MERGE UPSERT (deadlock-safe)
     # ---------------------------------------------------------
-    cursor.execute("""
-        UPDATE O
-        SET 
-            O.ReturnQty          = A.ReturnQty,
-            O.ReturnDate         = A.ReturnDate,
-            O.ReturnDisposition  = A.ReturnDisposition,
-            O.ReturnReason       = A.ReturnReason,
-            O.LicensePlateNumber = A.LicensePlateNumber
-        FROM OrderItems O
-        JOIN #AggReturns A
-          ON O.AmazonOrderId = A.order_id
-         AND O.SKU           = A.sku;
-    """)
+    retry_deadlock(
+        lambda: cursor.execute("""
+            MERGE INTO spapi_app_user.FBACustomerReturns AS target
+            USING #TempReturns AS src
+            ON target.order_id = src.order_id
+            AND target.sku = src.sku
+            AND target.asin = src.asin
+            AND target.fnsku = src.fnsku
+            AND target.return_date = src.return_date
+            AND target.license_plate_number = src.license_plate_number
+
+            WHEN MATCHED THEN
+                UPDATE SET
+                    target.product_name = src.product_name,
+                    target.quantity = src.quantity,
+                    target.fulfillment_center_id = src.fulfillment_center_id,
+                    target.detailed_disposition = src.detailed_disposition,
+                    target.reason = src.reason,
+                    target.customer_comments = src.customer_comments,
+                    target.updated_at = src.updated_at
+
+            WHEN NOT MATCHED BY TARGET THEN
+                INSERT (
+                    return_date, order_id, sku, asin, fnsku, license_plate_number,
+                    product_name, quantity, fulfillment_center_id, detailed_disposition,
+                    reason, customer_comments, created_at, updated_at
+                )
+                VALUES (
+                    src.return_date, src.order_id, src.sku, src.asin, src.fnsku, src.license_plate_number,
+                    src.product_name, src.quantity, src.fulfillment_center_id, src.detailed_disposition,
+                    src.reason, src.customer_comments, src.created_at, src.updated_at
+                );
+        """),
+        label="MERGE FBACustomerReturns"
+    )
+
+    # ---------------------------------------------------------
+    # Aggregate returns (deadlock-safe)
+    # ---------------------------------------------------------
+    retry_deadlock(
+        lambda: cursor.execute("""
+            IF OBJECT_ID('tempdb..#AggReturns') IS NOT NULL DROP TABLE #AggReturns;
+
+            SELECT
+                order_id,
+                sku,
+                SUM(quantity) AS ReturnQty,
+                MAX(return_date) AS ReturnDate,
+                MAX(detailed_disposition) AS ReturnDisposition,
+                MAX(reason) AS ReturnReason,
+                MAX(license_plate_number) AS LicensePlateNumber
+            INTO #AggReturns
+            FROM spapi_app_user.FBACustomerReturns
+            GROUP BY order_id, sku;
+        """),
+        label="AGG FBACustomerReturns"
+    )
+
+    # ---------------------------------------------------------
+    # Update OrderItems (deadlock-safe)
+    # ---------------------------------------------------------
+    retry_deadlock(
+        lambda: cursor.execute("""
+            UPDATE O
+            SET 
+                O.ReturnQty          = A.ReturnQty,
+                O.ReturnDate         = A.ReturnDate,
+                O.ReturnDisposition  = A.ReturnDisposition,
+                O.ReturnReason       = A.ReturnReason,
+                O.LicensePlateNumber = A.LicensePlateNumber
+            FROM OrderItems O
+            JOIN #AggReturns A
+              ON O.AmazonOrderId = A.order_id
+             AND O.SKU           = A.sku;
+        """),
+        label="UPDATE OrderItems Returns"
+    )
 
     conn.commit()
     cursor.close()

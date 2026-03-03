@@ -101,28 +101,36 @@ def clean_str(x):
     x = str(x).strip()
     return x if x else None
 
-
 def safe_int(x):
-    """Convert to int, return 0 on failure or placeholder values."""
+    """
+    Convert to int, return None on failure or placeholder values.
+    Null‑preserving: only real numeric values become ints.
+    """
+    if x is None:
+        return None
     try:
         x = str(x).strip()
         if x in ("", " ", "-", "--", "N/A", "NA", "None", "null"):
-            return 0
+            return None
         return int(float(x))
     except:
-        return 0
+        return None
 
 
 def safe_float(x):
-    """Convert to float, return 0.0 on failure or placeholder values."""
+    """
+    Convert to float, return None on failure or placeholder values.
+    Null‑preserving: only real numeric values become floats.
+    """
+    if x is None:
+        return None
     try:
         x = str(x).strip()
         if x in ("", " ", "-", "--", "N/A", "NA", "None", "null"):
-            return 0.0
+            return None
         return float(x)
     except:
-        return 0.0
-
+        return None
 
 def safe_dt(x):
     """

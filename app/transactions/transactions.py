@@ -233,7 +233,7 @@ def get_transactions(params, db_cursor):
                 "ShippingChargeback": shipping_chargeback,
 
                 "RefFee": ref_fee,
-                "Total": item_total,   # ⭐ ITEM-LEVEL TOTAL
+                "Total": item_total,   # ITEM-LEVEL TOTAL
             }
 
             rows.append(row)

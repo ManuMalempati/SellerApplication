@@ -75,6 +75,9 @@ def get_my_fee_estimate_batch(items):
     results = {}
     failed_for_asin = []
 
+    # store raw responses for final debug
+    asin_raw_errors = {}
+
     BATCH_SIZE = 19
     total_batches = (len(sku_requests) + BATCH_SIZE - 1) // BATCH_SIZE
 
@@ -130,18 +133,10 @@ def get_my_fee_estimate_batch(items):
             ref, fba = _extract_fee_details(entry)
 
             if ref == 0 and fba == 0:
-                results[key] = {
-                    "referral": 0.0,
-                    "fba": 0.0,
-                    "debug": {"note": "real_zero_fees"}
-                }
+                results[key] = {"referral": 0.0, "fba": 0.0, "debug": {"note": "real_zero_fees"}}
                 continue
 
-            results[key] = {
-                "referral": ref,
-                "fba": fba,
-                "debug": {}
-            }
+            results[key] = {"referral": ref, "fba": fba, "debug": {}}
 
     # ============================
     # ASIN fallback
@@ -154,11 +149,7 @@ def get_my_fee_estimate_batch(items):
     for i, (sku, asin, price) in enumerate(failed_for_asin, start=1):
 
         if not asin:
-            results[(sku, asin, price)] = {
-                "referral": None,
-                "fba": None,
-                "debug": {"fallback": "no asin"}
-            }
+            results[(sku, asin, price)] = {"referral": None, "fba": None, "debug": {"fallback": "no asin"}}
             debug_fail_asin.append((sku, asin, price))
             continue
 
@@ -201,12 +192,9 @@ def get_my_fee_estimate_batch(items):
         if not isinstance(resp, list):
             for (s, a, p, _) in chunk_map:
                 key = (s, a, p)
-                results[key] = {
-                    "referral": None,
-                    "fba": None,
-                    "debug": {"fallback": "asin_resp_not_list"}
-                }
+                results[key] = {"referral": None, "fba": None, "debug": {"fallback": "asin_resp_not_list"}}
                 debug_fail_asin.append(key)
+                asin_raw_errors[key] = {"request": chunk_map, "response": resp}
             continue
 
         for entry in resp:
@@ -226,40 +214,44 @@ def get_my_fee_estimate_batch(items):
             key = (sku, asin, price)
 
             if not entry.get("FeesEstimate"):
-                results[key] = {
-                    "referral": None,
-                    "fba": None,
-                    "debug": {"fallback": "asin missing"}
-                }
+                results[key] = {"referral": None, "fba": None, "debug": {"fallback": "asin missing"}}
                 debug_fail_asin.append(key)
+                asin_raw_errors[key] = {"request": chunk_map, "response": entry}
                 continue
 
             if status != "Success":
-                results[key] = {
-                    "referral": None,
-                    "fba": None,
-                    "debug": {"fallback": "asin failed", "status": status}
-                }
+                results[key] = {"referral": None, "fba": None, "debug": {"fallback": "asin failed", "status": status}}
                 debug_fail_asin.append(key)
+                asin_raw_errors[key] = {"request": chunk_map, "response": entry}
                 continue
 
             ref, fba = _extract_fee_details(entry)
 
             if ref == 0 and fba == 0:
-                results[key] = {
-                    "referral": 0.0,
-                    "fba": 0.0,
-                    "debug": {"fallback": "asin_zero_fees"}
-                }
+                results[key] = {"referral": 0.0, "fba": 0.0, "debug": {"fallback": "asin_zero_fees"}}
                 continue
 
-            results[key] = {
-                "referral": ref,
-                "fba": fba,
-                "debug": {"fallback": "asin"}
-            }
+            results[key] = {"referral": ref, "fba": fba, "debug": {"fallback": "asin"}}
+
+    # ============================
+    # FINAL FAILURE DEBUG PRINT
+    # ============================
 
     print(f"[FEES][SUMMARY] SKU failures needing ASIN fallback: {len(failed_for_asin)}")
     print(f"[FEES][SUMMARY] ASIN final failures (still missing): {len(debug_fail_asin)}")
+
+    if debug_fail_asin:
+        print("\n[FEES][DEBUG] FINAL ASIN FAILURES (with request + raw response):")
+        for key in debug_fail_asin:
+            sku, asin, price = key
+            print(f"\n--- FAILURE ---")
+            print(f"SKU={sku}, ASIN={asin}, PRICE={price}")
+
+            err = asin_raw_errors.get(key)
+            if err:
+                print("REQUEST PAYLOAD:")
+                print(err["request"])
+                print("RAW AMAZON RESPONSE:")
+                print(err["response"])
 
     return results

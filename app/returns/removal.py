@@ -6,7 +6,7 @@ import io
 import time
 from datetime import datetime, timedelta, timezone
 import requests
-from app.database import connect_database
+from app.database import connect_database, retry_deadlock
 from app.auth import spapi_request
 from app.utils import clean_str, safe_int, safe_float, safe_dt, now_utc_plus_offset_naive
 from config import MARKETPLACE_ID
@@ -89,7 +89,7 @@ def fetch_fba_removal_orders(days=365):
 
 
 # ---------------------------------------------------------
-# DELETE-AND-REPLACE UPSERT
+# DELETE-AND-REPLACE UPSERT (DEADLOCK SAFE)
 # ---------------------------------------------------------
 
 def upsert_fba_removal_orders(rows):
@@ -110,10 +110,13 @@ def upsert_fba_removal_orders(rows):
     print(f"[FBA-REMOVAL] Deleting existing rows for {len(order_ids)} order-ids")
 
     if order_ids:
-        cursor.execute(
-            "DELETE FROM spapi_app_user.FBARemovalOrders WHERE order_id IN (%s)" %
-            ",".join("?" for _ in order_ids),
-            order_ids
+        retry_deadlock(
+            lambda: cursor.execute(
+                "DELETE FROM spapi_app_user.FBARemovalOrders WHERE order_id IN (%s)" %
+                ",".join("?" for _ in order_ids),
+                order_ids
+            ),
+            label="DELETE FBARemovalOrders"
         )
         conn.commit()
 
@@ -144,29 +147,32 @@ def upsert_fba_removal_orders(rows):
 
     cursor.fast_executemany = True
 
-    cursor.executemany("""
-        INSERT INTO spapi_app_user.FBARemovalOrders (
-            order_id,
-            sku,
-            disposition,
-            request_date,
-            order_type,
-            service_speed,
-            order_status,
-            last_updated_date,
-            fnsku,
-            requested_quantity,
-            cancelled_quantity,
-            disposed_quantity,
-            shipped_quantity,
-            in_process_quantity,
-            removal_fee,
-            currency,
-            created_at,
-            updated_at
-        )
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    """, staging)
+    retry_deadlock(
+        lambda: cursor.executemany("""
+            INSERT INTO spapi_app_user.FBARemovalOrders (
+                order_id,
+                sku,
+                disposition,
+                request_date,
+                order_type,
+                service_speed,
+                order_status,
+                last_updated_date,
+                fnsku,
+                requested_quantity,
+                cancelled_quantity,
+                disposed_quantity,
+                shipped_quantity,
+                in_process_quantity,
+                removal_fee,
+                currency,
+                created_at,
+                updated_at
+            )
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, staging),
+        label="INSERT FBARemovalOrders"
+    )
 
     conn.commit()
     cursor.close()
@@ -193,5 +199,4 @@ def run_removal_orders_import(days=365):
     print("==============================================")
 
 if __name__ == "__main__":
-
     run_removal_orders_import(days=365)

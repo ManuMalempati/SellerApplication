@@ -1,4 +1,11 @@
-from app.utils import now_utc_plus_offset_naive
+from app.utils import (
+    clean_str as safe_str,
+    safe_int,
+    safe_float,
+    now_utc_plus_offset_naive
+)
+from app.database import retry_deadlock
+
 
 def bulk_upsert_fba_data(cursor, fba_rows):
     total = len(fba_rows)
@@ -8,22 +15,6 @@ def bulk_upsert_fba_data(cursor, fba_rows):
         cursor.fast_executemany = True
     except:
         pass
-
-    # ---------- TYPE-SAFE CONVERTERS ----------
-    def safe_str(x):
-        return str(x) if x not in (None, "") else None
-
-    def safe_float(x):
-        try:
-            return float(x) if x not in (None, "") else None
-        except:
-            return None
-
-    def safe_int(x):
-        try:
-            return int(x) if x not in (None, "") else 0
-        except:
-            return 0
 
     # ---------- BUILD STAGING ROWS ----------
     staging_rows = []
@@ -58,43 +49,50 @@ def bulk_upsert_fba_data(cursor, fba_rows):
     if not staging_rows:
         return 0
 
-    # ---------- CREATE TEMP TABLE ----------
-    cursor.execute("""
-        SET NOCOUNT ON;
-        IF OBJECT_ID('tempdb..#TempFBA') IS NOT NULL DROP TABLE #TempFBA;
-        CREATE TABLE #TempFBA (
-            SKU NVARCHAR(200),
-            ASIN NVARCHAR(50),
-            FNSKU NVARCHAR(100),
-            SSKU NVARCHAR(100),
-            FBA_Stock INT,
-            Sellable_Qty INT,
-            Unsellable_Qty INT,
-            Title NVARCHAR(1000),
-            COG FLOAT,
-            Brand NVARCHAR(200),
-            Category NVARCHAR(200),
-            TotalOrderItems_L30 INT,
-            OrderedProductSales_L30 FLOAT,
-            UnitsRefunded_L30 INT,
-            BuyBoxPercentage_L30 FLOAT,
-            Sale_Price FLOAT,
-            Charges FLOAT,
-            Est_VAT FLOAT,
-            Est_Net FLOAT,
-            Profit FLOAT
-        );
-    """)
+    # ---------- CREATE TEMP TABLE (DEADLOCK SAFE) ----------
+    retry_deadlock(
+        lambda: cursor.execute("""
+            SET NOCOUNT ON;
+            IF OBJECT_ID('tempdb..#TempFBA') IS NOT NULL DROP TABLE #TempFBA;
+            CREATE TABLE #TempFBA (
+                SKU NVARCHAR(200),
+                ASIN NVARCHAR(50),
+                FNSKU NVARCHAR(100),
+                SSKU NVARCHAR(100),
+                FBA_Stock INT,
+                Sellable_Qty INT,
+                Unsellable_Qty INT,
+                Title NVARCHAR(1000),
+                COG FLOAT,
+                Brand NVARCHAR(200),
+                Category NVARCHAR(200),
+                TotalOrderItems_L30 INT,
+                OrderedProductSales_L30 FLOAT,
+                UnitsRefunded_L30 INT,
+                BuyBoxPercentage_L30 FLOAT,
+                Sale_Price FLOAT,
+                Charges FLOAT,
+                Est_VAT FLOAT,
+                Est_Net FLOAT,
+                Profit FLOAT
+            );
+        """),
+        label="CREATE TempFBA"
+    )
 
-    cursor.executemany("""
-        INSERT INTO #TempFBA VALUES (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-        );
-    """, staging_rows)
+    # ---------- BULK INSERT INTO TEMP TABLE (DEADLOCK SAFE) ----------
+    retry_deadlock(
+        lambda: cursor.executemany("""
+            INSERT INTO #TempFBA VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            );
+        """, staging_rows),
+        label="INSERT TempFBA"
+    )
 
     print(f"[bulk_upsert_fba_data] Bulk inserted {len(staging_rows)} rows into #TempFBA")
 
-    # ---------- MERGE INTO FINAL TABLE ----------
+    # ---------- MERGE INTO FINAL TABLE (DEADLOCK SAFE) ----------
     merge_sql = """
         SET NOCOUNT ON;
 
@@ -147,8 +145,13 @@ def bulk_upsert_fba_data(cursor, fba_rows):
         DROP TABLE #TempFBA;
     """
 
-    cursor.execute(merge_sql, (now_utc_plus_offset_naive(), now_utc_plus_offset_naive()))
-    actions = cursor.fetchall()
+    actions = retry_deadlock(
+        lambda: cursor.execute(
+            merge_sql,
+            (now_utc_plus_offset_naive(), now_utc_plus_offset_naive())
+        ),
+        label="MERGE FBAProductSummary"
+    ).fetchall()
 
     updated = sum(1 for a in actions if a[0] == "UPDATE")
     inserted = sum(1 for a in actions if a[0] == "INSERT")

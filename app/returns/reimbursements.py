@@ -10,6 +10,7 @@ from app.database import connect_database
 from app.auth import spapi_request
 from app.utils import clean_str, safe_int, safe_float, safe_dt, now_utc_plus_offset_naive
 from config import MARKETPLACE_ID
+from app.database import retry_deadlock
 
 # ---------------------------------------------------------
 # Fetch FBA Reimbursements Report
@@ -100,7 +101,6 @@ def upsert_fba_reimbursements(rows):
     conn = connect_database()
     cursor = conn.cursor()
 
-    # 1. Delete existing rows for these reimbursement_ids
     reimb_ids = sorted({
         clean_str(r.get("reimbursement-id"))
         for r in rows
@@ -110,16 +110,18 @@ def upsert_fba_reimbursements(rows):
     print(f"[FBA-REIMB] Deleting existing rows for {len(reimb_ids)} reimbursement-ids")
 
     if reimb_ids:
-        cursor.execute(
-            "DELETE FROM spapi_app_user.FBAReimbursements WHERE reimbursement_id IN (%s)" %
-            ",".join("?" for _ in reimb_ids),
-            reimb_ids
+        retry_deadlock(
+            lambda: cursor.execute(
+                "DELETE FROM spapi_app_user.FBAReimbursements WHERE reimbursement_id IN (%s)" %
+                ",".join("?" for _ in reimb_ids),
+                reimb_ids
+            ),
+            label="DELETE FBAReimbursements"
         )
         conn.commit()
 
     print("[FBA-REIMB] Inserting fresh rows...")
 
-    # 2. Insert raw rows
     staging = []
     for r in rows:
         staging.append((
@@ -147,60 +149,69 @@ def upsert_fba_reimbursements(rows):
 
     cursor.fast_executemany = True
 
-    cursor.executemany("""
-        INSERT INTO spapi_app_user.FBAReimbursements (
-            reimbursement_id,
-            approval_date,
-            case_id,
-            amazon_order_id,
-            reason,
-            sku,
-            fnsku,
-            asin,
-            product_name,
-            condition,
-            currency_unit,
-            amount_per_unit,
-            amount_total,
-            quantity_reimbursed_cash,
-            quantity_reimbursed_inventory,
-            quantity_reimbursed_total,
-            original_reimbursement_id,
-            original_reimbursement_type,
-            created_at,
-            updated_at
-        )
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    """, staging)
+    retry_deadlock(
+        lambda: cursor.executemany("""
+            INSERT INTO spapi_app_user.FBAReimbursements (
+                reimbursement_id,
+                approval_date,
+                case_id,
+                amazon_order_id,
+                reason,
+                sku,
+                fnsku,
+                asin,
+                product_name,
+                condition,
+                currency_unit,
+                amount_per_unit,
+                amount_total,
+                quantity_reimbursed_cash,
+                quantity_reimbursed_inventory,
+                quantity_reimbursed_total,
+                original_reimbursement_id,
+                original_reimbursement_type,
+                created_at,
+                updated_at
+            )
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, staging),
+        label="INSERT FBAReimbursements"
+    )
 
-    # 3. Aggregate reimbursements at AmazonOrderId + SKU level
-    cursor.execute("""
-        IF OBJECT_ID('tempdb..#AggReimb') IS NOT NULL DROP TABLE #AggReimb;
+    # Aggregate reimbursements
+    retry_deadlock(
+        lambda: cursor.execute("""
+            IF OBJECT_ID('tempdb..#AggReimb') IS NOT NULL DROP TABLE #AggReimb;
 
-        SELECT
-            amazon_order_id,
-            sku,
-            SUM(amount_total) AS total_amount,
-            SUM(quantity_reimbursed_cash) AS qty_cash,
-            SUM(quantity_reimbursed_inventory) AS qty_inv,
-            SUM(quantity_reimbursed_total) AS qty_total,
-            MAX(approval_date) AS approval_date
-        INTO #AggReimb
-        FROM spapi_app_user.FBAReimbursements
-        GROUP BY amazon_order_id, sku;
-    """)
+            SELECT
+                amazon_order_id,
+                sku,
+                SUM(amount_total) AS total_amount,
+                SUM(quantity_reimbursed_cash) AS qty_cash,
+                SUM(quantity_reimbursed_inventory) AS qty_inv,
+                SUM(quantity_reimbursed_total) AS qty_total,
+                MAX(approval_date) AS approval_date
+            INTO #AggReimb
+            FROM spapi_app_user.FBAReimbursements
+            GROUP BY amazon_order_id, sku;
+        """),
+        label="AGG FBAReimbursements"
+    )
 
-    # 4. Push aggregated reimbursement into OrderItems
-    cursor.execute("""
-        UPDATE O
-        SET 
-            O.Reimbursed = A.total_amount,
-            O.ReimbDate  = A.approval_date
-        FROM OrderItems O
-        JOIN #AggReimb A
-          ON O.AmazonOrderId = A.amazon_order_id
-         AND O.SKU           = A.sku;
-    """)
+    # Update OrderItems
+    retry_deadlock(
+        lambda: cursor.execute("""
+            UPDATE O
+            SET 
+                O.Reimbursed = A.total_amount,
+                O.ReimbDate  = A.approval_date
+            FROM OrderItems O
+            JOIN #AggReimb A
+              ON O.AmazonOrderId = A.amazon_order_id
+             AND O.SKU           = A.sku;
+        """),
+        label="UPDATE OrderItems reimbursements"
+    )
 
     conn.commit()
     cursor.close()

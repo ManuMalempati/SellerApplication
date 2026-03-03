@@ -5,7 +5,7 @@ import io
 import time
 from datetime import datetime, timedelta, timezone
 import requests
-from app.database import connect_database
+from app.database import connect_database, retry_deadlock
 from app.auth import spapi_request
 from app.utils import clean_str, safe_int, safe_dt, now_utc_plus_offset_naive
 from config import MARKETPLACE_ID
@@ -74,7 +74,7 @@ def fetch_fba_removal_shipments(days):
     print("[FBA-REM-SHIP] Downloading document...")
     raw = requests.get(url).content
 
-    if (compression == "GZIP"):
+    if compression == "GZIP":
         decoded = gzip.decompress(raw).decode("utf-8", errors="replace")
     else:
         decoded = raw.decode("utf-8", errors="replace")
@@ -87,7 +87,7 @@ def fetch_fba_removal_shipments(days):
 
 
 # ---------------------------------------------------------
-# DELETE-AND-REPLACE UPSERT
+# DELETE-AND-REPLACE UPSERT (DEADLOCK SAFE)
 # ---------------------------------------------------------
 
 def upsert_fba_removal_shipments(rows):
@@ -108,10 +108,13 @@ def upsert_fba_removal_shipments(rows):
     print(f"[FBA-REM-SHIP] Deleting existing rows for {len(order_ids)} order-ids")
 
     if order_ids:
-        cursor.execute(
-            "DELETE FROM spapi_app_user.FBARemovalShipments WHERE order_id IN (%s)" %
-            ",".join("?" for _ in order_ids),
-            order_ids
+        retry_deadlock(
+            lambda: cursor.execute(
+                "DELETE FROM spapi_app_user.FBARemovalShipments WHERE order_id IN (%s)" %
+                ",".join("?" for _ in order_ids),
+                order_ids
+            ),
+            label="DELETE FBARemovalShipments"
         )
         conn.commit()
 
@@ -136,23 +139,26 @@ def upsert_fba_removal_shipments(rows):
 
     cursor.fast_executemany = True
 
-    cursor.executemany("""
-        INSERT INTO spapi_app_user.FBARemovalShipments (
-            order_id,
-            sku,
-            disposition,
-            tracking_number,
-            request_date,
-            shipment_date,
-            fnsku,
-            shipped_quantity,
-            carrier,
-            removal_order_type,
-            created_at,
-            updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, staging)
+    retry_deadlock(
+        lambda: cursor.executemany("""
+            INSERT INTO spapi_app_user.FBARemovalShipments (
+                order_id,
+                sku,
+                disposition,
+                tracking_number,
+                request_date,
+                shipment_date,
+                fnsku,
+                shipped_quantity,
+                carrier,
+                removal_order_type,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, staging),
+        label="INSERT FBARemovalShipments"
+    )
 
     conn.commit()
     cursor.close()

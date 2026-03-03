@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+# RESPONSIBLE FOR FBAReimbursements Table, FBARemovalOrders Table, FBARemovalShipments Table and FBACustomerReturns Table
 import sys
 import config
 
