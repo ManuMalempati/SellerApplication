@@ -6,21 +6,8 @@ import config
 from app.auth import spapi_request
 from app.rate_limiter import TokenBucketRateLimiter
 
-# ============================================================
-# Debug toggle
-# ============================================================
-
-DEBUG = False   # Set True for verbose logs
-
-# ============================================================
-# Rate limiter
-# ============================================================
-
+DEBUG = False
 fees_rate_limiter = TokenBucketRateLimiter(rate=0.45, burst=1)
-
-# ============================================================
-# Helpers
-# ============================================================
 
 def _safe_float(v):
     try:
@@ -28,55 +15,31 @@ def _safe_float(v):
     except Exception:
         return 0.0
 
-
 def _extract_fee_details(entry):
     ref = 0.0
     fba = 0.0
-
-    fee_list = (
-        entry
-        .get("FeesEstimate", {})
-        .get("FeeDetailList", [])
-    )
-
+    fee_list = entry.get("FeesEstimate", {}).get("FeeDetailList", [])
     for d in fee_list:
         fee_type = (d.get("FeeType") or "").lower()
-
         amt = _safe_float(
             (d.get("FinalFee") or {}).get("Amount")
             or (d.get("FeeAmount") or {}).get("Amount")
         )
-
         if "referral" in fee_type:
             ref += amt
         elif "fba" in fee_type or "fulfillment" in fee_type:
             fba += amt
-
     return ref, fba
-
-
-# ============================================================
-# Batch SP-API call
-# ============================================================
 
 def _call_batch_fee_api(requests):
     fees_rate_limiter.acquire()
-
     resp = retry_call(lambda: spapi_request(
         method="POST",
         path="/products/fees/v0/feesEstimate",
         body=requests
     ))
-
-    # jitter to avoid synchronized throttling
     time.sleep(0.2 + random.random() * 0.3)
-
     return resp
-
-
-# ============================================================
-# Public API — Batch Version with SKU → ASIN fallback
-# ============================================================
 
 def get_my_fee_estimate_batch(items):
 
@@ -114,13 +77,24 @@ def get_my_fee_estimate_batch(items):
     results = {}
     failed_for_asin = []
 
-    # ============================================================
-    # 2. Execute SKU batch
-    # ============================================================
-
     BATCH_SIZE = 19
+    total_batches = (len(sku_requests) + BATCH_SIZE - 1) // BATCH_SIZE
+
+    # ============================================================
+    # SKU batches
+    # ============================================================
 
     for i in range(0, len(sku_requests), BATCH_SIZE):
+        batch_index = i // BATCH_SIZE
+        progress = (batch_index / total_batches) * 100
+
+        if 25 <= progress < 25.5:
+            print("[FEES][PROGRESS] 25% of SKU batches processed")
+        elif 50 <= progress < 50.5:
+            print("[FEES][PROGRESS] 50% of SKU batches processed")
+        elif 75 <= progress < 75.5:
+            print("[FEES][PROGRESS] 75% of SKU batches processed")
+
         chunk = sku_requests[i:i+BATCH_SIZE]
         chunk_map = sku_index_map[i:i+BATCH_SIZE]
 
@@ -152,7 +126,7 @@ def get_my_fee_estimate_batch(items):
 
             key = (sku, asin, price)
 
-            if not entry or not entry.get("FeesEstimate"):
+            if not entry.get("FeesEstimate"):
                 print(f"[FEES][WARN][SKU] Missing FeesEstimate for {key}. RAW={entry}")
                 failed_for_asin.append((sku, asin, price))
                 continue
@@ -180,7 +154,7 @@ def get_my_fee_estimate_batch(items):
             }
 
     # ============================================================
-    # 3. ASIN fallback batch
+    # ASIN fallback
     # ============================================================
 
     asin_requests = []
@@ -217,7 +191,19 @@ def get_my_fee_estimate_batch(items):
 
         asin_index_map.append((sku, asin, price, str(i)))
 
+    total_asin_batches = (len(asin_requests) + BATCH_SIZE - 1) // BATCH_SIZE
+
     for i in range(0, len(asin_requests), BATCH_SIZE):
+        asin_batch_index = i // BATCH_SIZE
+        asin_progress = (asin_batch_index / total_asin_batches) * 100
+
+        if 25 <= asin_progress < 25.5:
+            print("[FEES][PROGRESS] 25% of ASIN fallback batches processed")
+        elif 50 <= asin_progress < 50.5:
+            print("[FEES][PROGRESS] 50% of ASIN fallback batches processed")
+        elif 75 <= asin_progress < 75.5:
+            print("[FEES][PROGRESS] 75% of ASIN fallback batches processed")
+
         chunk = asin_requests[i:i+BATCH_SIZE]
         chunk_map = asin_index_map[i:i+BATCH_SIZE]
 
@@ -255,7 +241,7 @@ def get_my_fee_estimate_batch(items):
 
             key = (sku, asin, price)
 
-            if not entry or not entry.get("FeesEstimate"):
+            if not entry.get("FeesEstimate"):
                 print(f"[FEES][WARN][ASIN] Missing FeesEstimate for {key}. RAW={entry}")
                 results[key] = {
                     "referral": None,
@@ -291,10 +277,6 @@ def get_my_fee_estimate_batch(items):
                 "fba": fba,
                 "debug": {"fallback": "asin", "raw": entry}
             }
-
-    # ============================================================
-    # Summary
-    # ============================================================
 
     print(f"[FEES][SUMMARY] SKU failures needing ASIN fallback: {len(failed_for_asin)}")
     print(f"[FEES][SUMMARY] ASIN final failures (still missing): {len(debug_fail_asin)}")
