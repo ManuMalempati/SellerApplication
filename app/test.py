@@ -4,6 +4,8 @@ from .auth import spapi_request
 import config
 from .utils import convert_utc_to_utcz_string
 from urllib.parse import quote
+from config import MARKETPLACE_ID, BASE_CURRENCY_CODE
+import json
 
 router = APIRouter()
 
@@ -21,7 +23,7 @@ async def orders(days: int = 0, hours: int = 10, minutes: int = 0):
 
 @router.get("/order-items")
 async def get_order():
-    orderId = "406-3986866-3793910"
+    orderId = "S02-3960449-6844843"
     return spapi_request("GET", f"/orders/v0/orders/{orderId}/orderItems")
 
 from fastapi import Query
@@ -37,7 +39,7 @@ async def test_fee_estimate(
     """
     Fetch the RAW SP‑API fee estimate response for a given SKU or ASIN.
     Usage:
-      /test-fee-estimate?sku=0B36404&price=878
+      /test-fee-estimate?sku=WDS100T3B0C&price=649
       /test-fee-estimate?asin=B07H4PR6HN&price=878.0
     """
 
@@ -92,3 +94,63 @@ async def test_fee_estimate(
             "status": "error",
             "message": str(e)
         }
+
+
+@router.get("/test_batch_fee_estimate")
+def test_batch_fees():
+    skus = [
+        "WDS100T3B0C",
+        "SDG4/128GB",
+        "SDCZ430-128G-G46",
+        "P-SDUX512U3100PRO-GE",
+        "SDSSDE81-1T00-G25",
+        "SDSSDE81-4T00-RR25",
+        "LSL500X001T-RNBNG",
+        "HDTB540EK3CA-1",
+        "0B47062",
+        "SDSSDE61-2T00-G25",
+        "SDSDUNC-256G-GN6IN",
+        "SDSQUA4-032G-GN6MN"
+    ]
+
+    TEST_PRICE = 100.00  # Amazon requires a price
+
+    # EXACT structure required by getMyFeesEstimates
+    requests_list = []
+
+    for i, sku in enumerate(skus, start=1):
+        requests_list.append({
+            "IdType": "SellerSKU",
+            "IdValue": sku,
+            "FeesEstimateRequest": {
+                "MarketplaceId": MARKETPLACE_ID,
+                "Identifier": str(i),
+                "IsAmazonFulfilled": True,
+                "PriceToEstimateFees": {
+                    "ListingPrice": {
+                        "Amount": TEST_PRICE,
+                        "CurrencyCode": BASE_CURRENCY_CODE
+                    }
+                }
+            }
+        })
+
+    body = requests_list  # IMPORTANT: root is an ARRAY, not an object
+
+    print("\n=== SENDING BATCH REQUEST BODY ===")
+    print(json.dumps(body, indent=2))
+
+    resp = spapi_request(
+        method="POST",
+        path="/products/fees/v0/feesEstimate",
+        body=body
+    )
+
+    print("\n=== RAW AMAZON RESPONSE ===")
+    print(json.dumps(resp, indent=2))
+
+    return resp
+
+
+if __name__ == "__main__":
+    test_batch_fees()

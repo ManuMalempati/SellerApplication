@@ -1,50 +1,20 @@
 #!/usr/bin/env python3
-import time
-from urllib.parse import quote
-
+from app.utils import retry_call
 import config
 from app.auth import spapi_request
 from app.rate_limiter import TokenBucketRateLimiter
-from tenacity import retry, retry_if_result, stop_after_attempt, wait_exponential
+
+# ============================================================
+# Debug toggle
+# ============================================================
+
+DEBUG = False   # Set True for verbose logs
 
 # ============================================================
 # Rate limiter (0.5 RPS, burst=1)
 # ============================================================
 
 fees_rate_limiter = TokenBucketRateLimiter(rate=0.5, burst=1)
-
-
-# ============================================================
-# Tenacity throttling retry
-# ============================================================
-
-def _should_retry(result):
-    """
-    Retry ONLY when Amazon returns throttling errors.
-    """
-    if not isinstance(result, dict):
-        return False
-
-    errors = result.get("errors")
-    if not errors:
-        return False
-
-    retryable = {"QuotaExceeded", "RequestThrottled"}
-    return any(e.get("code") in retryable for e in errors)
-
-
-@retry(
-    retry=retry_if_result(_should_retry),
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=5, min=5),
-)
-def retry_call(func, *args, **kwargs):
-    """
-    Execute a function with Tenacity retry logic applied.
-    Retries only when _should_retry(result) returns True.
-    """
-    return func(*args, **kwargs)
-
 
 # ============================================================
 # Helpers
@@ -57,19 +27,19 @@ def _safe_float(v):
         return 0.0
 
 
-def _extract_fee_details(fees_estimate_result):
+def _extract_fee_details(entry):
     """
-    Extract referral + FBA fees from the FeesEstimateResult object.
-    Returns (referral, fba, debug_dict).
+    Extract referral + FBA fees from a batch FeesEstimate entry.
+    Returns (referral, fba).
     """
     ref = 0.0
     fba = 0.0
-    debug = {}
 
-    fees_estimate = fees_estimate_result.get("FeesEstimate", {}) or {}
-    fee_list = fees_estimate.get("FeeDetailList", []) or []
-
-    debug["fee_list_raw"] = fee_list
+    fee_list = (
+        entry
+        .get("FeesEstimate", {})
+        .get("FeeDetailList", [])
+    )
 
     for d in fee_list:
         fee_type = (d.get("FeeType") or "").lower()
@@ -82,172 +52,272 @@ def _extract_fee_details(fees_estimate_result):
         if "referral" in fee_type:
             ref += amt
 
-        elif "fba" in fee_type or "fbafees" in fee_type:
+        elif "fba" in fee_type or "fulfillment" in fee_type:
             fba += amt
 
-            included = d.get("IncludedFeeDetailList", []) or []
-            for sub in included:
-                sub_amt = _safe_float(
-                    (sub.get("FinalFee") or {}).get("Amount")
-                    or (sub.get("FeeAmount") or {}).get("Amount")
-                )
-                fba += sub_amt
-
-    debug["referral"] = ref
-    debug["fba"] = fba
-
-    return ref, fba, debug
+    return ref, fba
 
 
 # ============================================================
-# Internal SP-API call (wrapped in Tenacity + rate limit)
+# Batch SP-API call (up to 20 items)
 # ============================================================
 
-def _call_single_fee_api(id_value, id_type, price):
-    """
-    Call the SP-API single-item fees endpoint for a given ID.
-    Wrapped in:
-      - TokenBucketRateLimiter (0.5 RPS)
-      - Tenacity retry_call for throttling errors
-    """
-    body = {
-        "FeesEstimateRequest": {
-            "MarketplaceId": config.MARKETPLACE_ID,
-            "IsAmazonFulfilled": True,
-            "Identifier": f"{id_value}-request",
-            "IdType": id_type,
-            "IdValue": id_value,
-            "PriceToEstimateFees": {
-                "ListingPrice": {
-                    "CurrencyCode": config.BASE_CURRENCY_CODE,
-                    "Amount": float(price),
-                }
-            },
-        }
-    }
-
-    if id_type == "SellerSKU":
-        path = f"/products/fees/v0/listings/{quote(id_value)}/feesEstimate"
-    else:
-        path = f"/products/fees/v0/items/{id_value}/feesEstimate"
-
-    # Global rate limit
+def _call_batch_fee_api(requests):
     fees_rate_limiter.acquire()
-
-    return retry_call(
-        lambda: spapi_request(
-            method="POST",
-            path=path,
-            body=body,
-        )
-    )
+    return retry_call(lambda: spapi_request(
+        method="POST",
+        path="/products/fees/v0/feesEstimate",
+        body=requests
+    ))
 
 
 # ============================================================
-# Public API
+# Public API — Batch Version with SKU → ASIN fallback
 # ============================================================
 
-def get_my_fee_estimate_single(sku, asin, price):
+def get_my_fee_estimate_batch(items):
     """
-    Final version:
-      - Skip invalid price (None, 0, '', '0')
-      - SKU → ASIN fallback
-      - Manual retry for:
-          * missing FeesEstimateResult
-          * Status != Success
-          * NULL fees (ref=0 and fba=0)
-      - Tenacity retry for throttling errors
-      - Cleaner logging (warn/error only)
-    """
-
-    # --------------------------------------------------------
-    # Skip fee estimation if price is invalid
-    # --------------------------------------------------------
-    if price in (None, 0, "", "0"):
-        print(f"[FEE] Skipping fee estimation for {sku} — invalid price={price}")
-        return {
-            sku or asin: {
-                "referral": 0.0,
-                "fba": 0.0,
-                "debug": {"skipped": True},
+    Returns:
+        {
+            (sku, asin, price): {
+                "referral": float | None,
+                "fba": float | None,
+                "debug": {...}
             }
         }
+    """
 
-    attempts = 3
-    delay = 2
+    # ============================================================
+    # 1. Build SKU batch
+    # ============================================================
 
-    # Try SKU first, then ASIN
-    id_attempts = [
-        ("SellerSKU", sku),
-        ("ASIN", asin),
-    ]
+    sku_requests = []
+    sku_index_map = []
 
-    seller_sku_failed = False
+    for i, item in enumerate(items, start=1):
+        sku = item["sku"]
+        asin = item["asin"]
+        price = item["price"]
 
-    for id_type, id_value in id_attempts:
-        if not id_value:
+        if price in (None, 0, "", "0"):
+            if DEBUG:
+                print(f"[FEES][SKIP] Invalid price for SKU={sku}, ASIN={asin}, price={price}")
             continue
 
-        for attempt in range(attempts):
-            resp = _call_single_fee_api(id_value, id_type, price)
-
-            fees_result = (
-                resp.get("payload", {})
-                .get("FeesEstimateResult", {})
-            )
-
-            # Missing result
-            if not fees_result:
-                if attempt == attempts - 1:
-                    print(f"[FEE][WARN] {id_type}={id_value} → Missing FeesEstimateResult after retries")
-                time.sleep(delay)
-                delay *= 2
-                continue
-
-            # Status not success
-            status = fees_result.get("Status")
-            if status and status != "Success":
-                if attempt == attempts - 1:
-                    print(f"[FEE][WARN] {id_type}={id_value} → Status={status} after retries")
-                time.sleep(delay)
-                delay *= 2
-                continue
-
-            # Extract fees
-            ref, fba, debug = _extract_fee_details(fees_result)
-
-            # NULL-fee retry
-            if ref == 0 and fba == 0:
-                if attempt == attempts - 1:
-                    print(f"[FEE][WARN] {id_type}={id_value} → NULL fees after retries")
-                time.sleep(delay)
-                delay *= 2
-                continue
-
-            # SUCCESS
-            if id_type == "ASIN" and seller_sku_failed:
-                print(f"[FEE][DEBUG] Fallback success → SKU={sku} ASIN={asin}")
-
-            return {
-                id_value: {
-                    "referral": ref,
-                    "fba": fba,
-                    "debug": debug,
+        sku_requests.append({
+            "IdType": "SellerSKU",
+            "IdValue": sku,
+            "FeesEstimateRequest": {
+                "MarketplaceId": config.MARKETPLACE_ID,
+                "Identifier": str(i),
+                "IsAmazonFulfilled": True,
+                "PriceToEstimateFees": {
+                    "ListingPrice": {
+                        "Amount": float(price),
+                        "CurrencyCode": config.BASE_CURRENCY_CODE
+                    }
                 }
             }
+        })
 
-        # Mark SellerSKU failure
-        if id_type == "SellerSKU":
-            seller_sku_failed = True
-            print(f"[FEE][ERROR] FAILED for SellerSKU={id_value}, trying ASIN...")
+        sku_index_map.append((sku, asin, price, str(i)))
 
-    # Final failure
-    print(f"[FEE][ERROR] FINAL FAIL for {sku or asin} → returning zeros")
+    results = {}
+    failed_for_asin = []
 
-    return {
-        sku or asin: {
-            "referral": 0.0,
-            "fba": 0.0,
-            "debug": {"error": "NULL after retries"},
-        }
-    }
+    # ============================================================
+    # 2. Execute SKU batch
+    # ============================================================
+
+    for i in range(0, len(sku_requests), 20):
+        chunk = sku_requests[i:i+20]
+        chunk_map = sku_index_map[i:i+20]
+
+        resp = _call_batch_fee_api(chunk)
+
+        if not isinstance(resp, list):
+            if DEBUG:
+                print(f"[FEES][ERROR][SKU] Response not list. Resp={resp}")
+            for (s, a, p, _) in chunk_map:
+                failed_for_asin.append((s, a, p))
+            continue
+
+        for entry in resp:
+            status = entry.get("Status")
+            ident = entry.get("FeesEstimateIdentifier", {}) or {}
+            ident_id = ident.get("SellerInputIdentifier")
+
+            sku = asin = price = None
+            for (s, a, p, ident_key) in chunk_map:
+                if ident_key == ident_id:
+                    sku, asin, price = s, a, p
+                    break
+
+            if sku is None:
+                if DEBUG:
+                    print(f"[FEES][WARN][SKU] Could not map entry. Entry={entry}")
+                continue
+
+            key = (sku, asin, price)
+
+            # Missing FeesEstimate → missing fees → return None
+            if not entry or not entry.get("FeesEstimate"):
+                if DEBUG:
+                    print(f"[FEES][WARN][SKU] Missing FeesEstimate for {key}, status={status}")
+                failed_for_asin.append((sku, asin, price))
+                continue
+
+            if status != "Success":
+                if DEBUG:
+                    print(f"[FEES][WARN][SKU] Non-success status for {key}: {status}")
+                failed_for_asin.append((sku, asin, price))
+                continue
+
+            ref, fba = _extract_fee_details(entry)
+
+            # Real zero fees → treat as valid
+            if ref == 0 and fba == 0:
+                if DEBUG:
+                    print(f"[FEES][INFO][SKU] Real zero fees for {key}")
+                results[key] = {
+                    "referral": 0.0,
+                    "fba": 0.0,
+                    "debug": {"raw": entry, "note": "real_zero_fees"}
+                }
+                continue
+
+            # Success
+            results[key] = {
+                "referral": ref,
+                "fba": fba,
+                "debug": {"raw": entry}
+            }
+
+    # ============================================================
+    # 3. ASIN fallback batch
+    # ============================================================
+
+    asin_requests = []
+    asin_index_map = []
+    debug_fail_asin = []
+
+    for i, (sku, asin, price) in enumerate(failed_for_asin, start=1):
+
+        if not asin:
+            if DEBUG:
+                print(f"[FEES][WARN][ASIN] No ASIN for fallback, SKU={sku}")
+            results[(sku, asin, price)] = {
+                "referral": None,
+                "fba": None,
+                "debug": {"fallback": "no asin"}
+            }
+            debug_fail_asin.append((sku, asin, price))
+            continue
+
+        asin_requests.append({
+            "IdType": "ASIN",
+            "IdValue": asin,
+            "FeesEstimateRequest": {
+                "MarketplaceId": config.MARKETPLACE_ID,
+                "Identifier": str(i),
+                "IsAmazonFulfilled": True,
+                "PriceToEstimateFees": {
+                    "ListingPrice": {
+                        "Amount": float(price),
+                        "CurrencyCode": config.BASE_CURRENCY_CODE
+                    }
+                }
+            }
+        })
+
+        asin_index_map.append((sku, asin, price, str(i)))
+
+    # Execute fallback
+    for i in range(0, len(asin_requests), 20):
+        chunk = asin_requests[i:i+20]
+        chunk_map = asin_index_map[i:i+20]
+
+        resp = _call_batch_fee_api(chunk)
+
+        if not isinstance(resp, list):
+            if DEBUG:
+                print(f"[FEES][ERROR][ASIN] Response not list. Resp={resp}")
+            for (s, a, p, _) in chunk_map:
+                key = (s, a, p)
+                results[key] = {
+                    "referral": None,
+                    "fba": None,
+                    "debug": {"fallback": "asin_resp_not_list"}
+                }
+                debug_fail_asin.append(key)
+            continue
+
+        for entry in resp:
+            status = entry.get("Status")
+            ident = entry.get("FeesEstimateIdentifier", {}) or {}
+            ident_id = ident.get("SellerInputIdentifier")
+
+            sku = asin = price = None
+            for (s, a, p, ident_key) in chunk_map:
+                if ident_key == ident_id:
+                    sku, asin, price = s, a, p
+                    break
+
+            if sku is None:
+                if DEBUG:
+                    print(f"[FEES][WARN][ASIN] Could not map entry. Entry={entry}")
+                continue
+
+            key = (sku, asin, price)
+
+            # Missing FeesEstimate → missing fees → return None
+            if not entry or not entry.get("FeesEstimate"):
+                if DEBUG:
+                    print(f"[FEES][WARN][ASIN] Missing FeesEstimate for {key}, status={status}")
+                results[key] = {
+                    "referral": None,
+                    "fba": None,
+                    "debug": {"fallback": "asin missing"}
+                }
+                debug_fail_asin.append(key)
+                continue
+
+            if status != "Success":
+                if DEBUG:
+                    print(f"[FEES][WARN][ASIN] Non-success status for {key}: {status}")
+                results[key] = {
+                    "referral": None,
+                    "fba": None,
+                    "debug": {"fallback": "asin failed", "status": status}
+                }
+                debug_fail_asin.append(key)
+                continue
+
+            ref, fba = _extract_fee_details(entry)
+
+            # Real zero fees → valid
+            if ref == 0 and fba == 0:
+                if DEBUG:
+                    print(f"[FEES][INFO][ASIN] Real zero fees for {key}")
+                results[key] = {
+                    "referral": 0.0,
+                    "fba": 0.0,
+                    "debug": {"fallback": "asin_zero_fees", "raw": entry}
+                }
+                continue
+
+            # Success
+            results[key] = {
+                "referral": ref,
+                "fba": fba,
+                "debug": {"fallback": "asin", "raw": entry}
+            }
+
+    # ============================================================
+    # Summary (always printed)
+    # ============================================================
+
+    print(f"[FEES][SUMMARY] SKU failures needing ASIN fallback: {len(failed_for_asin)}")
+    print(f"[FEES][SUMMARY] ASIN final failures (still missing): {len(debug_fail_asin)}")
+
+    return results

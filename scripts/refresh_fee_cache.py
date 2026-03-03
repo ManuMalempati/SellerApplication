@@ -8,7 +8,7 @@ import config
 from app.database import connect_database, parse_cost, get_product_details_by_asin
 from app.fba.helpers import request_report, wait_for_report, download_report
 from app.utils import get_now_iso_string_with_custom_utc_offset
-from app.fee_estimator import get_my_fee_estimate_single   # <-- your new working estimator
+from app.fee_estimator_batch import get_my_fee_estimate_batch   # <-- batch estimator
 
 
 # ---------------------------------------------------------
@@ -55,13 +55,13 @@ async def refresh_fee_cache():
     asin_list = set()
 
     for lr in reader:
-        sku = (lr.get("seller-sku") or "").strip()
-        asin = (lr.get("asin1") or "").strip()
+        sku = (lr.get("seller-sku") or "").strip().upper()
+        asin = (lr.get("asin1") or "").strip().upper()
         raw_price = lr.get("price")
         price = parse_cost(raw_price) if raw_price else None
 
         if sku and asin and price:
-            active_items.append((sku, asin, price))
+            active_items.append((sku, asin, float(price)))
             asin_list.add(asin)
 
     print(f"[{get_now_iso_string_with_custom_utc_offset()}] Loaded {len(active_items)} active SKUs")
@@ -85,7 +85,7 @@ async def refresh_fee_cache():
         d = product_details.get(asin) or {}
         cog = parse_cost(d.get("cost"))
         if cog is not None:
-            items_with_cog.append((sku, asin, price, cog))
+            items_with_cog.append((sku, asin, price, float(cog)))
 
     print(f"[{get_now_iso_string_with_custom_utc_offset()}] {len(items_with_cog)} SKUs have valid COG")
 
@@ -94,23 +94,16 @@ async def refresh_fee_cache():
         return
 
     # ---------------------------------------------------------
-    # Fee estimation (single-item API)
+    # Fee estimation (BATCH)
     # ---------------------------------------------------------
     print(f"[{get_now_iso_string_with_custom_utc_offset()}] Estimating fees for {len(items_with_cog)} SKUs...")
 
-    fees = {}
-    total = len(items_with_cog)
+    batch_input = [
+        {"sku": sku, "asin": asin, "price": price}
+        for (sku, asin, price, _) in items_with_cog
+    ]
 
-    for idx, (sku, asin, price, _) in enumerate(items_with_cog, start=1):
-        if idx % 50 == 0 or idx == 1:
-            print(f"[{get_now_iso_string_with_custom_utc_offset()}]   Progress: {idx}/{total}")
-
-        try:
-            result = get_my_fee_estimate_single(sku, asin, price)
-            fees[(sku, asin, price)] = result
-        except Exception as e:
-            print(f"[{get_now_iso_string_with_custom_utc_offset()}] [ERROR] Fee estimate failed for {sku}: {e}")
-            fees[(sku, asin, price)] = {}
+    fee_results = get_my_fee_estimate_batch(batch_input)
 
     # ---------------------------------------------------------
     # Compute financials
@@ -120,11 +113,11 @@ async def refresh_fee_cache():
     cache_rows = []
 
     for (sku, asin, price, cog) in items_with_cog:
-        resp = fees.get((sku, asin, price)) or {}
-        net_block = resp.get(sku, {}).get("net") if sku in resp else resp.get("net", {})
+        key = (sku, asin, price)
+        fr = fee_results.get(key) or {}
 
-        ref = float(net_block.get("ReferralFees", 0) or 0)
-        fba = float(net_block.get("FBAFees", 0) or 0)
+        ref = float(fr.get("referral") or 0.0)
+        fba = float(fr.get("fba") or 0.0)
 
         charges = ref + fba
         vat = price * config.GOVT_VAT_RATE

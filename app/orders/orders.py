@@ -13,7 +13,7 @@ from app.database import (
     parse_cost,
     connect_database,
 )
-from app.fee_estimator import get_my_fee_estimate_single
+from app.fee_estimator import get_my_fee_estimate_batch
 from app.utils import (
     to_utc_plus_offset_naive,
     now_utc_plus_offset_naive,
@@ -206,35 +206,56 @@ async def get_orders_async(params):
         })
 
     # ---------------------------------------------------------------
-    # 7. Fee estimation using new single-item estimator ONLY
+    # 7. Fee estimation using batch estimator (SKU → ASIN fallback)
     # ---------------------------------------------------------------
+
     unique_items = list(set(items_to_est))
     print(f"[FEES] Unique items needing fees: {len(unique_items)}")
+
+    # Convert to dict list for batch estimator
+    batch_input = [
+        {"sku": sku, "asin": asin, "price": price}
+        for (sku, asin, price) in unique_items
+    ]
+
+    # Call batch estimator
+    batch_results = get_my_fee_estimate_batch(batch_input)
 
     fees_by_key = {}
     stats = {"api_success": 0, "api_fail": 0}
 
     for (sku, asin, price) in unique_items:
+        key = (sku, asin, price)
+        result = batch_results.get(key)
+
+        if not result:
+            print(f"[FEES] ERROR: No result for {key}")
+            fees_by_key[key] = {"ReferralFee": None, "FBAFee": None}
+            stats["api_fail"] += 1
+            continue
+
         try:
-            resp = get_my_fee_estimate_single(sku, asin, price)
-            raw = resp.get(sku) or resp.get(asin) or {}
+            referral = result.get("referral", None)
+            fba = result.get("fba", None)
 
-            referral = float(raw.get("referral", 0.0))
-            fba = float(raw.get("fba", 0.0))
+            # Keep None as None, keep 0.0 as 0.0
+            referral = None if referral is None else float(referral)
+            fba = None if fba is None else float(fba)
 
-            fees_by_key[(sku, asin, price)] = {
+            fees_by_key[key] = {
                 "ReferralFee": referral,
                 "FBAFee": fba,
             }
 
-            stats["api_success"] += 1
+            # Success = at least one fee is not None
+            if referral is None and fba is None:
+                stats["api_fail"] += 1
+            else:
+                stats["api_success"] += 1
 
         except Exception as e:
-            print(f"[FEES] ERROR for {sku}: {e}")
-            fees_by_key[(sku, asin, price)] = {
-                "ReferralFee": 0.0,
-                "FBAFee": 0.0,
-            }
+            print(f"[FEES] ERROR parsing result for {key}: {e}")
+            fees_by_key[key] = {"ReferralFee": None, "FBAFee": None}
             stats["api_fail"] += 1
 
     print("[FEES] Summary:")
