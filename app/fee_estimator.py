@@ -52,8 +52,6 @@ def get_my_fee_estimate_batch(items):
         price = item["price"]
 
         if price in (None, 0, "", "0"):
-            if DEBUG:
-                print(f"[FEES][SKIP] Invalid price for SKU={sku}, ASIN={asin}, price={price}")
             continue
 
         sku_requests.append({
@@ -80,9 +78,9 @@ def get_my_fee_estimate_batch(items):
     BATCH_SIZE = 19
     total_batches = (len(sku_requests) + BATCH_SIZE - 1) // BATCH_SIZE
 
-    # ============================================================
+    # ============================
     # SKU batches
-    # ============================================================
+    # ============================
 
     for i in range(0, len(sku_requests), BATCH_SIZE):
         batch_index = i // BATCH_SIZE
@@ -100,11 +98,9 @@ def get_my_fee_estimate_batch(items):
 
         resp = _call_batch_fee_api(chunk)
 
-        if DEBUG:
-            print(f"[FEES][DEBUG][SKU][RAW_RESPONSE] {resp}")
-
         if not isinstance(resp, list):
             print(f"[FEES][ERROR][SKU] Response not list. Raw={resp}")
+            print(f"[FEES][ERROR][SKU] Request payload was: {chunk_map}")
             for (s, a, p, _) in chunk_map:
                 failed_for_asin.append((s, a, p))
             continue
@@ -121,25 +117,31 @@ def get_my_fee_estimate_batch(items):
                     break
 
             if sku is None:
-                print(f"[FEES][WARN][SKU] Could not map entry. RAW={entry}")
+                print(f"[FEES][ERROR][SKU] Could not map entry. RAW={entry}")
+                print(f"[FEES][ERROR][SKU] Request payload was: {chunk_map}")
                 continue
 
             key = (sku, asin, price)
 
+            # Missing FeesEstimate
             if not entry.get("FeesEstimate"):
-                print(f"[FEES][WARN][SKU] Missing FeesEstimate for {key}. RAW={entry}")
+                print(f"[FEES][ERROR][SKU] Missing FeesEstimate for {key}")
+                print(f"[FEES][ERROR][SKU] Request payload was: {chunk_map}")
+                print(f"[FEES][ERROR][SKU] Raw Amazon response: {entry}")
                 failed_for_asin.append((sku, asin, price))
                 continue
 
+            # Non-success
             if status != "Success":
-                print(f"[FEES][WARN][SKU] Non-success status for {key}: {status}. RAW={entry}")
+                print(f"[FEES][ERROR][SKU] Non-success status for {key}: {status}")
+                print(f"[FEES][ERROR][SKU] Request payload was: {chunk_map}")
+                print(f"[FEES][ERROR][SKU] Raw Amazon response: {entry}")
                 failed_for_asin.append((sku, asin, price))
                 continue
 
             ref, fba = _extract_fee_details(entry)
 
             if ref == 0 and fba == 0:
-                print(f"[FEES][WARN][SKU] Zero fees for {key}. RAW={entry}")
                 results[key] = {
                     "referral": 0.0,
                     "fba": 0.0,
@@ -153,9 +155,9 @@ def get_my_fee_estimate_batch(items):
                 "debug": {"raw": entry}
             }
 
-    # ============================================================
+    # ============================
     # ASIN fallback
-    # ============================================================
+    # ============================
 
     asin_requests = []
     asin_index_map = []
@@ -164,7 +166,6 @@ def get_my_fee_estimate_batch(items):
     for i, (sku, asin, price) in enumerate(failed_for_asin, start=1):
 
         if not asin:
-            print(f"[FEES][WARN][ASIN] No ASIN for fallback, SKU={sku}")
             results[(sku, asin, price)] = {
                 "referral": None,
                 "fba": None,
@@ -209,11 +210,9 @@ def get_my_fee_estimate_batch(items):
 
         resp = _call_batch_fee_api(chunk)
 
-        if DEBUG:
-            print(f"[FEES][DEBUG][ASIN][RAW_RESPONSE] {resp}")
-
         if not isinstance(resp, list):
             print(f"[FEES][ERROR][ASIN] Response not list. RAW={resp}")
+            print(f"[FEES][ERROR][ASIN] Request payload was: {chunk_map}")
             for (s, a, p, _) in chunk_map:
                 key = (s, a, p)
                 results[key] = {
@@ -236,13 +235,16 @@ def get_my_fee_estimate_batch(items):
                     break
 
             if sku is None:
-                print(f"[FEES][WARN][ASIN] Could not map entry. RAW={entry}")
+                print(f"[FEES][ERROR][ASIN] Could not map entry. RAW={entry}")
+                print(f"[FEES][ERROR][ASIN] Request payload was: {chunk_map}")
                 continue
 
             key = (sku, asin, price)
 
             if not entry.get("FeesEstimate"):
-                print(f"[FEES][WARN][ASIN] Missing FeesEstimate for {key}. RAW={entry}")
+                print(f"[FEES][ERROR][ASIN] Missing FeesEstimate for {key}")
+                print(f"[FEES][ERROR][ASIN] Request payload was: {chunk_map}")
+                print(f"[FEES][ERROR][ASIN] Raw Amazon response: {entry}")
                 results[key] = {
                     "referral": None,
                     "fba": None,
@@ -252,7 +254,9 @@ def get_my_fee_estimate_batch(items):
                 continue
 
             if status != "Success":
-                print(f"[FEES][WARN][ASIN] Non-success status for {key}: {status}. RAW={entry}")
+                print(f"[FEES][ERROR][ASIN] Non-success status for {key}: {status}")
+                print(f"[FEES][ERROR][ASIN] Request payload was: {chunk_map}")
+                print(f"[FEES][ERROR][ASIN] Raw Amazon response: {entry}")
                 results[key] = {
                     "referral": None,
                     "fba": None,
@@ -264,7 +268,6 @@ def get_my_fee_estimate_batch(items):
             ref, fba = _extract_fee_details(entry)
 
             if ref == 0 and fba == 0:
-                print(f"[FEES][WARN][ASIN] Zero fees for {key}. RAW={entry}")
                 results[key] = {
                     "referral": 0.0,
                     "fba": 0.0,

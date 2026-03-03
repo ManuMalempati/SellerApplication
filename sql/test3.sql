@@ -1,2 +1,2 @@
 SELECT * FROM FeeEstimatesCache
-WHERE ASIN = 'B08ZDHSKR2'
+WHERE FBAFee = 0
