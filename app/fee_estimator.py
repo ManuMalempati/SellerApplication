@@ -77,7 +77,7 @@ def _call_batch_fee_api(requests):
 
         # InternalError → retry
         wait = 0.5 + random.random() * 1.5
-        print(f"[FEES][WARN] InternalError from Amazon. Retrying in {wait:.2f}s (attempt {attempt+1}/3)")
+        # print(f"[FEES][WARN] InternalError from Amazon. Retrying in {wait:.2f}s (attempt {attempt+1}/3)")
         time.sleep(wait)
 
     # After 3 attempts, return the last response
