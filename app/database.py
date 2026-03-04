@@ -2,6 +2,7 @@
 import pyodbc
 from config import SQLSERVER_CONNECTION_STRING
 import time, random
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
 # ALL THE DATETIMES BEING STORED IN THE DATABASE TABLES ARE IN UTC + OFFSET FORMAT AS DEFINED IN ENV
 
@@ -9,18 +10,33 @@ import time, random
 # DB CONNECTION
 # ============================================================
 
-def connect_database():
-    """Establish connection to the SQL Server database"""
-    try:
-        connection = pyodbc.connect(SQLSERVER_CONNECTION_STRING)
-        return connection
-    except pyodbc.Error as e:
-        sqlstate = e.args[0]
-        if sqlstate == '28000':
-            print(f"Authentication error: {e.args}")
-        else:
-            print(f"Connection failed: {sqlstate}")
+def is_transient_sql_error(exc):
+    msg = str(exc)
 
+    # Retry only on transient network/transport errors
+    if "08001" in msg or "08S01" in msg:
+        print(f"Transient SQL connection error: {msg}")
+        return True
+
+    # Authentication errors should not retry
+    if "28000" in msg:
+        print(f"Authentication error (not retrying): {msg}")
+        return False
+
+    # Any other SQL error: do not retry
+    print(f"Non-transient SQL error: {msg}")
+    return False
+
+@retry(
+    retry=retry_if_exception(is_transient_sql_error),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+)
+def connect_database():
+    print("Connecting to SQL Server...")
+    conn = pyodbc.connect(SQLSERVER_CONNECTION_STRING, timeout=5)
+    print("Connection established.")
+    return conn
 
 def get_product_mapping(cursor, seller_sku_list):
     product_mapping = {}

@@ -1,4 +1,4 @@
-# RESPONSIBLE FOR FBAProductSummary Table
+# RESPONSIBLE FOR FBAProductSummary Table. 
 import time
 
 from app.database import (
