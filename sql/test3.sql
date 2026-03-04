@@ -1,3 +1,7 @@
-SELECT * FROM FeeEstimatesCache
-WHERE FBAFee = 0
--- WHERE ASIN = 'B07NYYSBPQ'
+SELECT *
+FROM InventoryReportCopy
+WHERE PartNumber NOT IN (
+    SELECT PartNumber
+    FROM InventoryReport
+    WHERE PartNumber IS NOT NULL
+);

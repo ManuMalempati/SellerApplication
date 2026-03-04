@@ -1,1 +1,2 @@
-SELECT * FROM FBAProductSummary
+SELECT * FROM InventoryReport
+WHERE PartNumber = 'VER-32203'
