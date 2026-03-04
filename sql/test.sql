@@ -1,1 +1,2 @@
-SELECT * FROM InventoryReport WHERE PartNumber = '0B48720'
+SELECT * FROM OrderItems
+WHERE FBAFeesIncl = NULL
