@@ -8,21 +8,50 @@ import config
 # Retry Logic (Throttling + InternalError)
 # =========================================================
 
-def _is_internal_error(result):
-    """Detect Amazon InternalError in both dict and list responses."""
-    if isinstance(result, dict):
-        err = result.get("Error") or result.get("errors") or {}
-        code = err.get("Code") or err.get("code")
-        return code == "InternalError"
+def _is_internal_error(resp):
+    """
+    Detect InternalError in all Amazon response formats:
+    - dict with Error
+    - dict with errors
+    - list of entries
+    - Error may be dict OR list
+    """
+    # Case 1: Response is a dict
+    if isinstance(resp, dict):
+        # Error may be dict or list
+        err = resp.get("Error") or resp.get("errors") or None
 
-    if isinstance(result, list):
-        for entry in result:
-            err = entry.get("Error", {})
-            if err.get("Code") == "InternalError":
-                return True
+        if isinstance(err, dict):
+            code = err.get("Code") or err.get("code")
+            return code == "InternalError"
+
+        if isinstance(err, list):
+            for e in err:
+                code = e.get("Code") or e.get("code")
+                if code == "InternalError":
+                    return True
+
+        return False
+
+    # Case 2: Response is a list of entries
+    if isinstance(resp, list):
+        for entry in resp:
+            err = entry.get("Error") or entry.get("errors") or None
+
+            if isinstance(err, dict):
+                code = err.get("Code") or err.get("code")
+                if code == "InternalError":
+                    return True
+
+            if isinstance(err, list):
+                for e in err:
+                    code = e.get("Code") or e.get("code")
+                    if code == "InternalError":
+                        return True
+
+        return False
 
     return False
-
 
 def _should_retry(result):
     """
