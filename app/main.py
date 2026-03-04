@@ -26,7 +26,7 @@ async def transactions(days: int = 2, hours: int = 0, minutes: int = 0):
     return filtered_data
 
 @app.get("/orders")
-async def orders(days: int = 15, hours: int = 0, minutes: int = 0):
+async def orders(days: int = 7, hours: int = 0, minutes: int = 0):
     delta = timedelta(days=days, hours=hours, minutes=minutes)
     last_updated_after = convert_utc_to_utcz_string(datetime.now(timezone.utc) - delta)
     params = {"LastUpdatedAfter": last_updated_after, "MaxResultsPerPage": 100}

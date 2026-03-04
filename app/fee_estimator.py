@@ -6,11 +6,24 @@ from app.auth import spapi_request
 from app.utilities.rate_limiter import TokenBucketRateLimiter
 
 DEBUG = False
-fees_rate_limiter = TokenBucketRateLimiter(rate=0.45, burst=1)
+fees_rate_limiter = TokenBucketRateLimiter(rate=0.49, burst=1)
 
 # =========================================================
 # Extract fee details (correct None handling)
 # =========================================================
+def _is_internal_error(resp):
+    if isinstance(resp, dict):
+        err = resp.get("Error") or resp.get("errors") or {}
+        code = err.get("Code") or err.get("code")
+        return code == "InternalError"
+
+    if isinstance(resp, list):
+        for entry in resp:
+            err = entry.get("Error", {})
+            if err.get("Code") == "InternalError":
+                return True
+
+    return False
 
 def _extract_fee_details(entry):
     """
@@ -50,16 +63,26 @@ def _extract_fee_details(entry):
 def _call_batch_fee_api(requests):
     fees_rate_limiter.acquire()
 
-    resp = retry_call(lambda: spapi_request(
-        method="POST",
-        path="/products/fees/v0/feesEstimate",
-        body=requests
-    ))
+    for attempt in range(3):
+        resp = retry_call(lambda: spapi_request(
+            method="POST",
+            path="/products/fees/v0/feesEstimate",
+            body=requests
+        ))
 
-    # Small jitter to avoid burst throttling
-    time.sleep(0.2 + random.random() * 0.3)
+        # If no internal error → return immediately
+        if not _is_internal_error(resp):
+            time.sleep(0.2 + random.random() * 0.3)
+            return resp
+
+        # InternalError → retry
+        wait = 0.5 + random.random() * 1.5
+        print(f"[FEES][WARN] InternalError from Amazon. Retrying in {wait:.2f}s (attempt {attempt+1}/3)")
+        time.sleep(wait)
+
+    # After 3 attempts, return the last response
+    print("[FEES][ERROR] InternalError persisted after retries.")
     return resp
-
 
 # =========================================================
 # Main batch fee estimator
@@ -103,7 +126,7 @@ def get_my_fee_estimate_batch(items):
     failed_for_asin = []
     asin_raw_errors = {}
 
-    BATCH_SIZE = 19
+    BATCH_SIZE = 20
     total_batches = (len(sku_requests) + BATCH_SIZE - 1) // BATCH_SIZE
 
     # =====================================================
