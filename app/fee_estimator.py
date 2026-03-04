@@ -11,19 +11,31 @@ fees_rate_limiter = TokenBucketRateLimiter(rate=0.49, burst=1)
 # =========================================================
 # Extract fee details (correct None handling)
 # =========================================================
-def _is_internal_error(resp):
-    if isinstance(resp, dict):
-        err = resp.get("Error") or resp.get("errors") or {}
-        code = err.get("Code") or err.get("code")
-        return code == "InternalError"
 
-    if isinstance(resp, list):
-        for entry in resp:
-            err = entry.get("Error", {})
-            if err.get("Code") == "InternalError":
-                return True
+def _is_non_client_error(resp):
+    """
+    Return True if the response represents an error that is NOT a client error.
+    - No Error block  -> False (normal, no error)
+    - Error with 4xx  -> False (client error)
+    - Any other Error -> True  (non-client error, should retry)
+    """
+    if not isinstance(resp, dict):
+        return False
 
-    return False
+    err = resp.get("Error") or resp.get("errors")
+    if not err:
+        return False
+
+    if isinstance(err, dict):
+        code = str(err.get("Code") or err.get("code") or "")
+        # Treat codes starting with "4" as client errors
+        if code.startswith("4"):
+            return False
+        return True
+
+    # Any non-dict Error structure we treat as non-client error
+    return True
+
 
 def _extract_fee_details(entry):
     """
@@ -62,27 +74,35 @@ def _extract_fee_details(entry):
 
 def _call_batch_fee_api(requests):
     fees_rate_limiter.acquire()
+    last_resp = None
 
     for attempt in range(3):
-        resp = retry_call(lambda: spapi_request(
-            method="POST",
-            path="/products/fees/v0/feesEstimate",
-            body=requests
-        ))
+        try:
+            resp = retry_call(lambda: spapi_request(
+                method="POST",
+                path="/products/fees/v0/feesEstimate",
+                body=requests
+            ))
+            last_resp = resp
+        except Exception:
+            # Any exception is treated as non-client error → retry
+            wait = 0.5 + random.random() * 1.5
+            time.sleep(wait)
+            continue
 
-        # If no internal error → return immediately
-        if not _is_internal_error(resp):
-            time.sleep(0.2 + random.random() * 0.3)
-            return resp
+        # If this is a non-client error → retry
+        if _is_non_client_error(resp):
+            wait = 0.5 + random.random() * 1.5
+            time.sleep(wait)
+            continue
 
-        # InternalError → retry
-        wait = 0.5 + random.random() * 1.5
-        # print(f"[FEES][WARN] InternalError from Amazon. Retrying in {wait:.2f}s (attempt {attempt+1}/3)")
-        time.sleep(wait)
+        # Otherwise (normal or client error) → return immediately
+        time.sleep(0.2 + random.random() * 0.3)
+        return resp
 
-    # After 3 attempts, return the last response
-    print("[FEES][ERROR] InternalError persisted after retries.")
-    return resp
+    # After 3 attempts, return the last response we saw (may be error)
+    print("[FEES][ERROR] Non-client error persisted after retries.")
+    return last_resp
 
 # =========================================================
 # Main batch fee estimator
