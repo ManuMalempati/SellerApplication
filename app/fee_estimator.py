@@ -9,33 +9,61 @@ DEBUG = False
 fees_rate_limiter = TokenBucketRateLimiter(rate=0.49, burst=1)
 
 # =========================================================
-# Extract fee details (correct None handling)
+# Unified retry decision logic
 # =========================================================
 
-def _is_non_client_error(resp):
+def should_retry(resp=None, exc=None):
     """
-    Return True if the response represents an error that is NOT a client error.
-    - No Error block  -> False (normal, no error)
-    - Error with 4xx  -> False (client error)
-    - Any other Error -> True  (non-client error, should retry)
+    Unified retry logic:
+    - Return False → do NOT retry (normal or client error)
+    - Return True  → retry (non-client error or exception)
     """
-    if not isinstance(resp, dict):
-        return False
 
+    # -------------------------
+    # Exception-based handling
+    # -------------------------
+    if exc is not None:
+        resp_obj = getattr(exc, "response", None)
+
+        # If exception contains a 4xx response → client error → do NOT retry
+        if resp_obj is not None:
+            try:
+                if 400 <= resp_obj.status_code < 500:
+                    return False
+            except:
+                pass
+
+        # All other exceptions → retry
+        return True
+
+    # -------------------------
+    # Response-based handling
+    # -------------------------
+    if not isinstance(resp, dict):
+        return True  # malformed → retry
+
+    # Amazon top-level status
+    status = resp.get("Status")
+    if status and status != "Success":
+        return True  # ServerError, ProcessingError, etc.
+
+    # Error block
     err = resp.get("Error") or resp.get("errors")
     if not err:
-        return False
+        return False  # normal response → do NOT retry
 
     if isinstance(err, dict):
         code = str(err.get("Code") or err.get("code") or "")
-        # Treat codes starting with "4" as client errors
         if code.startswith("4"):
-            return False
-        return True
+            return False  # client error → do NOT retry
+        return True       # non-client error → retry
 
-    # Any non-dict Error structure we treat as non-client error
-    return True
+    return True  # weird structure → retry
 
+
+# =========================================================
+# Extract fee details (correct None handling)
+# =========================================================
 
 def _extract_fee_details(entry):
     """
@@ -69,7 +97,7 @@ def _extract_fee_details(entry):
 
 
 # =========================================================
-# Call Amazon batch fee API with throttling + retry
+# Call Amazon batch fee API with throttling + unified retry
 # =========================================================
 
 def _call_batch_fee_api(requests):
@@ -84,23 +112,32 @@ def _call_batch_fee_api(requests):
                 body=requests
             ))
             last_resp = resp
-        except Exception:
-            # Any exception is treated as non-client error → retry
+
+        except Exception as e:
+            # Unified retry logic for exceptions
+            if not should_retry(exc=e):
+                print(f"[FEES][ERROR] Client error exception {e}. Not retrying.")
+                return {"Error": {"Code": "4xx", "Message": str(e)}}
+
             wait = 0.5 + random.random() * 1.5
+            print(f"[FEES][WARN] Exception {type(e).__name__}: {e}. Retrying in {wait:.2f}s (attempt {attempt+1}/3)")
             time.sleep(wait)
             continue
 
-        # If this is a non-client error → retry
-        if _is_non_client_error(resp):
+        # Debug raw response
+        print(f"[FEES][DEBUG] Attempt {attempt+1}/3 response: {resp}")
+
+        # Unified retry logic for responses
+        if should_retry(resp=resp):
             wait = 0.5 + random.random() * 1.5
+            print(f"[FEES][WARN] Non-client error detected. Retrying in {wait:.2f}s (attempt {attempt+1}/3)")
             time.sleep(wait)
             continue
 
-        # Otherwise (normal or client error) → return immediately
+        # Normal or client error → return immediately
         time.sleep(0.2 + random.random() * 0.3)
         return resp
 
-    # After 3 attempts, return the last response we saw (may be error)
     print("[FEES][ERROR] Non-client error persisted after retries.")
     return last_resp
 
