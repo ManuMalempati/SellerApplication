@@ -9,61 +9,79 @@ DEBUG = False
 fees_rate_limiter = TokenBucketRateLimiter(rate=0.49, burst=1)
 
 # =========================================================
-# Unified retry decision logic
+# Extract fee details (correct None handling)
 # =========================================================
-
-def should_retry(resp=None, exc=None):
+def _is_non_client_error(resp):
     """
-    Unified retry logic:
-    - Return False → do NOT retry (normal or client error)
-    - Return True  → retry (non-client error or exception)
+    Return True if ANY part of the response contains a non-client error.
+    Return False for:
+      - normal responses
+      - client errors (4xx semantic errors)
+    Handles both dict and list responses.
     """
 
     # -------------------------
-    # Exception-based handling
+    # Case 1: Response is a dict
     # -------------------------
-    if exc is not None:
-        resp_obj = getattr(exc, "response", None)
+    if isinstance(resp, dict):
+        err = resp.get("Error") or resp.get("errors") or {}
 
-        # If exception contains a 4xx response → client error → do NOT retry
-        if resp_obj is not None:
-            try:
-                if 400 <= resp_obj.status_code < 500:
-                    return False
-            except:
-                pass
+        # No error → normal response
+        if not err:
+            return False
 
-        # All other exceptions → retry
+        # Error block is a dict
+        if isinstance(err, dict):
+            code = str(err.get("Code") or err.get("code") or "")
+
+            # Client errors → NOT retryable
+            if code.startswith("4"):
+                return False
+
+            # Any other error → non-client error
+            return True
+
+        # Weird error structure → treat as non-client error
         return True
 
     # -------------------------
-    # Response-based handling
+    # Case 2: Response is a list
     # -------------------------
-    if not isinstance(resp, dict):
-        return True  # malformed → retry
+    if isinstance(resp, list):
+        saw_client_error = False
 
-    # Amazon top-level status
-    status = resp.get("Status")
-    if status and status != "Success":
-        return True  # ServerError, ProcessingError, etc.
+        for entry in resp:
+            err = entry.get("Error") or entry.get("errors") or {}
 
-    # Error block
-    err = resp.get("Error") or resp.get("errors")
-    if not err:
-        return False  # normal response → do NOT retry
+            # No error in this entry → skip
+            if not err:
+                continue
 
-    if isinstance(err, dict):
-        code = str(err.get("Code") or err.get("code") or "")
-        if code.startswith("4"):
-            return False  # client error → do NOT retry
-        return True       # non-client error → retry
+            if isinstance(err, dict):
+                code = str(err.get("Code") or err.get("code") or "")
 
-    return True  # weird structure → retry
+                # Client error → mark but do NOT retry
+                if code.startswith("4"):
+                    saw_client_error = True
+                    continue
 
+                # Non-client error → retry immediately
+                return True
 
-# =========================================================
-# Extract fee details (correct None handling)
-# =========================================================
+            # Weird error structure → treat as non-client error
+            return True
+
+        # If we saw ONLY client errors → do NOT retry
+        if saw_client_error:
+            return False
+
+        # No errors at all → normal response
+        return False
+
+    # -------------------------
+    # Anything else → treat as normal
+    # -------------------------
+    return False
 
 def _extract_fee_details(entry):
     """
@@ -97,49 +115,39 @@ def _extract_fee_details(entry):
 
 
 # =========================================================
-# Call Amazon batch fee API with throttling + unified retry
+# Call Amazon batch fee API with throttling + retry
 # =========================================================
-
 def _call_batch_fee_api(requests):
     fees_rate_limiter.acquire()
-    last_resp = None
 
-    for attempt in range(3):
-        try:
-            resp = retry_call(lambda: spapi_request(
-                method="POST",
-                path="/products/fees/v0/feesEstimate",
-                body=requests
-            ))
-            last_resp = resp
+    MAX_ATTEMPTS = 6
 
-        except Exception as e:
-            # Unified retry logic for exceptions
-            if not should_retry(exc=e):
-                print(f"[FEES][ERROR] Client error exception {e}. Not retrying.")
-                return {"Error": {"Code": "4xx", "Message": str(e)}}
+    for attempt in range(1, MAX_ATTEMPTS + 1):
 
-            wait = 0.5 + random.random() * 1.5
-            print(f"[FEES][WARN] Exception {type(e).__name__}: {e}. Retrying in {wait:.2f}s (attempt {attempt+1}/3)")
-            time.sleep(wait)
-            continue
+        resp = retry_call(lambda: spapi_request(
+            method="POST",
+            path="/products/fees/v0/feesEstimate",
+            body=requests
+        ))
 
-        # Debug raw response
-        print(f"[FEES][DEBUG] Attempt {attempt+1}/3 response: {resp}")
+        # If normal or client error → return immediately
+        if not _is_non_client_error(resp):
+            time.sleep(0.2 + random.random() * 0.3)
+            return resp
 
-        # Unified retry logic for responses
-        if should_retry(resp=resp):
-            wait = 0.5 + random.random() * 1.5
-            print(f"[FEES][WARN] Non-client error detected. Retrying in {wait:.2f}s (attempt {attempt+1}/3)")
-            time.sleep(wait)
-            continue
+        # Non-client error → retry with exponential backoff
+        wait = min(1.0 * (2 ** (attempt - 1)), 16)  # cap at 16 seconds
 
-        # Normal or client error → return immediately
-        time.sleep(0.2 + random.random() * 0.3)
-        return resp
+        print(
+            f"[FEES][WARN] Non-client error (InternalError/ServerError) "
+            f"Retrying in {wait:.2f}s (attempt {attempt}/{MAX_ATTEMPTS})"
+        )
 
-    print("[FEES][ERROR] Non-client error persisted after retries.")
-    return last_resp
+        time.sleep(wait)
+
+    # After all attempts fail → return last response
+    print("[FEES][ERROR] Non-client error persisted after all retries.")
+    return resp
 
 # =========================================================
 # Main batch fee estimator

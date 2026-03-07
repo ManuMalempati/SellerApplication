@@ -1,1 +1,3 @@
-SELECT * FROM OrderItems
+SELECT COUNT(*)
+FROM OrderItems
+WHERE OrderDate >= DATEADD(DAY, -2, GETDATE());

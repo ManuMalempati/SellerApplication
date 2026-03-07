@@ -11,6 +11,7 @@ from app.utilities.utils import (
 )
 import config
 
+
 MARKETPLACE_ID = config.MARKETPLACE_ID
 SELLER_ID = config.SELLER_ID
 
@@ -42,8 +43,145 @@ class OfferData:
 # ---------------------------------------------------------
 # BuyBox Analyzer
 # ---------------------------------------------------------
+
 class BuyBoxAnalysis:
 
+    # -----------------------------------------------------
+    # Load ASINs from DB
+    # -----------------------------------------------------
+    def get_asins(self):
+        conn = connect_database()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT asin, Title
+            FROM spapi_app_user.FBAProductSummary
+            WHERE asin IS NOT NULL AND [Sellable-Qty] > 0
+        """)
+
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        return [{"asin": r[0], "title": r[1]} for r in rows]
+
+    # -----------------------------------------------------
+    # Fetch SP-API pricing data
+    # -----------------------------------------------------
+    def fetch_data(self, asin, title):
+        try:
+            response = spapi_request(
+                method="GET",
+                path=f"/products/pricing/v0/items/{asin}/offers",
+                params={"MarketplaceId": MARKETPLACE_ID, "ItemCondition": "New"}
+            )
+
+            payload = response.get("payload", {})
+
+            return {
+                "asin": asin,
+                "product_name": title,
+                "summary": payload.get("Summary", {}),
+                "offers": payload.get("Offers", []),
+                "error": None
+            }
+
+        except Exception as e:
+            return {
+                "asin": asin,
+                "product_name": title,
+                "summary": {},
+                "offers": [],
+                "error": str(e)
+            }
+
+    # -----------------------------------------------------
+    # Analyze BuyBox + pricing
+    # -----------------------------------------------------
+    def analyze(self, asin, product_name, summary, offers_raw):
+        offers = [OfferData(o) for o in offers_raw]
+
+        # Winner
+        winner = next((o for o in offers if o.is_buy_box_winner), None)
+        winner_store_name = (
+            get_seller_name(winner.seller_id)
+            if winner and winner.seller_id
+            else None
+        )
+
+        # My offer
+        my_offer = next((o for o in offers if o.seller_id == SELLER_ID), None)
+
+        # Summary BuyBox price
+        bb_prices = summary.get("BuyBoxPrices", [])
+        summary_bb_price = safe_float(
+            bb_prices[0]["LandedPrice"]["Amount"]
+        ) if bb_prices else None
+
+        # Lowest prices
+        lowest_amazon = None
+        lowest_merchant = None
+
+        for lp in summary.get("LowestPrices", []):
+            if lp.get("fulfillmentChannel") == "Amazon":
+                lowest_amazon = safe_float(lp["LandedPrice"]["Amount"])
+            elif lp.get("fulfillmentChannel") == "Merchant":
+                lowest_merchant = safe_float(lp["LandedPrice"]["Amount"])
+
+        return {
+            "asin": asin,
+            "product_name": product_name,
+            "winner_seller_id": winner.seller_id if winner else None,
+            "winner_store_name": winner_store_name,
+            "winner_price": winner.listing_price if winner else None,
+            "winner_total_price": winner.total_price if winner else None,
+            "my_price": my_offer.listing_price if my_offer else None,
+            "my_shipping": my_offer.shipping_cost if my_offer else None,
+            "my_total": my_offer.total_price if my_offer else None,
+            "my_is_buybox": bool(my_offer.is_buy_box_winner) if my_offer else False,
+            "summary_buybox_price": summary_bb_price,
+            "lowest_price_amazon": lowest_amazon,
+            "lowest_price_merchant": lowest_merchant,
+            "analysis_timestamp": now_utc_plus_offset_naive(),
+        }
+
+    # -----------------------------------------------------
+    # Save result (DELETE + INSERT)
+    # -----------------------------------------------------
+    def save_result(self, result):
+        conn = connect_database()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "DELETE FROM spapi_app_user.FBABuyBoxAnalysis WHERE asin=?",
+            (result["asin"],)
+        )
+
+        cursor.execute("""
+            INSERT INTO spapi_app_user.FBABuyBoxAnalysis (
+                asin, product_name, winner_seller_id, winner_store_name,
+                winner_price, winner_total_price, my_price, my_shipping,
+                my_total, my_is_buybox, summary_buybox_price, lowest_price_amazon,
+                lowest_price_merchant, analysis_timestamp, created_at, updated_at
+            )
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            result["asin"], result["product_name"], result["winner_seller_id"],
+            result["winner_store_name"], result["winner_price"],
+            result["winner_total_price"], result["my_price"],
+            result["my_shipping"], result["my_total"], result["my_is_buybox"],
+            result["summary_buybox_price"], result["lowest_price_amazon"],
+            result["lowest_price_merchant"], result["analysis_timestamp"],
+            now_utc_plus_offset_naive(), now_utc_plus_offset_naive()
+        ))
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+    # -----------------------------------------------------
+    # Main runner
+    # -----------------------------------------------------
     def run(self):
         asin_data = self.get_asins()
         total = len(asin_data)
@@ -54,29 +192,6 @@ class BuyBoxAnalysis:
 
         print(f"Starting analysis for {total} ASINs...")
 
-        # ---------------------------------------------------------
-        # 1. Open ONE DB connection for entire run
-        # ---------------------------------------------------------
-        conn = connect_database()
-        cursor = conn.cursor()
-        cursor.fast_executemany = True
-
-        # ---------------------------------------------------------
-        # 2. Pre-delete all ASINs in one go
-        # ---------------------------------------------------------
-        asin_list = [item["asin"] for item in asin_data]
-        placeholders = ",".join("?" for _ in asin_list)
-
-        cursor.execute(
-            f"DELETE FROM spapi_app_user.FBABuyBoxAnalysis WHERE asin IN ({placeholders})",
-            asin_list
-        )
-        conn.commit()
-
-        # ---------------------------------------------------------
-        # 3. Process all ASINs and collect results
-        # ---------------------------------------------------------
-        results = []
         step = max(1, total // 10)
 
         for i, item in enumerate(asin_data, 1):
@@ -90,46 +205,13 @@ class BuyBoxAnalysis:
                 data["summary"], data["offers"]
             )
 
-            results.append((
-                result["asin"],
-                result["product_name"],
-                result["winner_seller_id"],
-                result["winner_store_name"],
-                result["winner_price"],
-                result["winner_total_price"],
-                result["my_price"],
-                result["my_shipping"],
-                result["my_total"],
-                result["my_is_buybox"],
-                result["summary_buybox_price"],
-                result["lowest_price_amazon"],
-                result["lowest_price_merchant"],
-                result["analysis_timestamp"],
-                now_utc_plus_offset_naive(),
-                now_utc_plus_offset_naive()
-            ))
+            self.save_result(result)
 
             time.sleep(0.2)
 
-        # ---------------------------------------------------------
-        # 4. Bulk insert all results at once
-        # ---------------------------------------------------------
-        cursor.executemany("""
-            INSERT INTO spapi_app_user.FBABuyBoxAnalysis (
-                asin, product_name, winner_seller_id, winner_store_name,
-                winner_price, winner_total_price, my_price, my_shipping,
-                my_total, my_is_buybox, summary_buybox_price, lowest_price_amazon,
-                lowest_price_merchant, analysis_timestamp, created_at, updated_at
-            )
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """, results)
-
-        conn.commit()
-        cursor.close()
-        conn.close()
-
         print("-" * 30)
         print("Analysis successfully completed.")
+
 
 if __name__ == "__main__":
     BuyBoxAnalysis().run()
