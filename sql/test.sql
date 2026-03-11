@@ -1,2 +1,2 @@
-SELECT * FROM FeeEstimatesCache
-WHERE ReferralFee IS NULL
+SELECT * FROM FBABuyBoxAnalysis
+WHERE asin = 'B0FXY1L9LW'

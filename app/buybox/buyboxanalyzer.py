@@ -1,5 +1,6 @@
 # RESPONSIBLE FOR FBABuyBoxAnalysis Table
 import time
+import threading
 from app.database import connect_database
 from app.auth import spapi_request
 from app.buybox.store_name_scraper import get_seller_name
@@ -13,6 +14,39 @@ import config
 
 MARKETPLACE_ID = config.MARKETPLACE_ID
 SELLER_ID = config.SELLER_ID
+
+
+# ---------------------------------------------------------
+# Token Bucket Rate Limiter (0.5 RPS, burst 1)
+# ---------------------------------------------------------
+
+class TokenBucketRateLimiter:
+    def __init__(self, rate: float, burst: int):
+        self.rate = rate
+        self.burst = burst
+        self.tokens = burst
+        self.last_update = time.time()
+        self.lock = threading.Lock()
+
+    def acquire(self):
+        while True:
+            with self.lock:
+                now = time.time()
+                elapsed = now - self.last_update
+                self.tokens = min(self.burst, self.tokens + elapsed * self.rate)
+                self.last_update = now
+
+                if self.tokens >= 1.0:
+                    self.tokens -= 1.0
+                    return
+
+                wait_time = (1.0 - self.tokens) / self.rate
+
+            time.sleep(wait_time)
+
+
+# Amazon getItemOffers limit: 0.5 RPS, burst 1
+offers_rate_limiter = TokenBucketRateLimiter(rate=0.5, burst=1)
 
 
 # ---------------------------------------------------------
@@ -40,7 +74,7 @@ class OfferData:
 
 
 # ---------------------------------------------------------
-# BuyBox Analyzer
+# BuyBox Analyzer (Full ASIN Mode)
 # ---------------------------------------------------------
 
 class BuyBoxAnalysis:
@@ -56,12 +90,17 @@ class BuyBoxAnalysis:
         """)
 
         rows = cursor.fetchall()
+        print(f"Total ASINs: {len(rows)}")
+
         cursor.close()
         conn.close()
 
         return [{"asin": r[0], "title": r[1]} for r in rows]
 
     def fetch_data(self, asin, title):
+        # Respect Amazon rate limits
+        offers_rate_limiter.acquire()
+
         try:
             response = spapi_request(
                 method="GET",
@@ -69,6 +108,7 @@ class BuyBoxAnalysis:
                 params={"MarketplaceId": MARKETPLACE_ID, "ItemCondition": "New"}
             )
             payload = response.get("payload", {})
+
             return {
                 "asin": asin,
                 "product_name": title,
@@ -76,7 +116,9 @@ class BuyBoxAnalysis:
                 "offers": payload.get("Offers", []),
                 "error": None
             }
+
         except Exception as e:
+            print(f"Error fetching {asin}: {e}")
             return {
                 "asin": asin,
                 "product_name": title,
@@ -87,6 +129,7 @@ class BuyBoxAnalysis:
 
     def analyze(self, asin, product_name, summary, offers_raw):
         offers = [OfferData(o) for o in offers_raw]
+
         winner = next((o for o in offers if o.is_buy_box_winner), None)
 
         winner_store_name = (
@@ -129,7 +172,7 @@ class BuyBoxAnalysis:
         }
 
     # ---------------------------------------------------------
-    # MAIN RUN — ONE DB CONNECTION FOR ENTIRE JOB
+    # MAIN RUN — FULL TABLE DELETE + BULK INSERT
     # ---------------------------------------------------------
     def run(self):
         asin_data = self.get_asins()
@@ -139,30 +182,18 @@ class BuyBoxAnalysis:
             print("No ASINs to process")
             return
 
-        print(f"Starting analysis for {total} ASINs...")
+        print(f"Starting BuyBox analysis for {total} ASINs...")
 
-        # ---------------------------------------------------------
         # 1. Open ONE DB connection
-        # ---------------------------------------------------------
         conn = connect_database()
         cursor = conn.cursor()
         cursor.fast_executemany = True
 
-        # ---------------------------------------------------------
-        # 2. Pre-delete all ASINs in one go
-        # ---------------------------------------------------------
-        asin_list = [item["asin"] for item in asin_data]
-        placeholders = ",".join("?" for _ in asin_list)
-
-        cursor.execute(
-            f"DELETE FROM spapi_app_user.FBABuyBoxAnalysis WHERE asin IN ({placeholders})",
-            asin_list
-        )
+        # 2. FULL TABLE DELETE
+        cursor.execute("DELETE FROM spapi_app_user.FBABuyBoxAnalysis")
         conn.commit()
 
-        # ---------------------------------------------------------
-        # 3. Process all ASINs and collect results
-        # ---------------------------------------------------------
+        # 3. Process ASINs
         results = []
         step = max(1, total // 10)
 
@@ -196,11 +227,7 @@ class BuyBoxAnalysis:
                 now_utc_plus_offset_naive()
             ))
 
-            time.sleep(0.2)
-
-        # ---------------------------------------------------------
-        # 4. Bulk insert all results at once
-        # ---------------------------------------------------------
+        # 4. Bulk insert
         cursor.executemany("""
             INSERT INTO spapi_app_user.FBABuyBoxAnalysis (
                 asin, product_name, winner_seller_id, winner_store_name,
@@ -216,7 +243,7 @@ class BuyBoxAnalysis:
         conn.close()
 
         print("-" * 30)
-        print("Analysis successfully completed.")
+        print("BuyBox analysis completed successfully.")
 
 
 if __name__ == "__main__":

@@ -151,6 +151,37 @@ def test_batch_fees():
 
     return resp
 
+# B0BZQPW1YJ
+@router.get("/debug/buybox/{asin}")
+def debug_buybox(asin: str):
+    """
+    Debug endpoint: returns the RAW SP-API BuyBox response for an ASIN.
+    No parsing, no OfferData, no analysis — pure Amazon payload.
+    """
+
+    try:
+        resp = spapi_request(
+            method="GET",
+            path=f"/products/pricing/v0/items/{asin}/offers",
+            params={
+                "MarketplaceId": MARKETPLACE_ID,
+                "ItemCondition": "New"
+            }
+        )
+
+        # Return exactly what Amazon sent back
+        return {
+            "asin": asin,
+            "raw_response": resp
+        }
+
+    except Exception as e:
+        return {
+            "asin": asin,
+            "error": str(e)
+        }
 
 if __name__ == "__main__":
     test_batch_fees()
+
+
