@@ -45,7 +45,6 @@ class TokenBucketRateLimiter:
             time.sleep(wait_time)
 
 
-# Amazon getItemOffers limit: 0.5 RPS, burst 1
 offers_rate_limiter = TokenBucketRateLimiter(rate=0.5, burst=1)
 
 
@@ -98,7 +97,6 @@ class BuyBoxAnalysis:
         return [{"asin": r[0], "title": r[1]} for r in rows]
 
     def fetch_data(self, asin, title):
-        # Respect Amazon rate limits
         offers_rate_limiter.acquire()
 
         try:
@@ -172,7 +170,7 @@ class BuyBoxAnalysis:
         }
 
     # ---------------------------------------------------------
-    # MAIN RUN — FULL TABLE DELETE + BULK INSERT
+    # MAIN RUN — FIXED SQL CONNECTION LIFECYCLE
     # ---------------------------------------------------------
     def run(self):
         asin_data = self.get_asins()
@@ -184,19 +182,12 @@ class BuyBoxAnalysis:
 
         print(f"Starting BuyBox analysis for {total} ASINs...")
 
-        # 1. Open ONE DB connection
-        conn = connect_database()
-        cursor = conn.cursor()
-        cursor.fast_executemany = True
-
-        # 2. FULL TABLE DELETE
-        cursor.execute("DELETE FROM spapi_app_user.FBABuyBoxAnalysis")
-        conn.commit()
-
-        # 3. Process ASINs
         results = []
         step = max(1, total // 10)
 
+        # ---------------------------------------------------------
+        # 1. PROCESS ALL ASINS FIRST (NO SQL CONNECTION OPEN)
+        # ---------------------------------------------------------
         for i, item in enumerate(asin_data, 1):
             if i == 1 or i % step == 0 or i == total:
                 pct = int((i / total) * 100)
@@ -227,7 +218,18 @@ class BuyBoxAnalysis:
                 now_utc_plus_offset_naive()
             ))
 
-        # 4. Bulk insert
+        # ---------------------------------------------------------
+        # 2. NOW OPEN SQL CONNECTION (FRESH + SAFE)
+        # ---------------------------------------------------------
+        conn = connect_database()
+        cursor = conn.cursor()
+        cursor.fast_executemany = True
+
+        # 3. DELETE TABLE
+        cursor.execute("DELETE FROM spapi_app_user.FBABuyBoxAnalysis")
+        conn.commit()
+
+        # 4. BULK INSERT
         cursor.executemany("""
             INSERT INTO spapi_app_user.FBABuyBoxAnalysis (
                 asin, product_name, winner_seller_id, winner_store_name,
