@@ -1,9 +1,20 @@
 from app.database import retry_deadlock
 
-# -------------- DELETE & REPLACE ORDER ITEMS --------------
-
 def replace_order_items_for_order(cursor, amazon_order_id, rows):
+
+    # -----------------------------------------------------
+    # STEP 1 — Load existing COG values BEFORE deleting
+    # -----------------------------------------------------
+    cursor.execute("""
+        SELECT SKU, COG
+        FROM OrderItems
+        WHERE AmazonOrderId = ?
+    """, (amazon_order_id,))
+
+    existing_cog_map = {sku: cog for sku, cog in cursor.fetchall()}
+
     def _do():
+        # Delete old rows
         cursor.execute("DELETE FROM OrderItems WHERE AmazonOrderId = ?", (amazon_order_id,))
 
         if not rows:
@@ -32,6 +43,17 @@ def replace_order_items_for_order(cursor, amazon_order_id, rows):
 
         params = []
         for row in rows:
+
+            sku = row["SKU"]
+
+            # -----------------------------------------------------
+            # STEP 2 — Preserve old COG if it existed
+            # -----------------------------------------------------
+            if sku in existing_cog_map and existing_cog_map[sku] is not None:
+                row_cog = existing_cog_map[sku]
+            else:
+                row_cog = row["COG"]  # first time seeing this order item
+
             params.append((
                 row["AmazonOrderId"],
                 row["OrderDate"],
@@ -53,7 +75,7 @@ def replace_order_items_for_order(cursor, amazon_order_id, rows):
                 row["TotalFee"],
                 row["RVAT"],
                 row["VAT"],
-                row["COG"],
+                row_cog,                 # <-- IMMUTABLE COG PRESERVED HERE
                 row["Profit"],
                 row["Refund"],
                 row["RefundDate"],
