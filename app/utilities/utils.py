@@ -35,6 +35,7 @@ def retry_call(func, *args, **kwargs):
 # =========================================================
 # Retry Logic (For non-client errors)
 # =========================================================
+
 def _is_non_client_error(resp):
     """
     Return True if ANY part of the response contains a non-client error.
@@ -106,17 +107,6 @@ def _is_non_client_error(resp):
     # Anything else → treat as normal
     # -------------------------
     return False
-
-def _should_retry_non_client_error(resp):
-    return _is_non_client_error(resp)
-
-@retry(
-    retry=retry_if_result(_should_retry_non_client_error),
-    stop=stop_after_attempt(4),
-    wait=wait_exponential(multiplier=1, min=1, max=16),
-)
-def retry_non_client_errors(func):
-    return func()
 
 # =========================================================
 # Dynamic Timezone Helpers (UTC + offset)

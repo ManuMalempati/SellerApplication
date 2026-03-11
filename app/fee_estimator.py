@@ -42,7 +42,7 @@ def _extract_fee_details(entry):
 def _call_batch_fee_api(requests):
     fees_rate_limiter.acquire()
 
-    MAX_ATTEMPTS = 6
+    MAX_ATTEMPTS = 4
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
 
