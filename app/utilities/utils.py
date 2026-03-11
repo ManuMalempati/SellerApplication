@@ -33,6 +33,92 @@ def retry_call(func, *args, **kwargs):
     return func(*args, **kwargs)
 
 # =========================================================
+# Retry Logic (For non-client errors)
+# =========================================================
+def _is_non_client_error(resp):
+    """
+    Return True if ANY part of the response contains a non-client error.
+    Return False for:
+      - normal responses
+      - client errors (4xx semantic errors)
+    Handles both dict and list responses.
+    """
+
+    # -------------------------
+    # Case 1: Response is a dict
+    # -------------------------
+    if isinstance(resp, dict):
+        err = resp.get("Error") or resp.get("errors") or {}
+
+        # No error → normal response
+        if not err:
+            return False
+
+        # Error block is a dict
+        if isinstance(err, dict):
+            code = str(err.get("Code") or err.get("code") or "")
+
+            # Client errors → NOT retryable
+            if code.startswith("4"):
+                return False
+
+            # Any other error → non-client error
+            return True
+
+        # Weird error structure → treat as non-client error
+        return True
+
+    # -------------------------
+    # Case 2: Response is a list
+    # -------------------------
+    if isinstance(resp, list):
+        saw_client_error = False
+
+        for entry in resp:
+            err = entry.get("Error") or entry.get("errors") or {}
+
+            # No error in this entry → skip
+            if not err:
+                continue
+
+            if isinstance(err, dict):
+                code = str(err.get("Code") or err.get("code") or "")
+
+                # Client error → mark but do NOT retry
+                if code.startswith("4"):
+                    saw_client_error = True
+                    continue
+
+                # Non-client error → retry immediately
+                return True
+
+            # Weird error structure → treat as non-client error
+            return True
+
+        # If we saw ONLY client errors → do NOT retry
+        if saw_client_error:
+            return False
+
+        # No errors at all → normal response
+        return False
+
+    # -------------------------
+    # Anything else → treat as normal
+    # -------------------------
+    return False
+
+def _should_retry_non_client_error(resp):
+    return _is_non_client_error(resp)
+
+@retry(
+    retry=retry_if_result(_should_retry_non_client_error),
+    stop=stop_after_attempt(4),
+    wait=wait_exponential(multiplier=1, min=1, max=16),
+)
+def retry_non_client_errors(func, *args, **kwargs):
+    return func(*args, **kwargs)
+
+# =========================================================
 # Dynamic Timezone Helpers (UTC + offset)
 # =========================================================
 

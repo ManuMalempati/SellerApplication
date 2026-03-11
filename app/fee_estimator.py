@@ -1,7 +1,10 @@
-import time
-import random
+import time, random
 import config
-from app.utilities.utils import retry_call, safe_float   # <-- use ingestion-grade safe_float
+from app.utilities.utils import (
+    retry_call,
+    retry_non_client_errors,
+    safe_float
+)
 from app.auth import spapi_request
 from app.utilities.rate_limiter import TokenBucketRateLimiter
 
@@ -11,77 +14,6 @@ fees_rate_limiter = TokenBucketRateLimiter(rate=0.49, burst=1)
 # =========================================================
 # Extract fee details (correct None handling)
 # =========================================================
-def _is_non_client_error(resp):
-    """
-    Return True if ANY part of the response contains a non-client error.
-    Return False for:
-      - normal responses
-      - client errors (4xx semantic errors)
-    Handles both dict and list responses.
-    """
-
-    # -------------------------
-    # Case 1: Response is a dict
-    # -------------------------
-    if isinstance(resp, dict):
-        err = resp.get("Error") or resp.get("errors") or {}
-
-        # No error → normal response
-        if not err:
-            return False
-
-        # Error block is a dict
-        if isinstance(err, dict):
-            code = str(err.get("Code") or err.get("code") or "")
-
-            # Client errors → NOT retryable
-            if code.startswith("4"):
-                return False
-
-            # Any other error → non-client error
-            return True
-
-        # Weird error structure → treat as non-client error
-        return True
-
-    # -------------------------
-    # Case 2: Response is a list
-    # -------------------------
-    if isinstance(resp, list):
-        saw_client_error = False
-
-        for entry in resp:
-            err = entry.get("Error") or entry.get("errors") or {}
-
-            # No error in this entry → skip
-            if not err:
-                continue
-
-            if isinstance(err, dict):
-                code = str(err.get("Code") or err.get("code") or "")
-
-                # Client error → mark but do NOT retry
-                if code.startswith("4"):
-                    saw_client_error = True
-                    continue
-
-                # Non-client error → retry immediately
-                return True
-
-            # Weird error structure → treat as non-client error
-            return True
-
-        # If we saw ONLY client errors → do NOT retry
-        if saw_client_error:
-            return False
-
-        # No errors at all → normal response
-        return False
-
-    # -------------------------
-    # Anything else → treat as normal
-    # -------------------------
-    return False
 
 def _extract_fee_details(entry):
     """
@@ -102,7 +34,6 @@ def _extract_fee_details(entry):
             or (d.get("FeeAmount") or {}).get("Amount")
         )
 
-        # Skip missing fees
         if amt is None:
             continue
 
@@ -120,39 +51,24 @@ def _extract_fee_details(entry):
 def _call_batch_fee_api(requests):
     fees_rate_limiter.acquire()
 
-    MAX_ATTEMPTS = 6
-
-    for attempt in range(1, MAX_ATTEMPTS + 1):
-
-        resp = retry_call(lambda: spapi_request(
-            method="POST",
-            path="/products/fees/v0/feesEstimate",
-            body=requests
-        ))
-
-        # If normal or client error → return immediately
-        if not _is_non_client_error(resp):
-            time.sleep(0.2 + random.random() * 0.3)
-            return resp
-
-        # Non-client error → retry with exponential backoff
-        wait = min(1.0 * (2 ** (attempt - 1)), 16)  # cap at 16 seconds
-
-        print(
-            f"[FEES][WARN] Non-client error (InternalError/ServerError) "
-            f"Retrying in {wait:.2f}s (attempt {attempt}/{MAX_ATTEMPTS})"
+    result =  retry_non_client_errors(
+        lambda: retry_call(
+            lambda: spapi_request(
+                method="POST",
+                path="/products/fees/v0/feesEstimate",
+                body=requests
+            )
         )
+    )
 
-        time.sleep(wait)
+    # Jitter to avoid huge volume of requests when service is back up running
+    time.sleep(0.2 + random.random() * 0.2)
 
-    # After all attempts fail → return last response
-    print("[FEES][ERROR] Non-client error persisted after all retries.")
-    return resp
+    return result
 
 # =========================================================
 # Main batch fee estimator
 # =========================================================
-
 def get_my_fee_estimate_batch(items):
 
     sku_requests = []
@@ -197,7 +113,6 @@ def get_my_fee_estimate_batch(items):
     # =====================================================
     # SKU batches
     # =====================================================
-
     for i in range(0, len(sku_requests), BATCH_SIZE):
         batch_index = i // BATCH_SIZE
         progress = (batch_index / total_batches) * 100
@@ -235,19 +150,18 @@ def get_my_fee_estimate_batch(items):
 
             key = (sku, asin, price)
 
-            if not entry.get("FeesEstimate"):
-                failed_for_asin.append((sku, asin, price))
-                continue
-
-            if status != "Success":
+            if not entry.get("FeesEstimate") or status != "Success":
                 failed_for_asin.append((sku, asin, price))
                 continue
 
             ref, fba = _extract_fee_details(entry)
 
-            # Real zero fees
             if ref == 0 and fba == 0:
-                results[key] = {"referral": 0.0, "fba": 0.0, "debug": {"note": "real_zero_fees"}}
+                results[key] = {
+                    "referral": 0.0,
+                    "fba": 0.0,
+                    "debug": {"note": "real_zero_fees"}
+                }
                 continue
 
             results[key] = {"referral": ref, "fba": fba, "debug": {}}
@@ -255,7 +169,6 @@ def get_my_fee_estimate_batch(items):
     # =====================================================
     # ASIN fallback
     # =====================================================
-
     asin_requests = []
     asin_index_map = []
     debug_fail_asin = []
@@ -316,7 +229,6 @@ def get_my_fee_estimate_batch(items):
                     "debug": {"fallback": "asin_resp_not_list"}
                 }
                 debug_fail_asin.append(key)
-                asin_raw_errors[key] = {"request": chunk_map, "response": resp}
             continue
 
         for entry in resp:
@@ -335,24 +247,13 @@ def get_my_fee_estimate_batch(items):
 
             key = (sku, asin, price)
 
-            if not entry.get("FeesEstimate"):
+            if not entry.get("FeesEstimate") or status != "Success":
                 results[key] = {
                     "referral": None,
                     "fba": None,
-                    "debug": {"fallback": "asin missing"}
+                    "debug": {"fallback": "asin_failed"}
                 }
                 debug_fail_asin.append(key)
-                asin_raw_errors[key] = {"request": chunk_map, "response": entry}
-                continue
-
-            if status != "Success":
-                results[key] = {
-                    "referral": None,
-                    "fba": None,
-                    "debug": {"fallback": "asin failed", "status": status}
-                }
-                debug_fail_asin.append(key)
-                asin_raw_errors[key] = {"request": chunk_map, "response": entry}
                 continue
 
             ref, fba = _extract_fee_details(entry)
@@ -372,24 +273,9 @@ def get_my_fee_estimate_batch(items):
             }
 
     # =====================================================
-    # FINAL FAILURE DEBUG
+    # FINAL SUMMARY (kept)
     # =====================================================
-
     print(f"[FEES][SUMMARY] SKU failures needing ASIN fallback: {len(failed_for_asin)}")
     print(f"[FEES][SUMMARY] ASIN final failures (still missing): {len(debug_fail_asin)}")
-
-    if debug_fail_asin:
-        print("\n[FEES][DEBUG] FINAL ASIN FAILURES (with request + raw response):")
-        for key in debug_fail_asin:
-            sku, asin, price = key
-            print(f"\n--- FAILURE ---")
-            print(f"SKU={sku}, ASIN={asin}, PRICE={price}")
-
-            err = asin_raw_errors.get(key)
-            if err:
-                print("REQUEST PAYLOAD:")
-                print(err["request"])
-                print("RAW AMAZON RESPONSE:")
-                print(err["response"])
 
     return results

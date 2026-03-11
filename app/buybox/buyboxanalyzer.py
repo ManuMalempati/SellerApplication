@@ -1,6 +1,4 @@
 # RESPONSIBLE FOR FBABuyBoxAnalysis Table
-import time
-import threading
 from app.database import connect_database
 from app.auth import spapi_request
 from app.buybox.store_name_scraper import get_seller_name
@@ -11,6 +9,7 @@ from app.utilities.utils import (
     now_utc_plus_offset_naive,
 )
 import config
+from utilities.rate_limiter import TokenBucketRateLimiter
 
 MARKETPLACE_ID = config.MARKETPLACE_ID
 SELLER_ID = config.SELLER_ID
@@ -19,31 +18,6 @@ SELLER_ID = config.SELLER_ID
 # ---------------------------------------------------------
 # Token Bucket Rate Limiter (0.5 RPS, burst 1)
 # ---------------------------------------------------------
-
-class TokenBucketRateLimiter:
-    def __init__(self, rate: float, burst: int):
-        self.rate = rate
-        self.burst = burst
-        self.tokens = burst
-        self.last_update = time.time()
-        self.lock = threading.Lock()
-
-    def acquire(self):
-        while True:
-            with self.lock:
-                now = time.time()
-                elapsed = now - self.last_update
-                self.tokens = min(self.burst, self.tokens + elapsed * self.rate)
-                self.last_update = now
-
-                if self.tokens >= 1.0:
-                    self.tokens -= 1.0
-                    return
-
-                wait_time = (1.0 - self.tokens) / self.rate
-
-            time.sleep(wait_time)
-
 
 offers_rate_limiter = TokenBucketRateLimiter(rate=0.5, burst=1)
 

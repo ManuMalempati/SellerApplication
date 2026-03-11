@@ -1,2 +1,1 @@
 SELECT * FROM FBABuyBoxAnalysis
-WHERE asin = 'B0FXY1L9LW'
