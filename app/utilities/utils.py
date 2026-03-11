@@ -115,8 +115,8 @@ def _should_retry_non_client_error(resp):
     stop=stop_after_attempt(4),
     wait=wait_exponential(multiplier=1, min=1, max=16),
 )
-def retry_non_client_errors(func, *args, **kwargs):
-    return func(*args, **kwargs)
+def retry_non_client_errors(func):
+    return func()
 
 # =========================================================
 # Dynamic Timezone Helpers (UTC + offset)

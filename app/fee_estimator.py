@@ -1,10 +1,7 @@
-import time, random
+import time
+import random
 import config
-from app.utilities.utils import (
-    retry_call,
-    retry_non_client_errors,
-    safe_float
-)
+from app.utilities.utils import retry_call, safe_float, _is_non_client_error
 from app.auth import spapi_request
 from app.utilities.rate_limiter import TokenBucketRateLimiter
 
@@ -12,15 +9,9 @@ DEBUG = False
 fees_rate_limiter = TokenBucketRateLimiter(rate=0.49, burst=1)
 
 # =========================================================
-# Extract fee details (correct None handling)
+# Extract fee details
 # =========================================================
-
 def _extract_fee_details(entry):
-    """
-    Extract referral + FBA fees from Amazon's FeeDetailList.
-    Missing or invalid fee amounts remain None and are skipped.
-    Real zero fees remain 0.0.
-    """
     ref = 0.0
     fba = 0.0
 
@@ -46,25 +37,33 @@ def _extract_fee_details(entry):
 
 
 # =========================================================
-# Call Amazon batch fee API with throttling + retry
+# Call Amazon batch fee API (old working logic)
 # =========================================================
 def _call_batch_fee_api(requests):
     fees_rate_limiter.acquire()
 
-    result =  retry_non_client_errors(
-        lambda: retry_call(
-            lambda: spapi_request(
-                method="POST",
-                path="/products/fees/v0/feesEstimate",
-                body=requests
-            )
-        )
-    )
+    MAX_ATTEMPTS = 6
 
-    # Jitter to avoid huge volume of requests when service is back up running
-    time.sleep(0.2 + random.random() * 0.2)
+    for attempt in range(1, MAX_ATTEMPTS + 1):
 
-    return result
+        resp = retry_call(lambda: spapi_request(
+            method="POST",
+            path="/products/fees/v0/feesEstimate",
+            body=requests
+        ))
+
+        # Normal or client error → return immediately
+        if not _is_non_client_error(resp):
+            time.sleep(0.2 + random.random() * 0.3)
+            return resp
+
+        # Non-client error → retry with exponential backoff
+        wait = min(1.0 * (2 ** (attempt - 1)), 16)
+        time.sleep(wait)
+
+    # After all attempts fail → return last response
+    return resp
+
 
 # =========================================================
 # Main batch fee estimator
@@ -74,9 +73,7 @@ def get_my_fee_estimate_batch(items):
     sku_requests = []
     sku_index_map = []
 
-    # -----------------------------------------------------
     # Build SKU requests
-    # -----------------------------------------------------
     for i, item in enumerate(items, start=1):
         sku = item["sku"]
         asin = item["asin"]
@@ -229,6 +226,7 @@ def get_my_fee_estimate_batch(items):
                     "debug": {"fallback": "asin_resp_not_list"}
                 }
                 debug_fail_asin.append(key)
+                asin_raw_errors[key] = {"request": chunk_map, "response": resp}
             continue
 
         for entry in resp:
@@ -273,7 +271,7 @@ def get_my_fee_estimate_batch(items):
             }
 
     # =====================================================
-    # FINAL SUMMARY (kept)
+    # FINAL SUMMARY
     # =====================================================
     print(f"[FEES][SUMMARY] SKU failures needing ASIN fallback: {len(failed_for_asin)}")
     print(f"[FEES][SUMMARY] ASIN final failures (still missing): {len(debug_fail_asin)}")
