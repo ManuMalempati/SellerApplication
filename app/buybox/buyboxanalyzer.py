@@ -9,7 +9,7 @@ from app.utilities.utils import (
     now_utc_plus_offset_naive,
 )
 import config
-from utilities.rate_limiter import TokenBucketRateLimiter
+from app.utilities.rate_limiter import TokenBucketRateLimiter
 
 MARKETPLACE_ID = config.MARKETPLACE_ID
 SELLER_ID = config.SELLER_ID
