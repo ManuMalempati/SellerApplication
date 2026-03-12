@@ -1,4 +1,94 @@
-# RESPONSIBLE FOR OrderItems Table
+"""
+OrderItems Ingestion Pipeline
+=============================
+
+This module ingests Amazon order data from the
+`GET_FLAT_FILE_ALL_ORDERS_DATA_BY_LAST_UPDATE_GENERAL` report and transforms it
+into normalized rows for the `OrderItems` table. It merges raw SP‑API fields
+with internal product metadata, computes fees and profitability, and ensures
+each order item is stored with consistent accounting logic.
+
+Pipeline Overview
+-----------------
+
+1. Determine Report Window
+   - Uses LastUpdatedAfter or CreatedAfter/CreatedBefore to compute the
+     reporting range.
+   - Falls back to the last 10 hours if no parameters are provided.
+
+2. Fetch Orders Report (Unified Fetcher)
+   - Downloads the TSV report directly from SP‑API.
+   - Parses rows into a structured list of dictionaries.
+
+3. Load Product Metadata
+   - Loads SKU → SSKU mapping.
+   - Loads ASIN‑level product details (brand, category, COG).
+   - These enrichments are required for fee calculations and profitability.
+
+4. Prepare Fee Estimation Inputs
+   - Extracts (SKU, ASIN, UnitPrice) triples for all unique purchasable items.
+   - UnitPrice is derived as:  
+        `unit_price = line_total / quantity`
+   - Only valid, positive‑priced items are sent for fee estimation.
+
+5. Fee Estimation (Batch)
+   - Calls `get_my_fee_estimate_batch()` once for all unique items.
+   - Produces referral fee and FBA fee per unit.
+   - Results are mapped back to each order item.
+
+6. Financial Calculations
+   For each order item, the following values are computed:
+
+   • Subtotal 
+       `subtotal = unit_price * qty`
+
+   • VAT
+       `vat = -(subtotal * GOVT_VAT_RATE)`
+
+   • COG (Cost of Goods)  
+       `cog = -(product_cost * qty)`  
+       (negative because accounting stores costs as negative values)
+
+   • Referral Fee (incl. VAT)
+       `ref_total = referral_per_unit * FEES_ESTIMATE_VAT_MULTIPLIER * qty`  
+       `FeeIncl = -ref_total`
+
+   • **FBA Fee (incl. VAT)**  
+       `fba_total = fba_per_unit * FEES_ESTIMATE_VAT_MULTIPLIER * qty`  
+       `FBAFeesIncl = -fba_total`
+
+   • Total Fee
+       `TotalFee = -(ref_total + fba_total)`
+
+   • Fee Percentage
+       `FeePct = (referral_per_unit / unit_price) * 100`
+
+   • RVAT (VAT portion inside Amazon fees)
+       `rvat = (referral_per_unit + fba_per_unit) * (multiplier - 1) * qty`
+
+   • Profit 
+       `profit = subtotal - total_fee - vat + rvat - cog`
+
+   If any required component is missing (fees, VAT, COG), profit is set to None.
+
+7. Build Normalized Output Rows
+   - Each row includes:
+        • Order identifiers  
+        • SKU/ASIN/SSKU  
+        • Pricing and fee breakdown  
+        • VAT, RVAT, COG, Profit  
+        • Brand, Category, Title  
+        • OrderStatus and LastUpdateDate  
+        • FirstSeenAt and LastSeenAt timestamps (UTC+offset)
+
+8. Return Final Rows
+   - The caller is responsible for inserting/updating the `OrderItems` table.
+   - This function only prepares normalized, enriched, accounting‑ready rows.
+
+This pipeline ensures that all order items are consistently enriched,
+fee‑calculated, VAT‑adjusted, and ready for ingestion into the accounting
+database with deterministic, auditable logic.
+"""
 
 import time
 import csv
@@ -23,7 +113,6 @@ from config import (
     FEES_ESTIMATE_VAT_MULTIPLIER,
     MARKETPLACE_ID,
 )
-
 
 # -------------------------------------------------------------------
 # Main orders logic (using unified fetcher)

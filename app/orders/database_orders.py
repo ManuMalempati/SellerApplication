@@ -1,3 +1,42 @@
+"""
+Replace OrderItems for a Single Amazon Order (COG‑Preserving)
+=============================================================
+
+This function deletes and reinserts all `OrderItems` rows for a given
+AmazonOrderId in an atomic, deadlock‑safe operation. It is used whenever an
+order is updated or re‑fetched from SP‑API, ensuring the database always
+reflects the latest state of the order while preserving accounting‑critical
+fields.
+
+Key Behaviors
+-------------
+
+1. Full Row Replacement (Per Order)
+   - All existing rows for the given AmazonOrderId are deleted.
+   - New rows are inserted exactly as produced by the ingestion pipeline.
+   - This avoids partial updates, merge conflicts, and stale data.
+
+2. COG Immutability Rule (IMPORTANT)
+   - Cost of Goods (COG) must never change after an order item is first seen.
+   - Before deleting old rows, the function loads existing COG values:
+         SELECT SKU, COG FROM OrderItems WHERE AmazonOrderId = ?
+   - During reinsertion:
+         • If an old COG exists → it is reused  
+         • If no old COG exists → the new COG is inserted  
+   - This guarantees historical accounting accuracy even when orders are updated
+     (refunds, returns, reimbursements, status changes, etc.).
+
+3. Deadlock‑Safe Execution
+   - All operations run inside `retry_deadlock()`, ensuring safe execution under
+     concurrent ingestion or reporting workloads.
+
+4. No Other Fields Are Preserved
+   - Only COG is immutable.
+   - All other fields (fees, VAT, profit, timestamps, statuses, etc.) are
+     overwritten with the latest computed values from the ingestion pipeline.
+
+"""
+
 from app.database import retry_deadlock
 
 def replace_order_items_for_order(cursor, amazon_order_id, rows):

@@ -1,4 +1,88 @@
-# RESPONSIBLE FOR FBAProductSummary Table. 
+"""
+FBAProductSummary Pipeline
+==========================
+
+This module is responsible for generating the data that populates the
+`FBAProductSummary` table. It consolidates multiple Amazon SP‑API reports,
+enriches them with internal product metadata, and computes financial metrics
+used for inventory analysis, pricing decisions, and profitability tracking of
+each product in the seller's active inventory (IMPORTANT).
+
+The pipeline performs the following major steps:
+
+1. Load Product Mapping
+   - Retrieves SKU → SSKU mappings from the database.
+   - SSKU is used as the canonical internal identifier for grouping and reporting.
+
+2. Fetch FBA Inventory (GET_AFN_INVENTORY_DATA)
+   - Downloads the AFN inventory report in TSV format.
+   - Each row represents a fulfillment‑center SKU (FNSKU) with a condition code.
+   - The report may contain multiple rows per FNSKU (e.g., SELLABLE vs UNSELLABLE).
+   - We aggregate quantities per FNSKU to compute:
+        • Sellable quantity  
+        • Unsellable quantity  
+        • Total FBA stock  
+
+3. Attach Product Details
+   - For each ASIN, we load internal product metadata:
+        • Cost of Goods (COG)  
+        • Brand  
+        • Category  
+   - These fields are not present in the AFN report but are required for profitability calculations.
+
+4. Fetch L‑30 Sales & Traffic Data (GET_SALES_AND_TRAFFIC_REPORT)
+   - Retrieves last‑30‑days sales metrics (currently from a limited dataset).
+   - Includes:
+        • Total ordered units  
+        • Ordered product sales  
+        • Units refunded  
+        • Buy Box percentage  
+   - This will later be replaced with aggregated data from the OrderItems table.
+
+5. Fetch Active Listings (GET_MERCHANT_LISTINGS_DATA)
+   - Downloads the active listings report in TSV format.
+   - Provides:
+        • Title  
+        • Current sale price  
+   - These fields are essential for revenue, VAT, and profit calculations.
+
+6. Filtering Logic (IMPORTANT BUSINESS RULE)
+   - The AFN inventory report includes ALL FBA inventory, including inactive or delisted SKUs.
+   - Our business rule requires:
+        • If FBA‑Stock > 0 → ALWAYS include the SKU  
+        • If FBA‑Stock = 0 → include ONLY if SKU is present in GET_MERCHANT_LISTINGS_DATA  
+
+7. Fee Estimation (Cached)
+   - For each SKU with a sale price, we look up cached fee estimates.
+   - Cached fees include:
+        • Amazon referral fees  
+        • FBA fulfillment fees  
+        • Total charges  
+   - These values are used to compute:
+        • Estimated VAT  
+        • Estimated net revenue  
+        • Estimated profit (net − COG)
+
+8. Save to Database Every Hour
+
+9. Summary Output
+   - Prints a summary of:
+        • Total items processed  
+        • Items with price  
+        • Items with fee data  
+        • Items with L‑30 data  
+        • Total processing time  
+
+Notes
+---------------------------
+• L‑30 sales data is currently sourced from a limited external dataset.
+  This will be replaced with internally aggregated OrderItems data.
+
+This pipeline is designed to be deterministic, auditable, and safe for
+scheduled execution. It ensures that all active FBA SKUs have up‑to‑date
+inventory, pricing, and profitability metrics.
+"""
+
 import time
 
 from app.database import (
@@ -152,10 +236,14 @@ async def fba_report(save_to_db=True):
             r["Sale-Price"] = None
 
     # ---------------------------------------------------------
-    # 7. Filter to ACTIVE SKUs only
+    # 7. Apply business rule filter
     # ---------------------------------------------------------
-    rows = [r for r in rows if r["SKU"] in listings_map]
-    print(f"Filtered to {len(rows)} ACTIVE SKUs")
+    rows = [
+        r for r in rows
+        if r["FBA-Stock"] > 0 or r["SKU"] in listings_map
+    ]
+
+    print(f"Filtered to {len(rows)} SKUs after applying business rule")
 
     # ---------------------------------------------------------
     # 8. Fee estimation (cached)

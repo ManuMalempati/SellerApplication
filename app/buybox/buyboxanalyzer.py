@@ -1,4 +1,79 @@
-# RESPONSIBLE FOR FBABuyBoxAnalysis Table
+"""
+FBABuyBoxAnalysis Pipeline
+==========================
+
+This module generates the data for the `FBABuyBoxAnalysis` table. It retrieves
+all active FBA ASINs via the FBAProductSummary table, fetches their current offer data 
+from the Amazon Pricing API, analyzes Buy Box competition, and stores a normalized snapshot 
+of the competitive landscape for each product.
+
+The pipeline is designed to run frequently hourly to keep Buy Box
+visibility fresh and actionable.
+
+Pipeline Overview
+-----------------
+
+1. Load ASINs to Analyze
+   - Reads all ASINs from `FBAProductSummary` where Sellable-Qty > 0.
+   - Each ASIN is paired with its product title for context.
+   - Only stocked items are analyzed to avoid unnecessary API calls.
+
+2. Fetch Pricing & Offer Data (SP‑API)
+   - Calls getItemOffers API with:
+        • MarketplaceId  
+        • ItemCondition = "New"
+   - Rate-limited via a token bucket to comply with SP‑API throughput rules.
+   - Each response includes:
+        • Summary (Buy Box prices, lowest prices)  
+        • Offers (seller listings, prices, shipping, FBA/Prime flags, ratings)
+
+3. Normalize Offer Data
+   - Each raw offer is converted into an `OfferData` object containing:
+        • SellerId  
+        • Listing price  
+        • Shipping cost  
+        • IsBuyBoxWinner  
+        • IsFBA / IsPrime  
+        • Seller rating and feedback count  
+   - A computed `total_price` property (price + shipping) is provided.
+
+4. Buy Box Analysis
+   For each ASIN:
+   - Identify the Buy Box winner (if any).
+   - Identify the seller’s own offer (if present).
+   - Extract summary-level pricing:
+        • Summary Buy Box price  
+        • Lowest Amazon‑fulfilled price  
+        • Lowest merchant‑fulfilled price  
+   - Resolve the winner’s store name using via store_name_scraper.
+   - Produce a structured analysis record with all competitive metrics.
+
+5. Bulk Database Refresh
+   - After all ASINs are processed, a fresh SQL connection is opened.
+   - The `FBABuyBoxAnalysis` table is fully cleared.
+   - All new analysis rows are bulk‑inserted using fast executemany.
+   - This ensures the table always reflects a clean, current snapshot.
+
+Stored Fields
+-------------
+Each row in `FBABuyBoxAnalysis` includes:
+   • ASIN and product name  
+   • Winner seller ID and store name  
+   • Winner price and total landed price  
+   • Seller’s own price, shipping, and total  
+   • Whether the seller is the Buy Box winner  
+   • Summary Buy Box price  
+   • Lowest Amazon‑fulfilled and merchant‑fulfilled prices  
+   • Analysis timestamp and created/updated timestamps  
+
+Purpose
+-------
+This pipeline provides a real‑time competitive view of each FBA product’s Buy
+Box status, enabling pricing decisions, margin analysis, and automated
+repricing strategies. It is deterministic, auditable, and optimized for
+high‑frequency execution.
+"""
+
 from app.database import connect_database
 from app.auth import spapi_request
 from app.buybox.store_name_scraper import get_seller_name
