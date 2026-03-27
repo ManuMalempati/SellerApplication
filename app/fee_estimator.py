@@ -1,3 +1,67 @@
+"""
+Batch Fee Estimator (SP‑API FeesEstimate)
+=========================================
+
+This module provides a robust, production‑safe wrapper around Amazon’s
+`/products/fees/v0/feesEstimate` batch API. It takes a list of
+(SKU, ASIN, Price) items and returns referral + FBA fee estimates for each
+item, using a two‑stage strategy:
+
+1. Primary SKU‑Based Fee Estimation
+   - Items are grouped into batches of 20 (Amazon’s limit).
+   - Each batch is sent using SellerSKU as the identifier.
+   - Responses are matched back to items using the SellerInputIdentifier.
+   - Referral and FBA fees are extracted from the FeeDetailList.
+   - If a SKU request fails, the item is queued for ASIN fallback.
+
+2. ASIN Fallback (Only for Failed SKUs)
+   - Any SKU that fails (missing fees, API error, or non‑Success status)
+     is retried using ASIN instead of SKU.
+   - Same batching, same extraction logic.
+   - If ASIN also fails, the item is returned with `referral=None` and
+     `fba=None` and a debug reason.
+
+3. Zero‑Fee Handling
+   - If Amazon returns a valid response but both referral and FBA fees are 0,
+     the estimator records a real zero‑fee result instead of treating it as a
+     failure.
+
+4. Error Handling & Retries
+   - All API calls go through a rate‑limited, retry‑with‑backoff wrapper.
+   - Non‑client errors trigger exponential backoff.
+   - Client errors return immediately (no retry).
+
+5. Output Format
+   Returns a dictionary keyed by (SKU, ASIN, Price):
+       {
+         (sku, asin, price): {
+             "referral": float or None,
+             "fba": float or None,
+             "debug": { ... optional metadata ... }
+         }
+       }
+
+   - `None` values indicate that both SKU and ASIN attempts failed.
+   - `debug` contains hints such as:
+         • "real_zero_fees"
+         • "fallback": "asin"
+         • "fallback": "no asin"
+         • "asin_failed"
+         • "asin_resp_not_list"
+
+Purpose
+-------
+This module isolates all the complexity of Amazon’s fee estimation API:
+batching, retries, SKU→ASIN fallback, error handling, and fee extraction.
+It ensures that upstream pipelines (OrderItems, FBAProductSummary, etc.)
+receive stable, predictable fee data without having to deal with API quirks.
+
+A new developer should be able to:
+   • Understand how fee estimation works end‑to‑end  
+   • Trace failures through the debug metadata  
+   • Modify batching or fallback logic without touching other systems  
+"""
+
 import time
 import random
 import config

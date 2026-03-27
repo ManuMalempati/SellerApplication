@@ -25,7 +25,7 @@ def get_lwa_access_token():
    if(_cached_token and (datetime.now(timezone.utc) < _cached_token_expiry)):
        return _cached_token
 
-   # Request a new token using the refresh token flow
+   # Request a new token using all of these credentials found on solution provider portal
    response = requests.post(
        LWA_TOKEN_URL,
        data={

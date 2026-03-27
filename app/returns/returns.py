@@ -1,9 +1,57 @@
-# RESPONSIBLE FOR FBACustomerReturns Table
+"""
+FBACustomerReturns Ingestion Pipeline
+=====================================
 
-import time
-import csv
-from io import StringIO
-from datetime import datetime, timedelta, timezone
+This module imports the `GET_FBA_FULFILLMENT_CUSTOMER_RETURNS_DATA` SP‑API
+report and populates the `spapi_app_user.FBACustomerReturns` table. It also
+aggregates return activity and updates the `OrderItems` table with return
+quantities, dates, dispositions, and license plate numbers.
+
+Pipeline Responsibilities
+-------------------------
+
+1. Fetch Customer Returns Report
+   - Downloads the FBA customer returns report for the last N days.
+   - Parses TSV rows into structured dictionaries.
+
+2. Temp‑Table Staging (Deadlock‑Safe)
+   - Creates a temporary table `#TempReturns`.
+   - Inserts all incoming rows into the temp table using fast executemany.
+
+3. MERGE Upsert into FBACustomerReturns
+   - Matches rows on:
+        • order_id  
+        • sku  
+        • asin  
+        • fnsku  
+        • return_date  
+        • license_plate_number  
+   - Updates existing rows or inserts new ones.
+   - Ensures no duplicates and preserves historical return events.
+
+4. Aggregate Returns → Update OrderItems
+   - Aggregates returns by (order_id, sku):
+        • SUM(quantity)  
+        • MAX(return_date)  
+        • MAX(detailed_disposition)  
+        • MAX(reason)  
+        • MAX(license_plate_number)  
+   - Updates matching rows in `OrderItems`:
+        • ReturnQty  
+        • ReturnDate  
+        • ReturnDisposition  
+        • ReturnReason  
+        • LicensePlateNumber  
+
+5. Output
+   - Returns True when upsert + aggregation completes.
+   - Ensures both `FBACustomerReturns` and `OrderItems` remain synchronized with
+     the latest customer return data.
+
+This pipeline maintains a complete, up‑to‑date record of all FBA customer
+returns and ensures that return activity is accurately reflected in the
+financial and operational fields of `OrderItems`.
+"""
 
 from app.database import connect_database, retry_deadlock
 from app.utilities.utils import clean_str, safe_int, safe_dt, now_utc_plus_offset_naive

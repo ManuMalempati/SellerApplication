@@ -1,9 +1,40 @@
 # RESPONSIBLE FOR FBARemovalShipments Table
+"""
+FBARemovalShipments Ingestion Pipeline
+======================================
 
-import time
-import csv
-from io import StringIO
-from datetime import datetime, timedelta, timezone
+This module imports the `GET_FBA_FULFILLMENT_REMOVAL_SHIPMENT_DETAIL_DATA`
+SP‑API report and populates the `spapi_app_user.FBARemovalShipments` table with
+a clean, normalized snapshot of all FBA removal shipment activity.
+
+Pipeline Responsibilities
+-------------------------
+
+1. Fetch Removal Shipment Detail Report
+   - Downloads the FBA removal shipment detail report for the last N days.
+   - Parses TSV rows into structured dictionaries.
+
+2. Delete‑and‑Replace Upsert
+   - Extracts all unique `order-id` values from the incoming dataset.
+   - Deletes existing rows for those order IDs (deadlock‑safe).
+   - Inserts fresh rows with:
+        • order_id, sku, fnsku  
+        • disposition  
+        • tracking_number  
+        • request_date, shipment_date  
+        • shipped_quantity  
+        • carrier, removal_order_type  
+        • created_at / updated_at timestamps  
+
+3. Output
+   - Returns the number of rows inserted.
+   - Ensures the `FBARemovalShipments` table always reflects the latest
+     shipment‑level removal data with no duplicates or stale entries.
+
+Removals shipments are the records that store the progress of the stock being sent from the fulfillment centre to
+the business due to various reasons such as the item not being very profitable and has high storage fees
+at fulfillment centre.
+"""
 
 from app.database import connect_database, retry_deadlock
 from app.utilities.utils import clean_str, safe_int, safe_dt, now_utc_plus_offset_naive

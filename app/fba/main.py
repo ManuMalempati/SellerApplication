@@ -14,7 +14,7 @@ The pipeline performs the following major steps:
    - Retrieves SKU → SSKU mappings from the database.
    - SSKU is used as the canonical internal identifier for grouping and reporting.
 
-2. Fetch FBA Inventory (GET_AFN_INVENTORY_DATA)
+2. Fetch FBA Inventory (GET_AFN_INVENTORY_DATA, THIS REPORT CAN ONLY BE FETCHED EVERY 30 MINUTES) 
    - Downloads the AFN inventory report in TSV format.
    - Each row represents a fulfillment‑center SKU (FNSKU) with a condition code.
    - The report may contain multiple rows per FNSKU (e.g., SELLABLE vs UNSELLABLE).

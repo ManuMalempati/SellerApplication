@@ -1,4 +1,55 @@
-# RESPONSIBLE FOR FinancialTransactions Table
+"""
+FinancialTransactions Ingestion Pipeline
+========================================
+
+This module retrieves Amazon Finances API (2024‑06‑19) transaction data and
+normalizes it into rows suitable for insertion into the `FinancialTransactions`
+table. It handles all transaction types returned by the Finances API, including
+orders, refunds, fees, and FBA inventory reimbursements.
+
+Pipeline Responsibilities
+-------------------------
+
+1. Retrieve Transactions (Paginated)
+   - Calls `/finances/2024-06-19/transactions` with rate‑limiting and retry logic.
+   - Follows `nextToken` pagination until all pages are retrieved.
+   - Produces a complete list of raw transaction objects.
+
+2. Product Mapping
+   - Extracts all SKUs referenced inside transaction item contexts.
+   - Loads SKU → SSKU mappings for downstream normalization.
+
+3. Special Case: FBAInventoryReimbursement
+   - Amazon provides only transaction‑level totals (no item‑level breakdowns).
+   - For these transactions:
+        • SKU/ASIN/qty extracted from the first item  
+        • Total = transaction‑level `totalAmount`  
+        • All fee fields set to zero  
+   - A single row is emitted per reimbursement transaction.
+
+4. Normal Item‑Level Processing
+   For all other transaction types (orders, refunds, adjustments):
+   - Each item in the transaction becomes one row.
+   - Extracts SKU, ASIN, quantity, and item‑level totals.
+   - Recursively extracts financial components from `breakdowns`:
+        • Principal (OurPricePrincipal)  
+        • Shipping charges  
+        • Promotions  
+        • FBA fees  
+        • Commission / RefundCommission  
+        • Shipping chargebacks  
+   - Computes:
+        • RefFee = commission + closing fees  
+        • Total = item‑level `totalAmount` (Amazon’s authoritative value)
+
+5. Output
+   - Returns a fully normalized list of dictionaries, each representing a single
+     financial event at the SKU‑item level.
+   - The caller is responsible for inserting/upserting into the
+     `FinancialTransactions` table.
+
+"""
+
 from app.auth import spapi_request
 from app.database import get_product_mapping
 from app.utilities.rate_limiter import TokenBucketRateLimiter

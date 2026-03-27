@@ -6,7 +6,8 @@ This module ingests Amazon order data from the
 `GET_FLAT_FILE_ALL_ORDERS_DATA_BY_LAST_UPDATE_GENERAL` report and transforms it
 into normalized rows for the `OrderItems` table. It merges raw SP‑API fields
 with internal product metadata, computes fees and profitability, and ensures
-each order item is stored with consistent accounting logic.
+each order item is stored with consistent accounting logic. We could also use
+getPricing API but that one does not provide price for pending orders.
 
 Pipeline Overview
 -----------------
@@ -53,7 +54,7 @@ Pipeline Overview
        `ref_total = referral_per_unit * FEES_ESTIMATE_VAT_MULTIPLIER * qty`  
        `FeeIncl = -ref_total`
 
-   • **FBA Fee (incl. VAT)**  
+   • FBA Fee (incl. VAT)
        `fba_total = fba_per_unit * FEES_ESTIMATE_VAT_MULTIPLIER * qty`  
        `FBAFeesIncl = -fba_total`
 

@@ -13,7 +13,7 @@ Key Behaviors
 
 1. Full Row Replacement (Per Order)
    - All existing rows for the given AmazonOrderId are deleted.
-   - New rows are inserted exactly as produced by the ingestion pipeline.
+   - New rows are inserted, since report gives all the OrderItems data even if only 1 OrderItem changed/added
    - This avoids partial updates, merge conflicts, and stale data.
 
 2. COG Immutability Rule (IMPORTANT)
@@ -23,7 +23,7 @@ Key Behaviors
    - During reinsertion:
          • If an old COG exists → it is reused  
          • If no old COG exists → the new COG is inserted  
-   - This guarantees historical accounting accuracy even when orders are updated
+   - This guarantees historical COG at time of sale even when orders are updated
      (refunds, returns, reimbursements, status changes, etc.).
 
 3. Deadlock‑Safe Execution

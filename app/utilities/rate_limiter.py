@@ -11,6 +11,7 @@ class TokenBucketRateLimiter:
     def acquire(self):
         while True:
             # Across threads under same process we follow the rate limits
+            # We have to lock this since it is a critical region (can cause race conditions)
             with self.lock:
                 now = time.time()
                 elapsed = now - self.last_update

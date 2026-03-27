@@ -1,4 +1,49 @@
-# RESPONSIBLE FOR FBAReimbursements Table
+"""
+FBA Reimbursements Ingestion Pipeline
+=====================================
+
+This module fetches the `GET_FBA_REIMBURSEMENTS_DATA` SP‑API report, normalizes
+the rows, stores them in the `spapi_app_user.FBAReimbursements` table, and then
+updates the `OrderItems` table with aggregated reimbursement amounts.
+
+Pipeline Responsibilities
+-------------------------
+
+1. Fetch Reimbursement Report
+   - Downloads the FBA reimbursements report for the last N days.
+   - Parses TSV rows into structured Python dictionaries.
+
+2. Delete‑and‑Replace Upsert into FBAReimbursements
+   - Identifies all reimbursement IDs present in the incoming dataset.
+   - Deletes existing rows for those IDs (deadlock‑safe).
+   - Inserts fresh, normalized rows with:
+        • reimbursement_id  
+        • approval_date  
+        • case_id  
+        • amazon_order_id  
+        • sku / fnsku / asin  
+        • reason, condition, product_name  
+        • amount_per_unit, amount_total  
+        • reimbursed quantities  
+        • timestamps  
+
+3. Aggregate Reimbursements → Update OrderItems
+   - Aggregates reimbursements by (amazon_order_id, sku):
+        • SUM(amount_total)  
+        • SUM(quantity_reimbursed_*)  
+        • MAX(approval_date)  
+   - Updates matching rows in `OrderItems`:
+        • Reimbursed = total reimbursement amount  
+        • ReimbDate  = latest approval date  
+
+4. Output
+   - Returns the number of raw rows inserted.
+   - Ensures both tables (`FBAReimbursements` and `OrderItems`) remain
+     synchronized with the latest reimbursement data.
+
+This pipeline guarantees that reimbursement information is always accurate,
+deduplicated, and reflected directly in the financial fields of `OrderItems`.
+"""
 
 from app.database import connect_database, retry_deadlock
 from app.utilities.utils import clean_str, safe_int, safe_float, safe_dt, now_utc_plus_offset_naive
