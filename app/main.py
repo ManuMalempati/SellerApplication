@@ -6,6 +6,8 @@ from app.orders.orders import get_orders
 from app.fba import fba_report  # Changed: import from new package
 from app.test import router as test_router
 from app.utilities.utils import convert_utc_to_utcz_string
+from app.fba.unsuppressed_inventory import fba_unsuppressed_manage_inventory_report
+from app.inventory_ledger.inventory_ledger import inventory_ledger_detail_report
 
 app = FastAPI()
 app.include_router(test_router)
@@ -37,6 +39,14 @@ async def orders(days: int = 7, hours: int = 0, minutes: int = 0):
 @app.get("/buybox")
 async def buybox():
     return await fba_report()
+
+@app.get("/fba-manage-inventory")
+async def fba_manage_inventory():
+    return await fba_unsuppressed_manage_inventory_report()
+
+@app.get("/inventory-ledger")
+async def inventory_ledger():
+    return await inventory_ledger_detail_report()
 
 
 """

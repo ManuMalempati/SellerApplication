@@ -2,60 +2,104 @@
 OrderItems Ingestion Pipeline
 =============================
 
-This module ingests Amazon order data from the
-`GET_FLAT_FILE_ALL_ORDERS_DATA_BY_LAST_UPDATE_GENERAL` report and transforms it
-into normalized rows for the `OrderItems` table. It merges raw SP‑API fields
-with internal product metadata, computes fees and profitability, and ensures
-each order item is stored with consistent accounting logic. We could also use
-getPricing API but that one does not provide price for pending orders.
+This module ingests Amazon FBA order data from the
+`GET_FLAT_FILE_ALL_ORDERS_DATA_BY_LAST_UPDATE_GENERAL` report (FBA version) and transforms it
+into normalized rows for the `OrderItems` table.
+
+The pipeline uses the Amazon Orders Report rather than the live `getOrders` /
+`getOrderItems` API for several important reasons:
+
+1. Pending Order Pricing
+   - The Orders API does not reliably provide item pricing for pending orders.
+   - The flat-file orders report includes price fields that are required for
+     fee estimation, VAT calculations, and profitability reporting.
+   - Since fee estimation depends on the item sale price, the report is a more
+     suitable source for accounting preparation.
+
+2. Bulk Order Fetching Performance
+   - The report API is more efficient for retrieving a large number of orders
+     over a time window.
+   - Instead of making many paginated API calls to `getOrders` and then
+     additional calls to `getOrderItems` per order, the report provides order
+     item rows in bulk.
+   - This significantly reduces ingestion time when processing many updated or
+     newly created orders.
+
+3. Rate Limit Practicality
+   - The Orders API has stricter practical limitations for high-volume
+     ingestion because order items often require separate API calls per order.
+   - Using the report-based approach avoids excessive API calls and reduces the
+     likelihood of throttling during regular ingestion jobs.
+
+The report data is merged with internal product metadata, enriched with SKU to
+SSKU mappings, ASIN-level product details, estimated Amazon fees, VAT, COG, and
+profitability values. The resulting rows are prepared for insertion or update
+in the `OrderItems` table with consistent accounting logic.
+
+Important:
+----------
+Amazon order reports provide the order item price and quantity, but they do not
+provide the final actual Amazon fees charged in settlement. For that reason,
+this pipeline estimates referral and FBA fees using Amazon's Product Fees API.
+Actual charged fees should be reconciled separately from financial events or
+settlement reports.
 
 Pipeline Overview
 -----------------
 
 1. Determine Report Window
-   - Uses LastUpdatedAfter or CreatedAfter/CreatedBefore to compute the
+   - Uses `LastUpdatedAfter` or `CreatedAfter` / `CreatedBefore` to compute the
      reporting range.
    - Falls back to the last 10 hours if no parameters are provided.
 
-2. Fetch Orders Report (Unified Fetcher)
-   - Downloads the TSV report directly from SP‑API.
-   - Parses rows into a structured list of dictionaries.
+2. Fetch Orders Report
+   - Downloads the TSV report from SP-API using the unified report fetcher.
+   - Uses report type:
+       `GET_FLAT_FILE_ALL_ORDERS_DATA_BY_LAST_UPDATE_GENERAL`
+   - Parses the downloaded report into a structured list of dictionaries.
 
 3. Load Product Metadata
-   - Loads SKU → SSKU mapping.
-   - Loads ASIN‑level product details (brand, category, COG).
-   - These enrichments are required for fee calculations and profitability.
+   - Loads SKU to SSKU mapping.
+   - Loads ASIN-level product details such as brand, category, title, and COG.
+   - These enrichments are required for normalized reporting, fee calculations,
+     and profitability calculations.
 
 4. Prepare Fee Estimation Inputs
-   - Extracts (SKU, ASIN, UnitPrice) triples for all unique purchasable items.
-   - UnitPrice is derived as:  
-        `unit_price = line_total / quantity`
-   - Only valid, positive‑priced items are sent for fee estimation.
+   - Extracts unique `(SKU, ASIN, UnitPrice)` triples for purchasable items.
+   - Unit price is calculated from the report as:
+       `unit_price = line_total / quantity`
+   - Only valid items with SKU, ASIN, positive quantity, and positive price are
+     sent for fee estimation.
 
-5. Fee Estimation (Batch)
-   - Calls `get_my_fee_estimate_batch()` once for all unique items.
-   - Produces referral fee and FBA fee per unit.
-   - Results are mapped back to each order item.
+5. Fee Estimation
+   - Calls `get_my_fee_estimate_batch()` once for all unique fee-estimation
+     inputs.
+   - Fee estimates are requested from Amazon's Product Fees API.
+   - The estimator returns estimated referral fee and estimated FBA fee per
+     unit.
+   - Results are mapped back to each order item using `(SKU, ASIN, UnitPrice)`.
 
 6. Financial Calculations
    For each order item, the following values are computed:
 
-   • Subtotal 
+   • Subtotal
        `subtotal = unit_price * qty`
 
    • VAT
        `vat = -(subtotal * GOVT_VAT_RATE)`
 
-   • COG (Cost of Goods)  
-       `cog = -(product_cost * qty)`  
-       (negative because accounting stores costs as negative values)
+   • COG / Cost of Goods
+       `cog = -(product_cost * qty)`
 
-   • Referral Fee (incl. VAT)
-       `ref_total = referral_per_unit * FEES_ESTIMATE_VAT_MULTIPLIER * qty`  
+     COG is stored as a negative value because accounting costs are represented
+     as negative amounts.
+
+   • Referral Fee Including VAT
+       `ref_total = referral_per_unit * FEES_ESTIMATE_VAT_MULTIPLIER * qty`
        `FeeIncl = -ref_total`
 
-   • FBA Fee (incl. VAT)
-       `fba_total = fba_per_unit * FEES_ESTIMATE_VAT_MULTIPLIER * qty`  
+   • FBA Fee Including VAT
+       `fba_total = fba_per_unit * FEES_ESTIMATE_VAT_MULTIPLIER * qty`
        `FBAFeesIncl = -fba_total`
 
    • Total Fee
@@ -64,31 +108,48 @@ Pipeline Overview
    • Fee Percentage
        `FeePct = (referral_per_unit / unit_price) * 100`
 
-   • RVAT (VAT portion inside Amazon fees)
-       `rvat = (referral_per_unit + fba_per_unit) * (multiplier - 1) * qty`
+   • RVAT
+       `rvat = (referral_per_unit + fba_per_unit)
+               * (FEES_ESTIMATE_VAT_MULTIPLIER - 1)
+               * qty`
 
-   • Profit 
+     RVAT represents the VAT portion included inside the estimated Amazon fees.
+
+   • Profit
        `profit = subtotal - total_fee - vat + rvat - cog`
 
-   If any required component is missing (fees, VAT, COG), profit is set to None.
+   If any required component is missing, such as fee estimates, VAT, or COG,
+   profit is set to `None`.
 
 7. Build Normalized Output Rows
-   - Each row includes:
-        • Order identifiers  
-        • SKU/ASIN/SSKU  
-        • Pricing and fee breakdown  
-        • VAT, RVAT, COG, Profit  
-        • Brand, Category, Title  
-        • OrderStatus and LastUpdateDate  
-        • FirstSeenAt and LastSeenAt timestamps (UTC+offset)
+   Each output row includes:
+
+       • Amazon order identifiers
+       • Order date and last update date
+       • SKU, ASIN, and SSKU
+       • Brand, category, and title
+       • Quantity, unit price, subtotal, and currency
+       • Estimated referral fee, FBA fee, total fee, and fee percentage
+       • VAT, RVAT, COG, and profit
+       • Refund, return, reimbursement, and removal placeholder fields
+       • Order status
+       • FirstSeenAt and LastSeenAt timestamps
 
 8. Return Final Rows
-   - The caller is responsible for inserting/updating the `OrderItems` table.
-   - This function only prepares normalized, enriched, accounting‑ready rows.
+   - The function returns normalized, enriched, accounting-ready rows.
+   - The caller is responsible for inserting or updating the `OrderItems` table.
+   - This module does not directly persist rows to the database.
 
-This pipeline ensures that all order items are consistently enriched,
-fee‑calculated, VAT‑adjusted, and ready for ingestion into the accounting
-database with deterministic, auditable logic.
+Summary
+-------
+This pipeline uses Amazon's bulk orders report as the primary source because it
+is faster and more reliable for high-volume ingestion than repeatedly calling
+the Orders API. It also provides pricing information needed for pending orders,
+which is essential for fee estimation and profitability tracking.
+
+The pipeline produces deterministic, auditable `OrderItems` rows by combining
+Amazon report data, internal product metadata, estimated Amazon fees, VAT logic,
+COG, and profit calculations into a consistent accounting-ready structure.
 """
 
 import time

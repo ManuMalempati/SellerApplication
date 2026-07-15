@@ -6,6 +6,8 @@ from app.utilities.utils import convert_utc_to_utcz_string
 from urllib.parse import quote
 from config import MARKETPLACE_ID, BASE_CURRENCY_CODE
 import json
+from app.utilities.fetch_report import fetch_spapi_report
+import io
 
 router = APIRouter()
 
@@ -179,6 +181,37 @@ def debug_buybox(asin: str):
         return {
             "asin": asin,
             "error": str(e)
+        }
+
+@router.get("/debug/fba-manage-inventory")
+def debug_fba_manage_inventory():
+    """
+    Fetch the raw FBA Manage Inventory report.
+
+    Report:
+        GET_FBA_MYI_UNSUPPRESSED_INVENTORY_DATA
+
+    Returns the raw TSV content exactly as Amazon provides it.
+    Useful for inspecting available columns and data.
+    """
+
+    try:
+        raw_report = fetch_spapi_report(
+            report_type="GET_FBA_MYI_UNSUPPRESSED_INVENTORY_DATA",
+            output_type="raw"
+        )
+
+        return {
+            "status": "success",
+            "report_type": "GET_FBA_MYI_UNSUPPRESSED_INVENTORY_DATA",
+            "raw_report": raw_report
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "report_type": "GET_FBA_MYI_UNSUPPRESSED_INVENTORY_DATA",
+            "message": str(e)
         }
 
 if __name__ == "__main__":

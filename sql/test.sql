@@ -1,3 +1,4 @@
-SELECT TOP 5 SKU, Title, SUM(Subtotal) AS Total FROM OrderItems
-GROUP BY SKU, Title
-ORDER BY Total DESC
+SELECT AmazonOrderId FROM OrderItems
+WHERE Qty > 1
+GROUP BY AmazonOrderId
+HAVING COUNT(SKU) > 1

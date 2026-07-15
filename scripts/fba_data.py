@@ -1,7 +1,7 @@
 """
 FBA Data Update Script
 
-This script fetches FBA inventory data and updates the ProductMapping table.
+This script fetches FBA inventory data and updates the FBAProductSummary table.
 Designed to be run periodically (e.g., every 1 hour) via task scheduler.
 """
 

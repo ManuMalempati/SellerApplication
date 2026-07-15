@@ -1,2 +1,1 @@
-SELECT * FROM FBAProductSummary
-WHERE asin = 'B08HN37XC1'
+sp_help OrderItems

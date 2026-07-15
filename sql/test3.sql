@@ -1,7 +1,4 @@
-SELECT *
-FROM InventoryReportCopy
-WHERE PartNumber NOT IN (
-    SELECT PartNumber
-    FROM InventoryReport
-    WHERE PartNumber IS NOT NULL
-);
+SELECT AmazonOrderId FROM FinancialTransactions
+WHERE TransactionType != 'Refund'
+GROUP BY AmazonOrderId
+HAVING COUNT(*) > 1
