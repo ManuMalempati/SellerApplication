@@ -1,1 +1,1 @@
-sp_help OrderItems
+SELECT * FROM InventoryLedger

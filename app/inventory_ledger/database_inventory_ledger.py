@@ -1,3 +1,20 @@
+"""
+Inventory Ledger Database Functions
+
+Purpose
+-------
+Handles SQL Server inserts for Inventory Ledger
+adjustment events.
+
+Important Notes
+---------------
+- Only adjustment events are stored.
+- ReferenceID is treated as the adjustment business key.
+- InventoryLedgerId remains the technical primary key.
+- Designed to support fast_executemany bulk inserts.
+"""
+
+
 def bulk_insert_inventory_ledger(cursor, rows):
 
     sql = """
@@ -68,6 +85,9 @@ def bulk_insert_inventory_ledger(cursor, rows):
             r["ReconciledQuantity"],
             r["UnreconciledQuantity"]
         ))
+
+    if not data:
+        return 0
 
     cursor.fast_executemany = True
     cursor.executemany(sql, data)

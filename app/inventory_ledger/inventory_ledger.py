@@ -1,3 +1,77 @@
+"""
+Inventory Ledger - Adjustment Ingestion
+
+Purpose
+-------
+Fetches Amazon Inventory Ledger Detail data and returns
+normalized adjustment events.
+
+Important Findings
+------------------
+1. We only ingest EventType = 'Adjustments'.
+
+   Other event types such as:
+       - Receipts
+       - Shipments
+       - WhseTransfers
+       - CustomerReturns
+
+   are not currently required for the inventory
+   reimbursement workflow.
+
+2. Amazon adjustment rows contain a Reference ID.
+
+   Investigation of historical data showed:
+
+       (ReferenceID)
+
+   is unique for adjustment events.
+
+   This makes ReferenceID the natural business key for
+   adjustment ingestion and idempotency.
+
+3. ReconciledQuantity and UnreconciledQuantity are stored
+   but should NOT currently be used as the source of truth
+   for event reconciliation.
+
+   Investigation found examples where:
+
+       Inventory misplaced (M)
+
+   appeared chronologically AFTER a corresponding
+   Inventory found (F) adjustment while still being marked
+   as fully reconciled.
+
+   These fields appear useful as Amazon reconciliation
+   metadata but are not currently reliable enough to drive
+   business logic.
+
+4. Lost / damaged identification should be based on
+   actual adjustment events:
+
+       M
+       5
+       6
+       7
+       E
+       H
+       K
+       U
+
+   and resolution events:
+
+       F
+       N
+
+5. Date values are converted to native Python date /
+   datetime objects before insertion to avoid SQL Server
+   conversion issues.
+
+Report
+------
+GET_LEDGER_DETAIL_VIEW_DATA
+"""
+
 import time
 from datetime import datetime
 
@@ -20,16 +94,22 @@ async def inventory_ledger_detail_report(
     end_time=None
 ):
     """
-    Fetches and normalizes:
+    Fetch and normalize Inventory Ledger adjustments.
 
-        GET_LEDGER_DETAIL_VIEW_DATA
-
-    Optional:
-        start_time
-        end_time
-
-    Example:
+    Parameters
+    ----------
+    start_time : str
+        ISO datetime string:
         2026-01-01T00:00:00Z
+
+    end_time : str
+        ISO datetime string
+
+    Returns
+    -------
+    list[dict]
+
+    Only adjustment events are returned.
     """
 
     started_at = time.time()
@@ -38,10 +118,6 @@ async def inventory_ledger_detail_report(
     print(f"Start Time: {start_time}")
     print(f"End Time:   {end_time}")
 
-    # ---------------------------------------------------------
-    # Convert ISO strings into datetime objects expected by
-    # fetch_spapi_report()
-    # ---------------------------------------------------------
     start_dt = None
     end_dt = None
 
@@ -68,12 +144,13 @@ async def inventory_ledger_detail_report(
 
     for line in rows_tsv:
 
-        # ---------------------------------------------------------
-        # Parse Date
-        # Example:
-        # 07/13/2026
-        # ---------------------------------------------------------
+        # Only adjustments matter for the reconciliation
+        # workflow.
+        if line.get("Event Type") != "Adjustments":
+            continue
+
         ledger_date = None
+        ledger_datetime = None
 
         try:
             raw_date = line.get("Date")
@@ -86,13 +163,6 @@ async def inventory_ledger_detail_report(
 
         except Exception:
             pass
-
-        # ---------------------------------------------------------
-        # Parse Date and Time
-        # Example:
-        # 2026-07-13T01:00:00+0100
-        # ---------------------------------------------------------
-        ledger_datetime = None
 
         try:
             raw_datetime = line.get("Date and Time")
@@ -155,7 +225,7 @@ async def inventory_ledger_detail_report(
     print("=" * 60)
     print("INVENTORY LEDGER DETAIL REPORT")
     print("=" * 60)
-    print(f"Rows: {len(rows):,}")
+    print(f"Adjustment Rows: {len(rows):,}")
     print(f"Time: {elapsed:.1f}s")
     print("=" * 60)
 

@@ -1,4 +1,3 @@
-SELECT AmazonOrderId FROM OrderItems
-WHERE Qty > 1
-GROUP BY AmazonOrderId
-HAVING COUNT(SKU) > 1
+SELECT *
+FROM spapi_app_user.SyncState
+WHERE SyncKey = 'INVENTORY_LEDGER_SYNC';
